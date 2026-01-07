@@ -26,6 +26,7 @@ class EventRecorder:
         self.recording = False
         self.mouse_listener = None
         self.keyboard_listener = None
+        self.modifiers = set() # Track active modifiers
 
     def start(self):
         """Start capturing events."""
@@ -92,12 +93,14 @@ class EventRecorder:
         text = "".join(self.type_buf)
         self.type_buf = []
 
-        # DECISION: For better visibility in "Reflect", we use the current screen state
-        # (what was typed so far) rather than the screen state at the START of typing.
-        # The 'type_screenshot' captured at start is often during an animation (e.g. Spotlight opening).
-        # We discard the stale start-of-batch screenshot in favor of a fresh one.
+        # Use the most recent screenshot from the typing buffer (result of typing)
+        # instead of taking a new one which might be "too late" (e.g. after Enter pressed but before flush processed)
+        screenshot = self.type_screenshot
         self.type_screenshot = None
-        screenshot = self._get_screenshot()
+
+        # If no screenshot captured during typing (shouldn't happen), take one now
+        if not screenshot:
+             screenshot = self._get_screenshot()
 
         self.storage.write_event({
             "action_type": "type",
@@ -146,6 +149,16 @@ class EventRecorder:
     def on_press(self, key):
         if not self.recording: return
 
+        # Track Modifiers
+        if key in [keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r]:
+            self.modifiers.add("cmd")
+        if key in [keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r]:
+            self.modifiers.add("ctrl")
+        if key in [keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r]:
+            self.modifiers.add("alt")
+        if key in [keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r]:
+            self.modifiers.add("shift")
+
         # PTT Logic
         if key == self.ptt_key:
             if not self.ptt_active:
@@ -155,10 +168,17 @@ class EventRecorder:
             return # Don't record PTT key itself
 
         # Special Keys: Flush typing, then record separately
+        # Note: on macOS laptops, F4 is often mapped to Launchpad.
+        # To record the raw F4 key, use Fn+F4 or check System Settings > Keyboard > Shortcuts.
         if key in [keyboard.Key.enter, keyboard.Key.tab, keyboard.Key.esc, keyboard.Key.f4]:
             self.flush_typing()
 
+            # For special keys, we want to capture the screen state *before* the key takes effect
+            # (e.g. before the window closes on Esc, or before the form submits on Enter).
+            # However, for Enter after typing, we just flushed the typing which used the "latest" screenshot.
+            # So this new screenshot will capture the state right at the moment of pressing Enter.
             screenshot = self._get_screenshot()
+
             key_name = str(key).replace("Key.", "").upper()
 
             self.storage.write_event({
@@ -170,22 +190,61 @@ class EventRecorder:
             })
             return
 
+        # Handle Cmd+Space (Spotlight/Search) specifically
+        if key == keyboard.Key.space:
+             # Check if Cmd is currently held down.
+             # pynput Listener doesn't give us modifier state easily in on_press event args,
+             # but we can track it manually or use a helper.
+             # However, for now, let's just treat Cmd+Space as a special "Search" event if we can detect it.
+             # Since we don't have global state for modifiers in this simplified class yet,
+             # we will implement a basic modifier tracker.
+             pass
+
+        # Normal Typing
+
         # Normal Typing
         try:
             # Try to get char (letters, numbers)
             char = key.char
         except AttributeError:
-            # Non-character keys (shift, ctrl, etc) - ignore for now in typing batch
+            # Handle Cmd+Space (Spotlight/Search)
+            if key == keyboard.Key.space and "cmd" in self.modifiers:
+                self.flush_typing()
+                screenshot = self._get_screenshot()
+                self.storage.write_event({
+                    "action_type": "key",
+                    "action_details": {"key": "CMD+SPACE"}, # Explicitly log Search
+                    "screenshot": screenshot,
+                    "voice_clip": self._consume_audio(),
+                    "timestamp": time.time()
+                })
+                return
+
+            # Non-character keys (shift, ctrl, etc)
+            # Log unknown keys to help debug F4/Search issues
+            print(f"DEBUG: Unknown/Special key pressed: {key}")
             return
 
         if char:
-            if not self.type_buf:
-                # First key of batch: Capture Screenshot!
-                self.type_screenshot = self._get_screenshot()
+            # Capture screenshot on every keypress and keep it.
+            # This ensures we have the "latest" state of the screen as typing progresses.
+            # When flush happens (e.g. on Enter), we use the LAST captured screenshot,
+            # which shows the full text typed so far.
+            self.type_screenshot = self._get_screenshot()
 
             self.type_buf.append(char)
 
     def on_release(self, key):
+        # Update Modifiers
+        if key in [keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r]:
+            self.modifiers.discard("cmd")
+        if key in [keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r]:
+            self.modifiers.discard("ctrl")
+        if key in [keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r]:
+            self.modifiers.discard("alt")
+        if key in [keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r]:
+            self.modifiers.discard("shift")
+
         if key == self.ptt_key:
             if self.ptt_active:
                 self.ptt_active = False
