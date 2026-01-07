@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import shutil
 from pathlib import Path
 
 class SessionStorage:
@@ -64,6 +65,42 @@ class SessionStorage:
         else:
             name = filename
         return self.screenshots_dir / name
+
+    def get_current_screenshot_path(self):
+        """Path for the continuously-overwritten current screenshot."""
+        return self.screenshots_dir / "current_screenshot.png"
+
+    def get_pretyping_screenshot_path(self):
+        """Path for the screenshot captured at the start of a typing burst (overwritten per burst)."""
+        return self.screenshots_dir / "pretyping_screenshot.png"
+
+    def copy_file(self, src_path, dst_path):
+        """Copy a file to a destination path (best-effort). Returns dst_path or None."""
+        if not src_path or not dst_path:
+            return None
+        # Small retry to avoid transient races around writer replace/startup.
+        last_err = None
+        for _ in range(3):
+            try:
+                shutil.copy2(str(src_path), str(dst_path))
+                return dst_path
+            except Exception as e:
+                last_err = e
+                time.sleep(0.02)
+        print(f"Copy failed ({src_path} -> {dst_path}): {last_err}")
+        return None
+
+    def freeze_screenshot(self, src_path, filename=None):
+        """
+        Freeze a source screenshot into the numbered screenshots/ directory.
+        Uses copy (does not rename) so the source can keep being overwritten.
+        Returns relative path suitable for manifest, or None if it fails.
+        """
+        if not src_path:
+            return None
+        dst_path = self.get_screenshot_path(filename=filename)
+        saved = self.copy_file(src_path, dst_path)
+        return self.get_relative_path(saved) if saved else None
 
     def get_audio_path(self, filename=None):
         """Get path for a new audio clip."""
