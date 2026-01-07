@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-mime"
+version = "0.1.0"
+description = "Record, Reflect, and Replay workflows on macOS"
+authors = [
+    {name = "Your Name", email = "you@example.com"},
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "rumps>=0.4.0",
+    "pynput>=1.7.6",
+    "mss>=9.0.1",
+    "sounddevice>=0.4.6",
+    "soundfile>=0.12.1",
+    "click>=8.0.0",
+    "pyobjc-framework-ApplicationServices>=9.0",
+    "pyobjc-framework-Cocoa>=9.0",
+    "numpy>=1.20.0",
+    "setuptools"
+]
+
+[project.scripts]
+record = "ai_mime.cli:record"
+reflect = "ai_mime.cli:reflect"
+parametrizable_replay = "ai_mime.cli:replay"
