@@ -3,6 +3,7 @@ import multiprocessing
 from .storage import SessionStorage
 from .capture import EventRecorder
 from ai_mime.reflect.workflow import reflect_session
+from ai_mime.reflect.workflow import compile_schema_for_workflow_dir
 
 def run_recorder_process(name, description, stop_event):
     """
@@ -40,8 +41,11 @@ def run_recorder_process(name, description, stop_event):
         if session_dir:
             recordings_dir = session_dir.parent
             workflows_root = recordings_dir.parent / "workflows"
-            reflect_session(session_dir, workflows_root)
+            out_dir = reflect_session(session_dir, workflows_root)
             print(f"Reflect finished: {workflows_root / session_dir.name}")
+
+            compile_schema_for_workflow_dir(out_dir, model="gpt-5-mini")
+            print(f"Schema compiled: {out_dir / 'schema.json'}")
     except Exception as e:
         print(f"Reflect failed: {e}")
     print("Recorder process finished.")

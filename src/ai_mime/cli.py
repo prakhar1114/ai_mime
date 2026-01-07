@@ -1,14 +1,20 @@
 import click
+from pathlib import Path
+import logging
+
+from ai_mime.permissions import check_permissions
+from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
+from ai_mime.record.app import run_app
+
+
 
 @click.command()
 def record():
     """Start the recording menubar app."""
     # We will import the app here to avoid importing dependencies (like rumps)
     # at the top level, which might fail if permissions aren't checked yet.
-    from ai_mime.permissions import check_permissions
 
     if check_permissions():
-        from ai_mime.record.app import run_app
         run_app()
     else:
         click.echo("Permissions missing. Please enable them and restart.")
@@ -27,12 +33,17 @@ def record():
     show_default=True,
     help="Base recordings directory (used when --session is a folder name or omitted).",
 )
-def reflect(session, recordings_dir):
+@click.option(
+    "--model",
+    "model",
+    default="gpt-5-mini",
+    show_default=True,
+    help="OpenAI model name to use for reflect compilation.",
+)
+
+def reflect(session, recordings_dir, model):
     """Convert recordings into useful assets."""
-    from pathlib import Path
-
-    from ai_mime.reflect.workflow import reflect_session
-
+    logging.basicConfig(level=logging.INFO)
     recordings_dir_p = Path(recordings_dir)
     if session:
         session_path = Path(session)
@@ -53,6 +64,12 @@ def reflect(session, recordings_dir):
     workflows_root = recordings_dir_p.parent / "workflows"
     out_dir = reflect_session(session_path, workflows_root)
     click.echo(f"Workflow created: {out_dir}")
+
+    try:
+        compile_schema_for_workflow_dir(out_dir, model=model)
+        click.echo(f"Schema compiled: {out_dir / 'schema.json'}")
+    except Exception as e:
+        raise click.ClickException(f"Schema compilation failed: {e}")
 
 @click.command()
 def replay():

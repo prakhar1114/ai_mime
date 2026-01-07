@@ -9,6 +9,8 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
+from ai_mime.reflect.schema_compiler import compile_workflow_schema
+
 
 @dataclass(frozen=True)
 class ClickAnnotationStyle:
@@ -182,9 +184,11 @@ def reflect_session(
     workflows_root_p.mkdir(parents=True, exist_ok=True)
     workflow_dir = workflows_root_p / session_dir_p.name
 
-    # Overwrite any previous reflect output for this session to avoid stale artifacts.
+    # Refresh reflect outputs for this session without deleting compiled artifacts
+    # like step_cards.json / schema*.json that enable resumable compilation.
     if workflow_dir.exists():
-        shutil.rmtree(workflow_dir)
+        return workflow_dir
+
     workflow_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy metadata.json verbatim
@@ -211,3 +215,13 @@ def reflect_session(
     # Write updated manifest into workflow
     _write_jsonl(workflow_dir / "manifest.jsonl", events)
     return workflow_dir
+
+
+def compile_schema_for_workflow_dir(
+    workflow_dir: str | os.PathLike[str],
+    model: str = "gpt-5-mini",
+) -> dict[str, Any]:
+    """
+    Compile a parametrizable, coordinate-free schema into <workflow_dir>/schema.json.
+    """
+    return compile_workflow_schema(workflow_dir=workflow_dir, model=model)
