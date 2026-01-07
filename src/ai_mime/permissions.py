@@ -58,6 +58,3 @@ def check_permissions():
     if not check_screen_recording():
         return False
     return True
-
-
-

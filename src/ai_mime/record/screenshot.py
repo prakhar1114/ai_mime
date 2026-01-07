@@ -22,6 +22,3 @@ class ScreenshotRecorder:
         except Exception as e:
             print(f"Screenshot failed: {e}")
             return None
-
-
-

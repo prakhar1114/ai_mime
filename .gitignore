@@ -7,5 +7,6 @@ __pycache__/
 .env
 
 recordings/
+workflows/
 .venv/
 *.egg-info

@@ -15,6 +15,7 @@ dependencies = [
     "rumps>=0.4.0",
     "pynput>=1.7.6",
     "mss>=9.0.1",
+    "Pillow>=10.0.0",
     "sounddevice>=0.4.6",
     "soundfile>=0.12.1",
     "click>=8.0.0",
