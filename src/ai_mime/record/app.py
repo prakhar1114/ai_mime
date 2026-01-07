@@ -3,6 +3,10 @@ import multiprocessing
 from .storage import SessionStorage
 # We don't import EventRecorder here anymore to avoid loading pynput in the UI process
 from .recorder_process import run_recorder_process
+from pathlib import Path
+import logging
+
+from ai_mime.replay import list_replayable_workflows, replay_workflow_dummy
 
 class RecorderApp(rumps.App):
     def __init__(self):
@@ -17,10 +21,42 @@ class RecorderApp(rumps.App):
 
         # Menu Items
         self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
+        self.replay_menu = rumps.MenuItem("Replay")
+        self._populate_replay_menu()
         self.menu = [
             self.start_button,
             None, # Separator
+            self.replay_menu,
         ]
+
+    def _populate_replay_menu(self):
+        # Clear existing submenu items
+        try:
+            self.replay_menu.clear()
+        except Exception:
+            # Best-effort: if clear isn't available for some reason, recreate the submenu.
+            self.replay_menu = rumps.MenuItem("Replay")
+
+        workflows_root = Path(self.storage.base_dir).parent / "workflows"
+        workflows = list_replayable_workflows(workflows_root)
+
+        if not workflows:
+            empty = rumps.MenuItem("No workflows found", callback=None)
+            empty.set_callback(None)
+            self.replay_menu["No workflows found"] = empty
+            return
+
+        for wf in workflows:
+            def _cb(sender, wf=wf):
+                logging.basicConfig(level=logging.INFO)
+                replay_workflow_dummy(wf)
+                rumps.notification(
+                    title="Replay triggered (dummy)",
+                    subtitle=wf.display_name,
+                    message=str(wf.workflow_dir),
+                )
+
+            self.replay_menu[wf.display_name] = rumps.MenuItem(wf.display_name, callback=_cb)
 
     def toggle_recording(self, sender):
         if not self.is_recording:

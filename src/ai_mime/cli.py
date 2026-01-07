@@ -5,6 +5,7 @@ import logging
 from ai_mime.permissions import check_permissions
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
 from ai_mime.record.app import run_app
+from ai_mime.replay import list_replayable_workflows, resolve_workflow, replay_workflow_dummy
 
 
 
@@ -72,6 +73,34 @@ def reflect(session, recordings_dir, model):
         raise click.ClickException(f"Schema compilation failed: {e}")
 
 @click.command()
-def replay():
-    """Replay a recorded workflow."""
-    click.echo("Replay: Not implemented yet.")
+@click.option(
+    "--workflow",
+    "workflow",
+    default=None,
+    help="Workflow folder name under workflows/ or a full path to a workflow directory.",
+)
+@click.option(
+    "--workflows-dir",
+    "workflows_dir",
+    default="workflows",
+    show_default=True,
+    help="Base workflows directory.",
+)
+def replay(workflow, workflows_dir):
+    """Replay a recorded workflow (dummy for now)."""
+    logging.basicConfig(level=logging.INFO)
+    workflows_root = Path(workflows_dir)
+
+    available = list_replayable_workflows(workflows_root)
+    if not available:
+        raise click.ClickException(f"No workflows with schema.json found under: {workflows_root}")
+
+    if workflow:
+        wf = resolve_workflow(workflows_root, workflow)
+    else:
+        # Default: "latest" by folder name (timestamps sort lexicographically)
+        wf = max(available, key=lambda x: x.workflow_dir.name)
+        click.echo(f"No --workflow provided; defaulting to: {wf.display_name} ({wf.workflow_dir.name})")
+
+    replay_workflow_dummy(wf)
+    click.echo(f"Replay triggered (dummy): {wf.display_name}")

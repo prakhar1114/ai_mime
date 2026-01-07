@@ -32,3 +32,4 @@ dependencies = [
 record = "ai_mime.cli:record"
 reflect = "ai_mime.cli:reflect"
 parametrizable_replay = "ai_mime.cli:replay"
+replay = "ai_mime.cli:replay"
