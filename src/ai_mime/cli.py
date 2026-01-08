@@ -1,11 +1,17 @@
 import click
 from pathlib import Path
 import logging
+import os
+import json
 
 from ai_mime.permissions import check_permissions
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
 from ai_mime.record.app import run_app
-from ai_mime.replay import list_replayable_workflows, resolve_workflow, replay_workflow_dummy
+from ai_mime.replay import list_replayable_workflows, resolve_workflow
+from ai_mime.replay_engine import resolve_params, ReplayConfig, run_plan
+from ai_mime.qwen_grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
+from ai_mime.os_executor import exec_computer_use_action
+from ai_mime.record.screenshot import ScreenshotRecorder
 
 
 
@@ -86,8 +92,33 @@ def reflect(session, recordings_dir, model):
     show_default=True,
     help="Base workflows directory.",
 )
-def replay(workflow, workflows_dir):
-    """Replay a recorded workflow (dummy for now)."""
+@click.option(
+    "--model",
+    "model",
+    default="qwen3-vl-plus-2025-12-19",
+    show_default=True,
+    help="DashScope model name to use for replay (computer use).",
+)
+@click.option(
+    "--base-url",
+    "base_url",
+    default="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    show_default=True,
+    help="OpenAI-compatible base URL for DashScope.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Print planned actions but do not execute mouse/keyboard.",
+)
+@click.option(
+    "--param",
+    "params",
+    multiple=True,
+    help="Override a task param. Repeatable: --param key=value",
+)
+def replay(workflow, workflows_dir, model, base_url, dry_run, params):
+    """Replay a recorded workflow by executing schema.json.plan.steps using Qwen computer_use tool calls."""
     logging.basicConfig(level=logging.INFO)
     workflows_root = Path(workflows_dir)
 
@@ -102,5 +133,41 @@ def replay(workflow, workflows_dir):
         wf = max(available, key=lambda x: x.workflow_dir.name)
         click.echo(f"No --workflow provided; defaulting to: {wf.display_name} ({wf.workflow_dir.name})")
 
-    replay_workflow_dummy(wf)
-    click.echo(f"Replay triggered (dummy): {wf.display_name}")
+    overrides: dict[str, str] = {}
+    for p in params:
+        if "=" not in p:
+            raise click.ClickException(f"Invalid --param '{p}'. Expected key=value")
+        k, v = p.split("=", 1)
+        overrides[k.strip()] = v
+
+    schema = json.loads((wf.workflow_dir / "schema.json").read_text(encoding="utf-8"))
+    resolved = resolve_params(schema, overrides=overrides)
+
+    cfg = ReplayConfig(
+        model=model,
+        base_url=base_url,
+        api_key=os.getenv("DASHSCOPE_API_KEY"),
+        dry_run=dry_run,
+    )
+
+    screenshotter = ScreenshotRecorder()
+
+    def _capture(dst: Path) -> Path:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        saved = screenshotter.capture(dst)
+        if not saved:
+            raise click.ClickException("Screenshot capture failed (check Screen Recording permission).")
+        return Path(saved)
+
+    run_plan(
+        wf.workflow_dir,
+        params=resolved,
+        cfg=cfg,
+        predict_tool_call=predict_computer_use_tool_call,
+        tool_call_to_pixel_action=tool_call_to_pixel_action,
+        capture_screenshot=_capture,
+        exec_action=exec_computer_use_action,
+        log=click.echo,
+    )
+
+    click.echo(f"Replay completed: {wf.display_name}")

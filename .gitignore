@@ -10,3 +10,6 @@ recordings/
 workflows/
 .venv/
 *.egg-info
+.vscode/
+
+.DS_Store

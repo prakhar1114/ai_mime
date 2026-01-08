@@ -6,8 +6,14 @@ from .recorder_process import run_recorder_process
 from pathlib import Path
 import logging
 
-from ai_mime.replay import list_replayable_workflows, replay_workflow_dummy
+from ai_mime.replay import list_replayable_workflows
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
+from ai_mime.replay_engine import ReplayConfig, resolve_params, run_plan
+from ai_mime.qwen_grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
+from ai_mime.os_executor import exec_computer_use_action
+from ai_mime.record.screenshot import ScreenshotRecorder
+import os
+import json
 
 
 def _run_reflect_and_compile_schema(session_dir: str, model: str = "gpt-5-mini") -> None:
@@ -25,6 +31,58 @@ def _run_reflect_and_compile_schema(session_dir: str, model: str = "gpt-5-mini")
     compile_schema_for_workflow_dir(out_dir, model=model)
     print(f"Schema compiled: {out_dir / 'schema.json'}")
 
+def _run_replay_workflow_schema(workflow_dir: str) -> None:
+    """
+    Background task (runs in its own process): replay schema.json plan using Qwen tool calls.
+    """
+    try:
+        wf_dir = Path(workflow_dir)
+        schema = json.loads((wf_dir / "schema.json").read_text(encoding="utf-8"))
+        params = resolve_params(schema, overrides={})
+
+        cfg = ReplayConfig(
+            model="qwen3-vl-plus-2025-12-19",
+            base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            api_key=os.getenv("DASHSCOPE_API_KEY"),
+            dry_run=False,
+        )
+        screenshotter = ScreenshotRecorder()
+
+        def _capture(dst: Path) -> Path:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            saved = screenshotter.capture(dst)
+            if not saved:
+                raise RuntimeError("Screenshot capture failed (check Screen Recording permission).")
+            return Path(saved)
+
+        run_plan(
+            wf_dir,
+            params=params,
+            cfg=cfg,
+            predict_tool_call=predict_computer_use_tool_call,
+            tool_call_to_pixel_action=tool_call_to_pixel_action,
+            capture_screenshot=_capture,
+            exec_action=exec_computer_use_action,
+            log=print,
+        )
+
+        # Final notification + exit.
+        rumps.notification(
+            title="Task Complete",
+            subtitle=wf_dir.name,
+            message="Replay finished",
+        )
+        print("Task Complete")
+    except Exception as e:
+        try:
+            rumps.notification(
+                title="Replay failed",
+                subtitle=str(Path(workflow_dir).name),
+                message=str(e),
+            )
+        finally:
+            print(f"Replay failed: {e}")
+
 class RecorderApp(rumps.App):
     def __init__(self):
         super(RecorderApp, self).__init__("AI Mime", icon=None)
@@ -38,6 +96,7 @@ class RecorderApp(rumps.App):
         self.session_dir_queue = None
         self.session_dir = None
         self.reflect_process = None
+        self.replay_process = None
 
         # Menu Items
         self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
@@ -69,12 +128,20 @@ class RecorderApp(rumps.App):
         for wf in workflows:
             def _cb(sender, wf=wf):
                 logging.basicConfig(level=logging.INFO)
-                replay_workflow_dummy(wf)
-                rumps.notification(
-                    title="Replay triggered (dummy)",
-                    subtitle=wf.display_name,
-                    message=str(wf.workflow_dir),
-                )
+                # Start replay in background so UI stays responsive.
+                try:
+                    self.replay_process = multiprocessing.Process(
+                        target=_run_replay_workflow_schema,
+                        args=(str(wf.workflow_dir),),
+                    )
+                    self.replay_process.start()
+                    rumps.notification(
+                        title="Replay started",
+                        subtitle=wf.display_name,
+                        message="Replaying schema plan in background",
+                    )
+                except Exception as e:
+                    rumps.alert(f"Replay failed to start: {e}")
 
             self.replay_menu[wf.display_name] = rumps.MenuItem(wf.display_name, callback=_cb)
 
