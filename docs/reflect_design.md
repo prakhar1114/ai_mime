@@ -49,8 +49,13 @@ This means we infer post-action visual change from the next recorded pre-action 
 - Screenshots: PRE + POST (2 images; derived as above)
 
 **Output**: `step_cards.json` (ordered list of StepCards)
-- Each StepCard describes intent, target selection (no coordinates), optional templates, and post-change hints.
-- For `TYPE` / `KEYPRESS`, an `action_value` is included (typed template or key name).
+- Each StepCard describes:
+  - `expected_current_state`: a generalized description of the current UI state where the action should be performed (app/window/view/focus), not exact on-screen text.
+  - `intent`: 1 sentence describing why the user performs the step.
+  - `target`: coordinate-free selector (`primary`, optional `fallback`).
+  - `action_type` and (when applicable) `action_value` for `TYPE` / `KEYPRESS`.
+  - `post_action`: 1–2 lines describing what changed after the action (generic outcome, not the specific parameter/value used).
+- Pass A **does not parameterize** values. Typed values are kept literal in `action_value`.
 
 **Reliability + performance**
 - Runs **up to 5 concurrent** OpenAI requests at a time.
@@ -69,14 +74,23 @@ This means we infer post-action visual change from the next recorded pre-action 
 
 **Input**
 - Task name + user description
-- StepCards JSON
+- Step summaries derived from StepCards (ordered JSON array of `{i, intent, action_type, action_value}`)
 
 **Output**
-- Pass B produces task-level fields (e.g., detailed description, params, success criteria).
+- Pass B produces task-level fields:
+  - `detailed_task_description` (string)
+  - `task_params` (parameter specs with clear descriptions + examples)
+  - `subtasks` (list of higher-level units that group multiple steps; each subtask includes `{param}` placeholders where relevant and an explicit “Expected outcome: …”)
+  - `success_criteria` (single generalized string)
+- Pass B also outputs per-step updates (internal to compilation) that:
+  - parameterize step `action_value` using single-brace templates like `{song_name}` where appropriate
+  - assign each step to a high-level `subtask` (typically grouping ~4–6 steps in one window/app context)
 - Final `schema.json` is written as:
   - `task_name`, `task_description_user`
   - Pass B output fields
-  - `plan.steps`: always set to the Pass A StepCards (authoritative executable plan)
+  - `plan.steps`: based on Pass A StepCards (authoritative executable plan), augmented with:
+    - parameterized `action_value` (when applicable)
+    - `subtask` for each step
 
 **Checkpointing**
 - Writes `schema.draft.json` after Pass B succeeds.

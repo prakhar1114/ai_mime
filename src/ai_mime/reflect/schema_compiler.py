@@ -56,7 +56,8 @@ You will be given PRE and POST screenshots for this step. The FIRST image is PRE
 Rules:
 - Do NOT include coordinates.
 - target.primary and fallback must reference visible text/icons and relative location (e.g., near top, left sidebar, inside popup).
-- expected_current_state: describe the current screen/state where the action should be performed (used to verify we're on the right screen).
+- expected_current_state: describe the current screen/state where the action should be performed in GENERAL terms.
+  It does not need to exactly match on-screen text. Focus on what has happened so far and what is true now (app/window, view/panel, focus) and general UI elements instead of the results.
 - intent: 1 sentence.
 - post_action: 1-2 short lines describing what changed from PRE to POST as a result of the action.
   It must be GENERIC and describe the UI outcome, not the specific parameter/value used (do not repeat typed text, emails, names, etc.).
@@ -73,15 +74,28 @@ a compact reusable workflow schema consisting of detailed task description, para
 PASS_B_USER_TEMPLATE = """Task name: {task_name}
 User task description: {task_description_user}
 
-Step cards (ordered JSON array):
-{step_cards_json}
+Step summaries (ordered JSON array):
+{step_summaries_json}
 
 Rules:
-- detailed_task_description: 3-6 sentences describing the overall workflow.
-- task_params: deduplicate templates like "{{email}}" across steps. Return a JSON array of param objects:
-  {{ "name": "<param_name>", "type": "<string|number|date>", "description": "<what this param is>", "example": "...", "sensitive": true|false, "optional": true|false }}
-  If optional is false, the workflow should be runnable using the example value when the caller doesn't supply a value.
-- success_criteria: 1-3 simple checks, primarily "text_present" with key texts likely visible on the final screen.
+- detailed_task_description: 3-6 sentences describing the overall workflow (string).
+- Identify reusable workflow parameters from step action_value strings, and parameterize action_value using single-brace templates like "{{song_name}}".
+  Do NOT parameterize which application/site to use (no params like "{{app}}", "{{browser}}", "{{site}}").
+  Only parameterize user-provided content like song names, locations, search terms, etc.
+- task_params: Return a JSON array of param objects:
+  {{ "name": "<param_name>", "type": "<string|number|date>", "description": "<clear what this param is>", "example": "...", "sensitive": true|false, "optional": true|false }}
+  Descriptions must be concrete and unambiguous (mention where it is used in the workflow). If optional is false, the workflow should be runnable using the example value.
+- subtasks: Return a list of detailed subtasks. Each subtask string MUST:
+  - include any needed "{{param}}" placeholders
+  - include an explicit expected outcome ("Expected outcome: ...")
+  - represent a higher-level target that groups multiple steps together (rule of thumb: ~4-6 steps)
+  - preferably stay within a single window/app context (e.g., one subtask for Spotlight→open Spotify; another for Spotify→search and play)
+  - avoid being a micro-step (do not create one subtask per step)
+- plan_step_updates: Return updates for EVERY step index, with:
+  {{ "i": <int>, "action_value": <string|null>, "subtask": <string> }}
+  - action_value must be the (possibly parameterized) value for that step (null for non-TYPE/non-KEYPRESS steps).
+  - subtask must be EXACTLY one of the strings from subtasks, and every step must have a subtask assignment.
+- success_criteria: a SINGLE generalized string describing how to tell the task succeeded (avoid overly specific UI texts).
 """
 
 
@@ -97,7 +111,10 @@ class StepCardModel(BaseModel):
 
     i: int = Field(description="0-based step index within the workflow.")
     expected_current_state: str = Field(
-        description="Description of the current screen/state where this action should be performed."
+        description=(
+            "General description of the current screen/state where this action should be performed. It does not need to "
+            "quote exact UI text; focus on app/window, view/panel, and focus/selection."
+        )
     )
     intent: str = Field(description="1 sentence describing the user intent for this step.")
     action_type: PassAActionType = Field(description="Action type enum for the vision agent.")
@@ -140,11 +157,32 @@ class PassBParamSpec(BaseModel):
 #     steps: list[dict[str, Any]] = Field(description="Ordered array of step objects (StepCards).")
 
 
+class PassBStepUpdate(BaseModel):
+    """Per-step plan augmentation produced by Pass B."""
+
+    i: int = Field(description="0-based step index within the workflow plan.")
+    action_value: str | None = Field(
+        description="Possibly parameterized action value for this step. Null for non-TYPE/non-KEYPRESS steps."
+    )
+    subtask: str = Field(description="The exact subtask string from PassBOutput.subtasks that this step belongs to.")
+
+
 class PassBOutput(BaseModel):
-    """Task-level compiled schema produced from StepCards."""
+    """Task-level compiled schema produced from Pass A steps (summarized) + Pass B augmentation."""
+
     detailed_task_description: str = Field(description="3-6 sentence description of the overall workflow.")
-    task_params: list[PassBParamSpec] = Field(description="Deduplicated parameters referenced by step templates.")
-    success_criteria: list[str] = Field(description="1-3 simple checks to verify success.")
+    subtasks: list[str] = Field(
+        min_length=1,
+        description=(
+            "High-level subtasks as detailed strings. Each must include parameter placeholders like '{param}' where "
+            "relevant and include an explicit expected outcome."
+        ),
+    )
+    task_params: list[PassBParamSpec] = Field(description="Deduplicated parameters referenced by templates in steps/subtasks.")
+    success_criteria: str = Field(description="A single generalized string describing how to verify success.")
+    plan_step_updates: list[PassBStepUpdate] = Field(
+        description="Per-step updates including parameterized action_value and subtask assignment for every step index."
+    )
 
 
 def _output_text_preview(resp: Any, limit: int = 800) -> str:
@@ -522,7 +560,7 @@ def run_pass_b_task_compiler(
     workflow_dir: str | os.PathLike[str],
     step_cards: list[dict[str, Any]],
     model: str = "gpt-5-mini",
-    max_output_tokens: int | None = 1200,
+    max_output_tokens: int | None = 5000,
 ) -> dict[str, Any]:
     """
     Pass B: compile task-level schema from step cards.
@@ -532,10 +570,23 @@ def run_pass_b_task_compiler(
     client = OpenAI()
 
     logger.info("Pass B: compiling task schema (model=%s)", model)
+    # Pass B operates on summarized steps (intent/action_type/action_value only).
+    step_summaries: list[dict[str, Any]] = []
+    for s in step_cards:
+        if not isinstance(s, dict):
+            continue
+        step_summaries.append(
+            {
+                "i": s.get("i"),
+                "intent": s.get("intent"),
+                "action_type": s.get("action_type"),
+                "action_value": s.get("action_value"),
+            }
+        )
     user = PASS_B_USER_TEMPLATE.format(
         task_name=task_name,
         task_description_user=task_description_user,
-        step_cards_json=json.dumps(step_cards, ensure_ascii=False),
+        step_summaries_json=json.dumps(step_summaries, ensure_ascii=False),
     )
     input_payload: Any = [
         {"role": "system", "content": PASS_B_SYSTEM_PROMPT},
@@ -643,6 +694,53 @@ def compile_workflow_schema(
         }
 
         # Do not write draft until we attach the plan below (so reruns can skip Pass B safely).
+
+    # Merge Pass B per-step updates back into the full Pass A step cards.
+    updates_any = final_schema.get("plan_step_updates")
+    subtasks_any = final_schema.get("subtasks")
+    if not isinstance(updates_any, list):
+        raise RuntimeError("Pass B output missing plan_step_updates (expected list).")
+    if not isinstance(subtasks_any, list) or not all(isinstance(s, str) and s for s in subtasks_any):
+        raise RuntimeError("Pass B output missing subtasks (expected list[str]).")
+
+    updates_by_i: dict[int, dict[str, Any]] = {}
+    for u in updates_any:
+        if not isinstance(u, dict):
+            continue
+        ii = u.get("i")
+        if isinstance(ii, int):
+            updates_by_i[ii] = u
+        elif isinstance(ii, str) and ii.isdigit():
+            updates_by_i[int(ii)] = u
+
+    missing_updates = [i for i in range(len(step_cards)) if i not in updates_by_i]
+    if missing_updates:
+        raise RuntimeError(f"Pass B output incomplete: missing plan_step_updates for step indices: {missing_updates}")
+
+    subtask_set = set(subtasks_any)
+    for i, s in enumerate(step_cards):
+        u = updates_by_i[i]
+        subtask = u.get("subtask")
+        if not isinstance(subtask, str) or subtask not in subtask_set:
+            raise RuntimeError(f"Pass B step {i}: subtask must be exactly one of subtasks[]")
+        s["subtask"] = subtask
+
+        # Only overwrite action_value if Pass B provides it (including explicit null).
+        if "action_value" in u:
+            s["action_value"] = u.get("action_value")
+
+        # Safety: enforce action_value nullability by action_type after merge.
+        at = s.get("action_type")
+        av = s.get("action_value")
+        if at in {"TYPE", "KEYPRESS"}:
+            if not isinstance(av, str) or not av.strip():
+                raise RuntimeError(f"Step {i}: action_type={at} requires non-empty action_value after Pass B merge.")
+        else:
+            if av is not None:
+                raise RuntimeError(f"Step {i}: action_type={at} requires action_value=null after Pass B merge.")
+
+    # Remove plan_step_updates from top-level schema (we've merged it into plan.steps).
+    final_schema.pop("plan_step_updates", None)
 
     # Always attach plan.steps from Pass A in the final schema (and draft).
     final_schema["plan"] = {"steps": step_cards}
