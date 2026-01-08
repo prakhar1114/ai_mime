@@ -25,7 +25,8 @@ dependencies = [
     "openai>=1.0.0",
     "pydantic>=2.0.0",
     "tqdm>=4.0.0",
-    "setuptools"
+    "setuptools",
+    "lmnr[all]"
 ]
 
 [project.scripts]
