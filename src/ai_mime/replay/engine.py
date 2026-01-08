@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from lmnr import observe
 
 
 class ReplayError(RuntimeError):
@@ -96,6 +97,7 @@ def iter_plan_steps(schema: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+@observe(name="replay_task")
 def run_plan(
     workflow_dir: str | os.PathLike[str],
     *,

@@ -4,6 +4,7 @@ from pathlib import Path
 import logging
 import os
 import json
+from lmnr import observe
 
 from ai_mime.record.storage import SessionStorage
 # We don't import EventRecorder here anymore to avoid loading pynput in the UI process
@@ -17,6 +18,7 @@ from ai_mime.replay.os_executor import exec_computer_use_action
 from ai_mime.screenshot import ScreenshotRecorder
 
 
+@observe(name="reflect_and_compile_schema")
 def _run_reflect_and_compile_schema(session_dir: str, model: str = "gpt-5-mini") -> None:
     """
     Background task (runs in its own process):

@@ -1,7 +1,7 @@
 import click
 from pathlib import Path
 import logging
-
+from lmnr import observe
 from ai_mime.permissions import check_permissions
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
 from ai_mime.app import run_app
@@ -41,6 +41,7 @@ def start_app():
     help="OpenAI model name to use for reflect compilation.",
 )
 
+@observe(name="reflect_session")
 def reflect(session, recordings_dir, model):
     """Convert recordings into useful assets."""
     logging.basicConfig(level=logging.INFO)
