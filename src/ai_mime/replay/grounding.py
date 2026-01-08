@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import re
 import textwrap
 from pathlib import Path
@@ -9,6 +10,8 @@ from openai import OpenAI
 from PIL import Image
 
 from .engine import ReplayConfig, ReplayError
+
+logger = logging.getLogger(__name__)
 
 
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
@@ -222,11 +225,20 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
         },
     ]
 
+    max_attempts = 5
     last_err: Exception | None = None
     last_text: str = ""
 
-    for attempt in range(3):
+    for attempt in range(max_attempts):
         if attempt > 0:
+            # Make retries visible in logs/stdout (so failures don't look like hangs).
+            msg = f"Grounding retry {attempt}/{max_attempts - 1} due to: {last_err}"
+            logger.warning(msg)
+            try:
+                print(msg)
+            except Exception:
+                pass
+
             # Repair prompt to force the missing required fields.
             messages = [
                 *messages,
@@ -243,6 +255,13 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
                                 "- If name=computer_use: arguments MUST include action, observation (non-empty), task_memory (string).\n"
                                 "- If name=done: arguments MUST include result (non-empty), task_memory (string).\n"
                                 "Do not omit required fields."
+                                "\n\nExamples:\n"
+                                '<tool_call>\n'
+                                '{"name":"computer_use","arguments":{"action":"left_click","coordinate":[500,500],"observation":"Clicked the Search box; it is visible and clickable.","task_memory":"..."}}\n'
+                                "</tool_call>\n"
+                                '<tool_call>\n'
+                                '{"name":"done","arguments":{"result":"Spotify is open in the foreground.","task_memory":"Spotify is open."}}\n'
+                                "</tool_call>\n"
                             ),
                         }
                     ],
@@ -266,12 +285,34 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
 
             name = tool_call.get("name")
             if name == "computer_use":
-                if "action" not in args:
+                action = args.get("action")
+                if not isinstance(action, str) or not action:
                     raise ReplayError(f"computer_use missing arguments.action: {tool_call}")
                 if not isinstance(args.get("observation"), str) or not args.get("observation", "").strip():
                     raise ReplayError(f"computer_use missing required arguments.observation: {tool_call}")
                 if not isinstance(args.get("task_memory"), str):
                     raise ReplayError(f"computer_use missing required arguments.task_memory: {tool_call}")
+
+                # Action-specific required fields (so we retry here instead of failing later in os_executor).
+                if action == "type":
+                    if not isinstance(args.get("text"), str) or not args.get("text", "").strip():
+                        raise ReplayError(f"computer_use action=type requires non-empty arguments.text: {tool_call}")
+                elif action == "key":
+                    keys = args.get("keys")
+                    if not isinstance(keys, list) or not keys:
+                        raise ReplayError(f"computer_use action=key requires arguments.keys[]: {tool_call}")
+                elif action in {"mouse_move", "left_click", "right_click", "middle_click", "double_click", "triple_click"}:
+                    coord = args.get("coordinate")
+                    if not isinstance(coord, list) or len(coord) != 2:
+                        raise ReplayError(
+                            f"computer_use action={action} requires arguments.coordinate [x,y] in 0..1000: {tool_call}"
+                        )
+                elif action in {"scroll", "hscroll"}:
+                    if args.get("pixels") is None:
+                        raise ReplayError(f"computer_use action={action} requires arguments.pixels: {tool_call}")
+                elif action == "wait":
+                    if args.get("time") is None:
+                        raise ReplayError(f"computer_use action=wait requires arguments.time: {tool_call}")
             else:
                 if not isinstance(args.get("result"), str) or not args.get("result", "").strip():
                     raise ReplayError(f"done missing required arguments.result: {tool_call}")
@@ -282,7 +323,9 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
         except Exception as e:
             last_err = e
 
-    raise ReplayError(f"Failed to get a valid tool call after retries: {last_err}. Last output: {last_text}") from last_err
+    raise ReplayError(
+        f"Failed to get a valid tool call after retries ({max_attempts} attempts): {last_err}. Last output: {last_text}"
+    ) from last_err
 
 
 def tool_call_to_pixel_action(image_path: Path, tool_call: dict[str, Any]) -> dict[str, Any]:

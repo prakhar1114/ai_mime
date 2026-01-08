@@ -22,7 +22,6 @@ class ReplayConfig:
     delay_s: float = 0.35
     click_delay_s: float = 0.2
     after_step_delay_s: float = 0.4
-    dry_run: bool = False
     ground_clicks: bool = True
     predict_all_actions: bool = True
 
@@ -218,7 +217,8 @@ def run_plan(
             target_primary = target.get("primary") if isinstance(target, dict) else None
             out[st].append(
                 {
-                    "i": s.get("i"),
+                    # Local 0-based index within this subtask's reference sequence.
+                    "i": len(out[st]),
                     "intent": s.get("intent"),
                     "action_type": s.get("action_type"),
                     "action_value": s.get("action_value"),
@@ -253,11 +253,12 @@ def run_plan(
                 f"Current subtask and expected outcome: {subtask_text}\n"
                 f"Params: {params}\n"
                 f"Task memory: {task_memory}\n"
-                f"History (this subtask): {history[-8:]}\n"
+                f"History (this subtask): {history[-5:]}\n\n"
                 f"Reference steps (examples) from previous runs: {reference_steps}\n\n"
                 "Decide ONE next action to progress the current subtask, or call done if the expected outcome is met.\n"
                 "If you call computer_use, include a current-step specific observation and an updated task_memory.\n"
                 "If you call done, include result (what was achieved / info to pass) and updated task_memory.\n"
+                "If you seem stuck (observations repeating / screen not changing), try an alternate strategy (e.g., back, close popups, refocus, scroll, open the right app/tab, or retry the entry path).\n"
                 "Return exactly one tool call."
             )
 
@@ -300,10 +301,24 @@ def run_plan(
 
             log(f"  action: {pixel_action.get('action')} | obs: {observation}")
             _sleep(cfg.click_delay_s)
-            if cfg.dry_run:
-                log("  DRYRUN: not executing")
-            else:
+            try:
                 exec_action(pixel_action, cfg)
+            except ReplayError as e:
+                # Do not abort the whole replay on a single execution failure.
+                # Record the failure and continue to the next iteration (model can recover).
+                msg = str(e)
+                _append_event(
+                    {
+                        "type": "exec_error",
+                        "subtask_idx": subtask_idx,
+                        "iter": it,
+                        "error": msg,
+                        "pixel_action": pixel_action,
+                        "task_memory": task_memory,
+                    }
+                )
+                log(f"  exec_error: {msg}")
+                continue
             _sleep(cfg.after_step_delay_s)
         else:
             raise ReplayError(f"Subtask {subtask_idx} exceeded max iterations ({max_iters_per_subtask})")

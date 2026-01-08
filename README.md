@@ -5,7 +5,12 @@
 ## Installation
 
 1.  Clone the repository.
-2.  Install dependencies:
+2.  Create and activate a virtual environment:
+    ```bash
+    python3 -m venv .venv
+    source .venv/bin/activate
+    ```
+3.  Install dependencies:
     ```bash
     pip install -e .
     ```
@@ -34,9 +39,10 @@ DASHSCOPE_API_KEY=
 LMNR_PROJECT_API_KEY=
 ```
 
+and add it in the repo root
 - `OPENAI_API_KEY`: used for schema compilation (reflect).
-- `DASHSCOPE_API_KEY`: used for replay action grounding via DashScope’s OpenAI-compatible endpoint.
-- `LMNR_PROJECT_API_KEY`: used for Laminar tracing/telemetry (if enabled in your environment).
+- `DASHSCOPE_API_KEY`: used for replay action grounding via DashScope’s OpenAI-compatible endpoint. Get it from here [alibaba cloud](https://modelstudio.console.alibabacloud.com/)
+- `LMNR_PROJECT_API_KEY`: used for Laminar tracing/telemetry (if enabled in your environment) (Optional) [Link](https://laminar.sh/).
 
 ## Usage
 
@@ -45,6 +51,7 @@ LMNR_PROJECT_API_KEY=
 Start the menubar app:
 
 ```bash
+source .venv/bin/activate
 start_app
 ```
 

@@ -53,7 +53,6 @@ def _run_replay_workflow_schema(workflow_dir: str, overrides: dict[str, str] | N
             model="qwen3-vl-plus-2025-12-19",
             base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
             api_key=os.getenv("DASHSCOPE_API_KEY"),
-            dry_run=False,
         )
         screenshotter = ScreenshotRecorder()
 
