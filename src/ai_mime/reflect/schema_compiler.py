@@ -8,7 +8,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Optional
 
 from openai import OpenAI  # type: ignore[import-not-found]
 from pydantic import BaseModel, Field  # type: ignore[import-not-found]
@@ -56,13 +56,14 @@ You will be given PRE and POST screenshots for this step. The FIRST image is PRE
 Rules:
 - Do NOT include coordinates.
 - target.primary and fallback must reference visible text/icons and relative location (e.g., near top, left sidebar, inside popup).
+- expected_current_state: describe the current screen/state where the action should be performed (used to verify we're on the right screen).
 - intent: 1 sentence.
-- post_change: 1-2 short lines describing what changed from PRE to POST.
-- If action_type is TYPE, convert the typed value into a parameter template if it seems variable, e.g. "{{email}}".
-- If the typed value seems fixed (e.g. "OK", "yes"), keep it literal.
-- action_value: only set for TYPE and KEYPRESS. For TYPE, set to the same value as input_template (template or literal). For KEYPRESS, set to the key from action_details.key if present (e.g. "ENTER", "CMD+SPACE").
+- post_action: 1-2 short lines describing what changed from PRE to POST as a result of the action.
+  It must be GENERIC and describe the UI outcome, not the specific parameter/value used (do not repeat typed text, emails, names, etc.).
+- Do NOT parametrize values (do not use templates like "{{email}}"). Keep typed values literal.
+- action_value: only set for TYPE and KEYPRESS. For TYPE, set to the literal typed value from action_details.text. For KEYPRESS, set to the key from action_details.key if present (e.g. "ENTER", "CMD+SPACE").
 - If uncertain about labels, say "unlabeled button" or "icon button" rather than guessing.
-- error_signals: include obvious error/captcha texts if visible in POST, otherwise []."""
+- target.fallback is optional; use null if not needed."""
 
 
 PASS_B_SYSTEM_PROMPT = """You are a workflow compiler. You take step cards (coordinate-free UI steps) and produce
@@ -88,23 +89,30 @@ class StepTarget(BaseModel):
     """Coordinate-free selector description for the target UI element."""
 
     primary: str = Field(description="Primary target description using visible text/icons + relative location.")
-    fallback: str = Field(description="Fallback target description if primary isn't found, still coordinate-free.")
+    fallback: Optional[str] = Field(description="Fallback target description if primary isn't found, still coordinate-free.")
 
 
 class StepCardModel(BaseModel):
     """Reusable per-step instruction derived from PRE/POST screenshots + action."""
 
     i: int = Field(description="0-based step index within the workflow.")
+    expected_current_state: str = Field(
+        description="Description of the current screen/state where this action should be performed."
+    )
     intent: str = Field(description="1 sentence describing the user intent for this step.")
     action_type: PassAActionType = Field(description="Action type enum for the vision agent.")
-    target: StepTarget = Field(description="How to locate the target element, coordinate-free.")
-    input_template: str | None = Field(description="Template string for TYPE steps (e.g. '{{email}}'), else null.")
     action_value: str | None = Field(
         description="Optional action value. For TYPE and KEYPRESS, include the value to type/press; otherwise null."
     )
-    post_change: list[str] = Field(min_length=1, max_length=2, description="1-2 short lines describing the visible change.")
-    screen_hint: str | None = Field(description="Optional hint of what should be visible after the step.")
-    error_signals: list[str] = Field(description="List of visible error/captcha signals if present, else empty.")
+    target: StepTarget = Field(description="How to locate the target element, coordinate-free.")
+    post_action: list[str] = Field(
+        min_length=1,
+        max_length=2,
+        description=(
+            "1-2 short lines describing the visible change after the action. Keep it generic; do not repeat specific "
+            "typed values/parameters."
+        ),
+    )
 
     # Keep action_value behavior inside the schema so Structured Outputs can enforce it.
     # (Avoids additional manual validation code paths.)
@@ -570,11 +578,13 @@ _TEMPLATE_RE = re.compile(r"\{\{([a-zA-Z0-9_]+)\}\}")
 def extract_param_templates(step_cards: Iterable[dict[str, Any]]) -> set[str]:
     """
     Utility: extract parameter template names like {{email}} from StepCards.
-    Intended for tests / sanity checks (Pass B is still the source of truth).
+
+    Note: Pass A no longer parameterizes step values, so this is primarily useful
+    for legacy data / experiments where templates may still appear (e.g., in action_value).
     """
     found: set[str] = set()
     for c in step_cards:
-        s = c.get("input_template")
+        s = c.get("action_value")
         if isinstance(s, str):
             for m in _TEMPLATE_RE.finditer(s):
                 found.add(m.group(1))
