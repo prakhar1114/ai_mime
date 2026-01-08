@@ -8,7 +8,7 @@ from typing import Any
 from openai import OpenAI
 from PIL import Image
 
-from ai_mime.replay_engine import ReplayConfig, ReplayError
+from .engine import ReplayConfig, ReplayError
 
 
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
@@ -174,14 +174,8 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
         {
             "role": "system",
             "content": [
-                {
-                    "type": "text",
-                    "text": "You are a helpful assistant.",
-                },
-                {
-                    "type": "text",
-                    "text": COMPUTER_USE_SYSTEM_PROMPT,
-                }
+                {"type": "text", "text": "You are a helpful assistant."},
+                {"type": "text", "text": COMPUTER_USE_SYSTEM_PROMPT},
             ],
         },
         {

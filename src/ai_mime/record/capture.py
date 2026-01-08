@@ -3,7 +3,7 @@ import time
 import threading
 import os
 from pathlib import Path
-from .screenshot import ScreenshotRecorder
+from ai_mime.screenshot import ScreenshotRecorder
 from .audio import AudioRecorder
 
 class CurrentScreenshotUpdater:

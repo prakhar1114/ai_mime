@@ -2,6 +2,7 @@ import mss
 import threading
 import os
 
+
 class ScreenshotRecorder:
     def __init__(self):
         self.sct = mss.mss()
@@ -16,7 +17,6 @@ class ScreenshotRecorder:
             with self.lock:
                 # Capture monitor 1 (primary).
                 # Note: sct.shot() saves to a file.
-                # We need to ensure the directory exists (handled by storage).
                 self.sct.shot(mon=1, output=str(filepath))
                 return str(filepath)
         except Exception as e:

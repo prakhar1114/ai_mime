@@ -1,19 +1,20 @@
 import rumps
 import multiprocessing
-from .storage import SessionStorage
-# We don't import EventRecorder here anymore to avoid loading pynput in the UI process
-from .recorder_process import run_recorder_process
 from pathlib import Path
 import logging
-
-from ai_mime.replay import list_replayable_workflows
-from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
-from ai_mime.replay_engine import ReplayConfig, resolve_params, run_plan
-from ai_mime.qwen_grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
-from ai_mime.os_executor import exec_computer_use_action
-from ai_mime.record.screenshot import ScreenshotRecorder
 import os
 import json
+
+from ai_mime.record.storage import SessionStorage
+# We don't import EventRecorder here anymore to avoid loading pynput in the UI process
+from ai_mime.record.recorder_process import run_recorder_process
+
+from ai_mime.replay.catalog import list_replayable_workflows
+from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
+from ai_mime.replay.engine import ReplayConfig, resolve_params, run_plan
+from ai_mime.replay.grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
+from ai_mime.replay.os_executor import exec_computer_use_action
+from ai_mime.screenshot import ScreenshotRecorder
 
 
 def _run_reflect_and_compile_schema(session_dir: str, model: str = "gpt-5-mini") -> None:
@@ -30,6 +31,12 @@ def _run_reflect_and_compile_schema(session_dir: str, model: str = "gpt-5-mini")
     print(f"Reflect finished: {out_dir}")
     compile_schema_for_workflow_dir(out_dir, model=model)
     print(f"Schema compiled: {out_dir / 'schema.json'}")
+    rumps.notification(
+        title="Processing complete",
+        subtitle=out_dir.name,
+        message="Task available for running",
+    )
+
 
 def _run_replay_workflow_schema(workflow_dir: str) -> None:
     """
@@ -83,6 +90,7 @@ def _run_replay_workflow_schema(workflow_dir: str) -> None:
         finally:
             print(f"Replay failed: {e}")
 
+
 class RecorderApp(rumps.App):
     def __init__(self):
         super(RecorderApp, self).__init__("AI Mime", icon=None)
@@ -100,13 +108,18 @@ class RecorderApp(rumps.App):
 
         # Menu Items
         self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
-        self.replay_menu = rumps.MenuItem("Replay")
+        # Repopulate on demand when user clicks "Replay" (no polling).
+        self.replay_menu = rumps.MenuItem("Replay", callback=self._on_replay_menu_clicked)
         self._populate_replay_menu()
         self.menu = [
             self.start_button,
-            None, # Separator
+            None,  # Separator
             self.replay_menu,
         ]
+
+    def _on_replay_menu_clicked(self, sender):
+        # Refresh available workflows right before showing the submenu.
+        self._populate_replay_menu()
 
     def _populate_replay_menu(self):
         # Clear existing submenu items
@@ -118,6 +131,8 @@ class RecorderApp(rumps.App):
 
         workflows_root = Path(self.storage.base_dir).parent / "workflows"
         workflows = list_replayable_workflows(workflows_root)
+        # Newest-first so newly reflected sessions show at the top.
+        workflows = sorted(workflows, key=lambda w: w.workflow_dir.name, reverse=True)
 
         if not workflows:
             empty = rumps.MenuItem("No workflows found", callback=None)
@@ -158,7 +173,7 @@ class RecorderApp(rumps.App):
             title="Start Recording",
             default_text="",
             ok="Start",
-            cancel="Cancel"
+            cancel="Cancel",
         )
         response = window.run()
 
@@ -176,7 +191,7 @@ class RecorderApp(rumps.App):
             title="Session Description",
             default_text="",
             ok="Go",
-            cancel="Skip"
+            cancel="Skip",
         )
         response_desc = window_desc.run()
         description = response_desc.text.strip() if response_desc.clicked else ""
@@ -187,7 +202,7 @@ class RecorderApp(rumps.App):
             self.session_dir = None
             self.recorder_process = multiprocessing.Process(
                 target=run_recorder_process,
-                args=(name, description, self.stop_event, self.session_dir_queue)
+                args=(name, description, self.stop_event, self.session_dir_queue),
             )
             self.recorder_process.start()
 
@@ -242,11 +257,11 @@ class RecorderApp(rumps.App):
         rumps.notification(
             title="Recording Saved",
             subtitle="Session capture finished",
-            message="The background recording process has stopped."
+            message="The background recording process has stopped.",
         )
 
+
 def run_app():
-    # Support for freezing (PyInstaller) if needed later
     multiprocessing.freeze_support()
     app = RecorderApp()
     app.run()

@@ -88,9 +88,7 @@ def resolve_workflow(workflows_root: Path, workflow: str | Path) -> WorkflowRef:
 
 def replay_workflow_dummy(workflow: WorkflowRef | str | Path) -> None:
     """
-    Dummy replay entrypoint.
-
-    For now, this just logs which workflow would be replayed.
+    Dummy replay entrypoint (kept for backward compatibility).
     """
     if isinstance(workflow, WorkflowRef):
         wf = workflow

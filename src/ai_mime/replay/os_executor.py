@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 from typing import Iterable
 
 from pynput import keyboard, mouse
 
-from ai_mime.replay_engine import ReplayConfig, ReplayError
+from .engine import ReplayConfig, ReplayError
 
 
 _K = keyboard.Key
@@ -60,7 +59,7 @@ def _token_to_key(token: str) -> keyboard.Key | str:
 
 def exec_keypress_from_schema_value(action_value: str, cfg: ReplayConfig) -> None:
     """
-    Execute a schema KEYPRESS action_value like \"CMD+SPACE\".
+    Execute a schema KEYPRESS action_value like "CMD+SPACE".
     """
     if not isinstance(action_value, str) or not action_value:
         raise ReplayError("KEYPRESS action_value must be a non-empty string")
@@ -122,7 +121,7 @@ def exec_wait(seconds: float, cfg: ReplayConfig) -> None:
 
 def exec_computer_use_action(action: dict, cfg: ReplayConfig) -> None:
     """
-    Execute the normalized action dict produced by qwen_grounding.tool_call_to_pixel_action().
+    Execute the normalized action dict produced by grounding.tool_call_to_pixel_action().
     """
     a = action.get("action")
     if not isinstance(a, str) or not a:
