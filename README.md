@@ -1,6 +1,19 @@
 # AI Mime
 
 **Record, Reflect, and Replay workflows on macOS.**
+A macOS desktop RPA tool for end-to-end workflow automation.
+It records user interactions (mouse, keyboard, window/app context) and replays them to rerun tasks on demand—great for repeatable, multi-step processes across native macOS apps and websites.
+
+## Record
+Start capturing a workflow by clicking AI Mime → Start Recording in the macOS menu bar. When you’re done, click AI Mime → Stop Recording to save it.
+
+![Start Recording](docs/images/start_recording.png)  ![Stop Recording](docs/images/stop_recording.png)
+
+## Replay
+
+To run a saved workflow, open AI Mime → Replay, choose a workflow from the dropdown, enter the new parameters, and click Run. The workflow will execute automatically—no manual intervention needed.
+
+![Replay Task](docs/images/replay.png)
 
 ## Installation
 
@@ -59,7 +72,6 @@ start_app
 - In the menubar app, click **Start Recording**.
 
 #### During recording
-- **Push-to-Talk**: hold **F9** to record voice notes (not implemented yet).
 - **Captured inputs**: clicks, scrolls, typing bursts, and special keys (`Enter`, `Tab`, `Esc`, `Cmd+Space`).
 
 #### Stop recording
@@ -101,3 +113,12 @@ reflect --session <session_id>
 - **Record**: capture a live session into `recordings/<session_id>/` (events + screenshots + audio).
 - **Reflect**: transform a recording into a reusable workflow under `workflows/<session_id>/` and compile `schema.json`.
 - **Replay**: execute `schema.json.plan.steps` on macOS; the model predicts the concrete GUI actions each step using the current screenshot.
+
+## Replay (Run a workflow)
+
+To run an existing workflow:
+
+1. In the menubar app, open **AI Mime → Replay**.
+2. Select a workflow from the dropdown.
+3. If the workflow defines parameters, fill them in.
+4. Click **Run** to start replaying the workflow.
