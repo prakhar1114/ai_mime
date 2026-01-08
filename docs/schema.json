@@ -1,0 +1,104 @@
+{
+  "task_name": "play a song on spotify",
+  "task_description_user": "",
+  "detailed_task_description": "Open the Spotify application and use its search to find and play a specific song. First, locate Spotify using the system Spotlight search and bring the Spotify window to the foreground. Then focus Spotify's search field, clear any existing text or suggestions, type the requested song name, and start playback of the top result. The workflow aims to begin audible playback of the chosen track inside Spotify.",
+  "subtasks": [
+    "Open Spotify using Spotlight and bring it to the foreground. Expected outcome: the Spotify app window is open and active in the foreground.",
+    "Search for and play the song {song_name} within Spotify: focus the Spotify search field, clear any existing text, enter {song_name}, and start playback of the top result. Expected outcome: {song_name} begins playing and the Spotify UI shows the track as currently playing."
+  ],
+  "task_params": [
+    {
+      "name": "song_name",
+      "type": "string",
+      "description": "The song title to enter into Spotify's search field (used to find and play the requested track inside the Spotify app).",
+      "example": "Numb",
+      "sensitive": false,
+      "optional": false
+    }
+  ],
+  "success_criteria": "The requested song begins audible playback in Spotify and the app indicates the track is currently playing.",
+  "plan": {
+    "steps": [
+      {
+        "i": 0,
+        "expected_current_state": "macOS desktop with the Spotlight Search overlay visible near the top center of the screen; a search text field is focused and ready for input.",
+        "intent": "Enter the search query into the Spotlight search field to find the app.",
+        "action_type": "TYPE",
+        "action_value": "spotify",
+        "target": {
+          "primary": "Spotlight Search text field near the top center of the screen with a magnifying-glass icon and placeholder text 'Spotlight Search'",
+          "fallback": null
+        },
+        "post_action": [
+          "The Spotlight search overlay is dismissed.",
+          "A new application window opens and becomes focused, and the app name appears in the menu bar."
+        ],
+        "subtask": "Open Spotify using Spotlight and bring it to the foreground. Expected outcome: the Spotify app window is open and active in the foreground."
+      },
+      {
+        "i": 1,
+        "expected_current_state": "Spotify desktop app window is open showing a large dark content area (main view) with the top toolbar visible; the search control is not active and no search results are displayed.",
+        "intent": "Activate the search control near the top of the Spotify window so the app shows search results.",
+        "action_type": "CLICK",
+        "action_value": null,
+        "target": {
+          "primary": "The small 'X' (clear) icon inside the search field near the top center of the Spotify window (right side of the search box).",
+          "fallback": "The search field (magnifying-glass icon) at the top center of the window."
+        },
+        "post_action": [
+          "The search field becomes active and displays a query.",
+          "Search results and the related content panels appear in the main view."
+        ],
+        "subtask": "Search for and play the song {song_name} within Spotify: focus the Spotify search field, clear any existing text, enter {song_name}, and start playback of the top result. Expected outcome: {song_name} begins playing and the Spotify UI shows the track as currently playing."
+      },
+      {
+        "i": 2,
+        "expected_current_state": "Spotify desktop app on the search/results view. The search field near the top center contains a query and search results (Top result and Songs list) are visible in the main pane.",
+        "intent": "Clear the current text in the search field to show recent searches/suggestions.",
+        "action_type": "CLICK",
+        "action_value": null,
+        "target": {
+          "primary": "The 'X' (clear) icon inside the search input at the top center of the window (right end of the search field).",
+          "fallback": "Icon button at the right end of the search box near the top center (clear/search reset icon)."
+        },
+        "post_action": [
+          "The search input is cleared and the field returns to its default placeholder state.",
+          "A recent searches / suggestions dropdown appears below the search field."
+        ],
+        "subtask": "Search for and play the song {song_name} within Spotify: focus the Spotify search field, clear any existing text, enter {song_name}, and start playback of the top result. Expected outcome: {song_name} begins playing and the Spotify UI shows the track as currently playing."
+      },
+      {
+        "i": 3,
+        "expected_current_state": "Spotify main window with the search bar near the top center open and the recent searches dropdown visible; focus is on the search input.",
+        "intent": "Enter the song name into the search field to update search results.",
+        "action_type": "TYPE",
+        "action_value": "{song_name}",
+        "target": {
+          "primary": "Rounded search bar near the top center with placeholder text 'What do you want to play?'",
+          "fallback": null
+        },
+        "post_action": [
+          "The search input now contains text and the recent-search dropdown is replaced.",
+          "The main results pane updates to show a top result and a list of songs."
+        ],
+        "subtask": "Search for and play the song {song_name} within Spotify: focus the Spotify search field, clear any existing text, enter {song_name}, and start playback of the top result. Expected outcome: {song_name} begins playing and the Spotify UI shows the track as currently playing."
+      },
+      {
+        "i": 4,
+        "expected_current_state": "Spotify desktop app open to search results; the center column shows a 'Top result' card and a Songs list, with a green play button visible on the top result card. Left library and right details panel are also visible.",
+        "intent": "Start playback of the top search result song.",
+        "action_type": "CLICK",
+        "action_value": null,
+        "target": {
+          "primary": "Green circular play icon on the 'Top result' card for the song titled 'Numb' in the center column",
+          "fallback": "Play button next to the 'Numb' entry in the Songs list (center column)"
+        },
+        "post_action": [
+          "The play icon on the top result card changed to a pause icon.",
+          "The app's playback controls indicate active playback and the progress bar begins advancing."
+        ],
+        "subtask": "Search for and play the song {song_name} within Spotify: focus the Spotify search field, clear any existing text, enter {song_name}, and start playback of the top result. Expected outcome: {song_name} begins playing and the Spotify UI shows the track as currently playing."
+      }
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+{"action_type": "type", "action_details": {"text": "spotify"}, "screenshot": "screenshots/0.png", "voice_clip": null, "timestamp": 1767877126.32621}
+{"action_type": "click", "action_details": {"button": "Button.left", "x": 516.38671875, "y": 263.48828125, "pressed": true}, "screenshot": "screenshots/1.png", "voice_clip": null, "timestamp": 1767877126.540363}
+{"action_type": "click", "action_details": {"button": "Button.left", "x": 853.3984375, "y": 138.625, "pressed": true}, "screenshot": "screenshots/2.png", "voice_clip": null, "timestamp": 1767877128.641324}
+{"action_type": "type", "action_details": {"text": "numb"}, "screenshot": "screenshots/3.png", "voice_clip": null, "timestamp": 1767877135.255441}
+{"action_type": "click", "action_details": {"button": "Button.left", "x": 799.2578125, "y": 428.0625, "pressed": true}, "screenshot": "screenshots/4.png", "voice_clip": null, "timestamp": 1767877135.35825}
+{"action_type": null, "action_details": {}, "screenshot": "screenshots/5.png", "voice_clip": null, "timestamp": 1767877139.8925738}
