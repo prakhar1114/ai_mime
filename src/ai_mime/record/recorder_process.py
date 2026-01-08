@@ -2,10 +2,8 @@ import time
 import multiprocessing
 from .storage import SessionStorage
 from .capture import EventRecorder
-from ai_mime.reflect.workflow import reflect_session
-from ai_mime.reflect.workflow import compile_schema_for_workflow_dir
 
-def run_recorder_process(name, description, stop_event):
+def run_recorder_process(name, description, stop_event, session_dir_queue=None):
     """
     Entry point for the recording child process.
     """
@@ -18,6 +16,13 @@ def run_recorder_process(name, description, stop_event):
     except Exception as e:
         print(f"Failed to start session: {e}")
         return
+
+    # Let the UI process know where the session is being written.
+    try:
+        if session_dir_queue is not None and storage.session_dir is not None:
+            session_dir_queue.put(str(storage.session_dir))
+    except Exception:
+        pass
 
     recorder = EventRecorder(storage)
 
@@ -35,17 +40,4 @@ def run_recorder_process(name, description, stop_event):
     print("Stopping recorder engine...")
     recorder.stop()
 
-    # Run reflect immediately after recording ends (best-effort; do not block shutdown on errors).
-    try:
-        session_dir = storage.session_dir
-        if session_dir:
-            recordings_dir = session_dir.parent
-            workflows_root = recordings_dir.parent / "workflows"
-            out_dir = reflect_session(session_dir, workflows_root)
-            print(f"Reflect finished: {workflows_root / session_dir.name}")
-
-            compile_schema_for_workflow_dir(out_dir, model="gpt-5-mini")
-            print(f"Schema compiled: {out_dir / 'schema.json'}")
-    except Exception as e:
-        print(f"Reflect failed: {e}")
     print("Recorder process finished.")

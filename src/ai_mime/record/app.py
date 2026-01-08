@@ -7,6 +7,23 @@ from pathlib import Path
 import logging
 
 from ai_mime.replay import list_replayable_workflows, replay_workflow_dummy
+from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
+
+
+def _run_reflect_and_compile_schema(session_dir: str, model: str = "gpt-5-mini") -> None:
+    """
+    Background task (runs in its own process):
+    - reflect_session(session_dir) -> workflows/<session_name>/
+    - compile schema.json inside that workflow dir
+    """
+    session_dir_p = Path(session_dir)
+    recordings_dir = session_dir_p.parent
+    workflows_root = recordings_dir.parent / "workflows"
+
+    out_dir = reflect_session(session_dir_p, workflows_root)
+    print(f"Reflect finished: {out_dir}")
+    compile_schema_for_workflow_dir(out_dir, model=model)
+    print(f"Schema compiled: {out_dir / 'schema.json'}")
 
 class RecorderApp(rumps.App):
     def __init__(self):
@@ -18,6 +35,9 @@ class RecorderApp(rumps.App):
         self.recorder_process = None
         self.stop_event = None
         self.is_recording = False
+        self.session_dir_queue = None
+        self.session_dir = None
+        self.reflect_process = None
 
         # Menu Items
         self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
@@ -96,11 +116,20 @@ class RecorderApp(rumps.App):
 
         try:
             self.stop_event = multiprocessing.Event()
+            self.session_dir_queue = multiprocessing.Queue()
+            self.session_dir = None
             self.recorder_process = multiprocessing.Process(
                 target=run_recorder_process,
-                args=(name, description, self.stop_event)
+                args=(name, description, self.stop_event, self.session_dir_queue)
             )
             self.recorder_process.start()
+
+            # Best-effort: capture session dir path from the recorder subprocess.
+            try:
+                if self.session_dir_queue is not None:
+                    self.session_dir = self.session_dir_queue.get(timeout=2.0)
+            except Exception:
+                self.session_dir = None
 
             self.is_recording = True
             self.title = "🔴 Rec"
@@ -114,7 +143,8 @@ class RecorderApp(rumps.App):
                 self.stop_event.set()
 
             if self.recorder_process:
-                self.recorder_process.join(timeout=5)
+                # Recorder should stop quickly now that reflect/schema compilation is offloaded.
+                self.recorder_process.join(timeout=10)
                 if self.recorder_process.is_alive():
                     self.recorder_process.terminate()
                 self.recorder_process = None
@@ -125,6 +155,22 @@ class RecorderApp(rumps.App):
         self.is_recording = False
         self.title = "AI Mime"
         self.start_button.title = "Start Recording"
+
+        # Kick off reflect+schema compilation in the background (do not block UI).
+        if self.session_dir:
+            try:
+                self.reflect_process = multiprocessing.Process(
+                    target=_run_reflect_and_compile_schema,
+                    args=(self.session_dir, "gpt-5-mini"),
+                )
+                self.reflect_process.start()
+                rumps.notification(
+                    title="Reflect started",
+                    subtitle="Building workflow + schema in background",
+                    message=Path(self.session_dir).name,
+                )
+            except Exception as e:
+                rumps.alert(f"Error starting reflect: {e}")
 
         rumps.notification(
             title="Recording Saved",
