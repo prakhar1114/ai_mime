@@ -40,14 +40,14 @@ def _run_reflect_and_compile_schema(session_dir: str, model: str = "gpt-5-mini")
     )
 
 
-def _run_replay_workflow_schema(workflow_dir: str) -> None:
+def _run_replay_workflow_schema(workflow_dir: str, overrides: dict[str, str] | None = None) -> None:
     """
     Background task (runs in its own process): replay schema.json plan using Qwen tool calls.
     """
     try:
         wf_dir = Path(workflow_dir)
         schema = json.loads((wf_dir / "schema.json").read_text(encoding="utf-8"))
-        params = resolve_params(schema, overrides={})
+        params = resolve_params(schema, overrides=overrides or {})
 
         cfg = ReplayConfig(
             model="qwen3-vl-plus-2025-12-19",
@@ -147,9 +147,53 @@ class RecorderApp(rumps.App):
                 logging.basicConfig(level=logging.INFO)
                 # Start replay in background so UI stays responsive.
                 try:
+                    schema_path = wf.workflow_dir / "schema.json"
+                    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                    task_params = schema.get("task_params") or []
+
+                    overrides: dict[str, str] = {}
+                    if isinstance(task_params, list) and task_params:
+                        # One-window form: multiline key=default (defaults from schema examples).
+                        lines: list[str] = []
+                        for p in task_params:
+                            name = p.get("name")
+                            if not isinstance(name, str) or not name.strip():
+                                continue
+                            default = p.get("example")
+                            default_s = "" if default is None else str(default)
+                            lines.append(f"{name}={default_s}")
+
+                        window = rumps.Window(
+                            message="Edit parameters (format: key=value, one per line). Leave empty to use default.",
+                            title=f"Replay Params — {wf.display_name}",
+                            default_text="\n".join(lines),
+                            ok="Run",
+                            cancel="Cancel",
+                        )
+                        response = window.run()
+                        if not response.clicked:
+                            return
+
+                        raw = (response.text or "").strip()
+                        if raw:
+                            # Parse key=value lines; blank values mean use default (skip override).
+                            for line in raw.splitlines():
+                                line = line.strip()
+                                if not line or line.startswith("#"):
+                                    continue
+                                if "=" not in line:
+                                    continue
+                                k, v = line.split("=", 1)
+                                k = k.strip()
+                                v = v.strip()
+                                if not k:
+                                    continue
+                                if v:
+                                    overrides[k] = v
+
                     self.replay_process = multiprocessing.Process(
                         target=_run_replay_workflow_schema,
-                        args=(str(wf.workflow_dir),),
+                        args=(str(wf.workflow_dir), overrides),
                     )
                     self.replay_process.start()
                     rumps.notification(
