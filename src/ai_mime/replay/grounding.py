@@ -198,7 +198,13 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
     Returns the parsed tool call object: {"name": "...", "arguments": {...}}.
     """
     if not cfg.api_key:
-        raise ReplayError("Missing DASHSCOPE_API_KEY (or api_key) for grounding")
+        raise ReplayError(
+            "Missing replay API key for grounding.\n"
+            "Set the provider key env var:\n"
+            "- OPENAI_API_KEY (OpenAI)\n"
+            "- GEMINI_API_KEY (Gemini OpenAI compatibility)\n"
+            "- DASHSCOPE_API_KEY (DashScope OpenAI compatibility)\n"
+        )
 
     img_path = Path(image_path)
     if not img_path.exists():

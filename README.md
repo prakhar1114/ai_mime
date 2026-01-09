@@ -49,12 +49,18 @@ Create a `.env` file (or export env vars) with:
 ```bash
 OPENAI_API_KEY=
 DASHSCOPE_API_KEY=
+GEMINI_API_KEY=
+REPLAY_PROVIDER=
+REPLAY_MODEL=
 LMNR_PROJECT_API_KEY=
 ```
 
 and add it in the repo root
 - `OPENAI_API_KEY`: used for schema compilation (reflect).
-- `DASHSCOPE_API_KEY`: used for replay action grounding via DashScope’s OpenAI-compatible endpoint. Get it from here [alibaba cloud](https://modelstudio.console.alibabacloud.com/)
+- `DASHSCOPE_API_KEY`: used for replay action grounding via DashScope’s OpenAI-compatible endpoint (default). Get it from here [alibaba cloud](https://modelstudio.console.alibabacloud.com/)
+- `GEMINI_API_KEY`: used for replay grounding when configured to use Gemini’s OpenAI-compatible endpoint (see below). Docs: [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)
+- `REPLAY_PROVIDER`: selects the grounding provider: `openai`, `gemini`, or `dashscope`.
+- `REPLAY_MODEL`: grounding model name for the selected provider (e.g. `gpt-4o-mini`, `gemini-3-*`, `qwen3-vl-*`).
 - `LMNR_PROJECT_API_KEY`: used for Laminar tracing/telemetry (if enabled in your environment) (Optional) [Link](https://laminar.sh/).
 
 ## Usage
