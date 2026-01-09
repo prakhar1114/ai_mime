@@ -203,7 +203,7 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
             "Set the provider key env var:\n"
             "- OPENAI_API_KEY (OpenAI)\n"
             "- GEMINI_API_KEY (Gemini OpenAI compatibility)\n"
-            "- DASHSCOPE_API_KEY (DashScope OpenAI compatibility)\n"
+            "- DASHSCOPE_API_KEY (Qwen via DashScope OpenAI compatibility)\n"
         )
 
     img_path = Path(image_path)

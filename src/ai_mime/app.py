@@ -45,7 +45,7 @@ def _load_replay_config_from_env() -> ReplayConfig:
     Replay grounding uses OpenAI-compatible Chat Completions.
 
     Configure via env:
-      - REPLAY_PROVIDER: "openai" | "gemini" | "dashscope"
+      - REPLAY_PROVIDER: "openai" | "gemini" | "qwen"
       - REPLAY_MODEL: provider-specific model name
     """
     provider = (os.getenv("REPLAY_PROVIDER") or "").strip().lower()
