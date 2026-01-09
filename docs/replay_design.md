@@ -92,9 +92,16 @@ This document describes how **replay** works in AI Mime as implemented in this r
 
 ## Model integration details
 
-- **API key**: read from environment variable `DASHSCOPE_API_KEY`.
-- **Base URL**: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`
-- **Model**: configured for replay as `qwen3-vl-plus-2025-12-19`
+- **Provider**: `REPLAY_PROVIDER` selects one of `openai`, `gemini`, `qwen`.
+- **API key**: selected by provider:
+  - `openai` → `OPENAI_API_KEY`
+  - `gemini` → `GEMINI_API_KEY` (docs: [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai))
+  - `qwen` → `DASHSCOPE_API_KEY`
+- **Base URL**: automatically set from the provider:
+  - `openai`: `https://api.openai.com/v1`
+  - `gemini`: `https://generativelanguage.googleapis.com/v1beta/openai/`
+  - `qwen`: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`
+- **Model**: `REPLAY_MODEL` is required (provider-specific model name).
 - **Tool-call format**: model is instructed to return:
 
 ```text

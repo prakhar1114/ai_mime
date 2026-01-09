@@ -40,6 +40,38 @@ def _run_reflect_and_compile_schema(session_dir: str, model: str = "gpt-5-mini")
     )
 
 
+def _load_replay_config_from_env() -> ReplayConfig:
+    """
+    Replay grounding uses OpenAI-compatible Chat Completions.
+
+    Configure via env:
+      - REPLAY_PROVIDER: "openai" | "gemini" | "qwen"
+      - REPLAY_MODEL: provider-specific model name
+    """
+    provider = (os.getenv("REPLAY_PROVIDER") or "").strip().lower()
+    model = (os.getenv("REPLAY_MODEL") or "").strip()
+    if not provider:
+        raise RuntimeError('Missing REPLAY_PROVIDER. Use "openai", "gemini", or "qwen".')
+    if not model:
+        raise RuntimeError("Missing REPLAY_MODEL.")
+
+    base_url_by_provider = {
+        "openai": "https://api.openai.com/v1",
+        "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    }
+    api_key_env_by_provider = {
+        "openai": "OPENAI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "qwen": "DASHSCOPE_API_KEY",
+    }
+    if provider not in base_url_by_provider:
+        raise RuntimeError(f"Unsupported REPLAY_PROVIDER={provider!r}. Use one of: openai, gemini, qwen.")
+
+    api_key = os.getenv(api_key_env_by_provider[provider])
+    return ReplayConfig(model=model, base_url=base_url_by_provider[provider], api_key=api_key)
+
+
 def _run_replay_workflow_schema(workflow_dir: str, overrides: dict[str, str] | None = None) -> None:
     """
     Background task (runs in its own process): replay schema.json plan using Qwen tool calls.
@@ -49,11 +81,7 @@ def _run_replay_workflow_schema(workflow_dir: str, overrides: dict[str, str] | N
         schema = json.loads((wf_dir / "schema.json").read_text(encoding="utf-8"))
         params = resolve_params(schema, overrides=overrides or {})
 
-        cfg = ReplayConfig(
-            model="qwen3-vl-plus-2025-12-19",
-            base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-            api_key=os.getenv("DASHSCOPE_API_KEY"),
-        )
+        cfg = _load_replay_config_from_env()
         screenshotter = ScreenshotRecorder()
 
         def _capture(dst: Path) -> Path:
