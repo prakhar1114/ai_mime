@@ -5,6 +5,15 @@ import logging
 import os
 import json
 from lmnr import observe
+from queue import Empty
+
+# macOS UI (PyObjC / AppKit). Keep this simple and assume it's available.
+import AppKit  # type: ignore[import-not-found]
+
+NSAlert = AppKit.NSAlert  # type: ignore[attr-defined]
+NSView = AppKit.NSView  # type: ignore[attr-defined]
+NSTextField = AppKit.NSTextField  # type: ignore[attr-defined]
+NSPopUpButton = AppKit.NSPopUpButton  # type: ignore[attr-defined]
 
 from ai_mime.record.storage import SessionStorage
 # We don't import EventRecorder here anymore to avoid loading pynput in the UI process
@@ -134,17 +143,132 @@ class RecorderApp(rumps.App):
         self.session_dir = None
         self.reflect_process = None
         self.replay_process = None
+        self.refine_req_q: multiprocessing.Queue | None = None
+        self.refine_resp_q: multiprocessing.Queue | None = None
+        self.dummy_recording = False
+
+        # Poll refinement requests from the recorder subprocess.
+        # This stays idle unless a Ctrl+I request arrives.
+        self._refine_timer = rumps.Timer(self._poll_refine_requests, 0.2)
+        self._refine_timer.start()
 
         # Menu Items
         self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
         # Repopulate on demand when user clicks "Replay" (no polling).
         self.replay_menu = rumps.MenuItem("Replay", callback=self._on_replay_menu_clicked)
         self._populate_replay_menu()
+
+        # Options submenu (placed at the bottom, right above the default Quit item).
+        self.options_menu = rumps.MenuItem("Options")
+        self.dummy_toggle = rumps.MenuItem("Test Recording", callback=self._toggle_dummy_recording)
+        self.options_menu["Test Recording"] = self.dummy_toggle
+
         self.menu = [
             self.start_button,
             None,  # Separator
             self.replay_menu,
+            None,  # Separator
+            self.options_menu,
         ]
+
+    def _toggle_dummy_recording(self, _sender):
+        # rumps supports a checkmark state via .state (0/1) on macOS.
+        self.dummy_recording = not self.dummy_recording
+        try:
+            self.dummy_toggle.state = int(self.dummy_recording)
+        except Exception:
+            pass
+
+    def _poll_refine_requests(self, _):
+        """
+        Recorder subprocess sends a refinement request over a queue.
+        We show a small separate modal popup and send response back.
+        """
+        if not self.refine_req_q or not self.refine_resp_q:
+            return
+        try:
+            req = self.refine_req_q.get_nowait()
+        except Empty:
+            return
+
+        resp = self._run_refine_popup(req)
+        self.refine_resp_q.put(resp)
+
+    def _run_refine_popup(self, req: dict) -> dict:
+        """
+        Show separate modal popups:
+        - Step 1: choose Extract/Add details (dropdown only)
+        - Step 2: show only the relevant fields for the chosen action
+        Returns structured dict to send back to recorder process.
+        """
+        # Step 1: choose action kind
+        choose_alert = NSAlert.alloc().init()
+        choose_alert.setMessageText_("Action refinement")
+        choose_alert.setInformativeText_("Choose Extract or Add details. Recording is paused until you submit/cancel.")
+        choose_alert.addButtonWithTitle_("Next")
+        choose_alert.addButtonWithTitle_("Cancel")
+
+        choose_view = NSView.alloc().initWithFrame_(((0, 0), (320, 40)))
+        dropdown = NSPopUpButton.alloc().initWithFrame_pullsDown_(((0, 8), (220, 26)), False)
+        dropdown.addItemsWithTitles_(["Extract", "Add details"])
+        choose_view.addSubview_(dropdown)
+        choose_alert.setAccessoryView_(choose_view)
+
+        rc = choose_alert.runModal()
+        if int(rc) != 1000:
+            return {"kind": "cancel", "req_id": req.get("req_id")}
+
+        kind = str(dropdown.titleOfSelectedItem() or "")
+
+        # Step 2: show only relevant fields
+        if kind == "Extract":
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_("Extract")
+            alert.setInformativeText_("Fill query + extracted values.")
+            alert.addButtonWithTitle_("Submit")
+            alert.addButtonWithTitle_("Cancel")
+
+            view = NSView.alloc().initWithFrame_(((0, 0), (460, 90)))
+            query = NSTextField.alloc().initWithFrame_(((0, 50), (460, 24)))
+            query.setPlaceholderString_("Query (what to extract from the page)")
+            view.addSubview_(query)
+
+            values = NSTextField.alloc().initWithFrame_(((0, 12), (460, 24)))
+            values.setPlaceholderString_("Values (what you extracted)")
+            view.addSubview_(values)
+
+            alert.setAccessoryView_(view)
+            rc2 = alert.runModal()
+            if int(rc2) != 1000:
+                return {"kind": "cancel", "req_id": req.get("req_id")}
+            return {
+                "kind": "extract",
+                "query": str(query.stringValue() or "").strip(),
+                "values": str(values.stringValue() or "").strip(),
+                "req_id": req.get("req_id"),
+            }
+
+        # Add details
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Add details")
+        alert.setInformativeText_("These details will be attached to the next recorded event.")
+        alert.addButtonWithTitle_("Submit")
+        alert.addButtonWithTitle_("Cancel")
+
+        view = NSView.alloc().initWithFrame_(((0, 0), (460, 50)))
+        details = NSTextField.alloc().initWithFrame_(((0, 12), (460, 24)))
+        details.setPlaceholderString_("Details (natural language)")
+        view.addSubview_(details)
+        alert.setAccessoryView_(view)
+
+        rc2 = alert.runModal()
+        if int(rc2) != 1000:
+            return {"kind": "cancel", "req_id": req.get("req_id")}
+        return {
+            "kind": "details",
+            "text": str(details.stringValue() or "").strip(),
+            "req_id": req.get("req_id"),
+        }
 
     def _on_replay_menu_clicked(self, sender):
         # Refresh available workflows right before showing the submenu.
@@ -272,10 +396,19 @@ class RecorderApp(rumps.App):
         try:
             self.stop_event = multiprocessing.Event()
             self.session_dir_queue = multiprocessing.Queue()
+            self.refine_req_q = multiprocessing.Queue()
+            self.refine_resp_q = multiprocessing.Queue()
             self.session_dir = None
             self.recorder_process = multiprocessing.Process(
                 target=run_recorder_process,
-                args=(name, description, self.stop_event, self.session_dir_queue),
+                args=(
+                    name,
+                    description,
+                    self.stop_event,
+                    self.session_dir_queue,
+                    self.refine_req_q,
+                    self.refine_resp_q,
+                ),
             )
             self.recorder_process.start()
 
@@ -303,6 +436,8 @@ class RecorderApp(rumps.App):
                 if self.recorder_process.is_alive():
                     self.recorder_process.terminate()
                 self.recorder_process = None
+                self.refine_req_q = None
+                self.refine_resp_q = None
 
         except Exception as e:
             rumps.alert(f"Error stopping: {e}")
@@ -312,7 +447,7 @@ class RecorderApp(rumps.App):
         self.start_button.title = "Start Recording"
 
         # Kick off reflect+schema compilation in the background (do not block UI).
-        if self.session_dir:
+        if self.session_dir and not self.dummy_recording:
             try:
                 self.reflect_process = multiprocessing.Process(
                     target=_run_reflect_and_compile_schema,
@@ -326,6 +461,13 @@ class RecorderApp(rumps.App):
                 )
             except Exception as e:
                 rumps.alert(f"Error starting reflect: {e}")
+        elif self.session_dir and self.dummy_recording:
+            # Explicit notification so it's clear why the workflow doesn't appear.
+            rumps.notification(
+                title="Dummy recording saved",
+                subtitle="Reflect skipped",
+                message=Path(self.session_dir).name,
+            )
 
         rumps.notification(
             title="Recording Saved",
