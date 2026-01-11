@@ -37,7 +37,8 @@ To function correctly, `ai-mime` requires macOS permissions. Because you are lik
 3.  **Grant Permissions**:
     *   **Accessibility**: Required to monitor global mouse/keyboard inputs. Add your Terminal app (e.g., iTerm, Terminal) AND the python binary from your venv if prompted.
     *   **Screen Recording**: Required to capture screenshots. Add your Terminal app / Python binary.
-    *   **Microphone**: Required for voice notes.
+    *  **Input Monitoring**
+
 Use Cmd+Shift+G when trying to add the python binary in settings.
 
 *Note: If you see "Terminal" in the list but it still doesn't work, try removing it and re-adding it, or run the script from a dedicated terminal window.*

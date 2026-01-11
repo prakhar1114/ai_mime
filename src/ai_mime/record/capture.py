@@ -172,8 +172,9 @@ class EventRecorder:
         - injects pending 'details' onto the next event if present
         """
         event_data.setdefault("voice_clip", None)
+        event_data.setdefault("details", None)
         if self.pending_details:
-            event_data.setdefault("details", self.pending_details)
+            event_data["details"] = self.pending_details
             self.pending_details = None
         self.storage.write_event(event_data)
 
@@ -320,6 +321,11 @@ class EventRecorder:
             char = key.char  # type: ignore[attr-defined]
         except AttributeError:
             char = None
+
+        # # DEBUG: print every keypress + modifier state (helps debug Chrome vs Desktop).
+        # print(f"[KEY_DEBUG] on_press key={key!r} char={char!r} modifiers={sorted(self.modifiers)} paused={self.paused}")
+
+
         if "ctrl" in self.modifiers and char is not None and str(char) in ("i", "I", "\t"):
             self._trigger_refine()
             return
