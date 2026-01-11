@@ -94,6 +94,18 @@ pkill -9 -f "ai_mime\.cli:start_app|ai_mime\.app|start_app|AI Mime"
 #### Replay a specific recording
 - Open the menubar app → **Replay** → choose the workflow you want to run (workflows are discovered by scanning `workflows/` for folders that contain `schema.json`).
 
+#### Edit a workflow (browser editor)
+- Open the menubar app → **Edit Workflow** → choose a workflow.
+- Your default browser will open a local editor page (served from `127.0.0.1`).
+- You can edit:
+  - task name + detailed task description
+  - parameters (add/delete; deleted params can be “baked in” using their example value on save)
+  - subtasks (add/insert anywhere/delete)
+  - steps (edit intent/action_type/action_value; delete steps)
+  - dependencies (pick upstream `extract_*` variables)
+  - advanced step details via **Details** (expected state, target, post_action, extract fields)
+- Click **Save** to validate + write back to `workflows/<session_id>/schema.json`. If invalid, the editor shows the error and does not save.
+
 ### Output
 
 #### Record output

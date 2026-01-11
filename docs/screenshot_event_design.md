@@ -1,60 +1,32 @@
-# Screenshot ↔ Event Pairing Design
+# Screenshot ↔ Event Pairing (Recording)
 
-This document describes how `ai_mime` records screenshots and pairs them with user actions in `manifest.jsonl`.
+Recording produces a `manifest.jsonl` where each event references a **stable, pre-action screenshot**. This lets reflect/replay reason about “what the user saw right before acting”.
 
-## Goals
+## Files written during a recording session
+Under `recordings/<session_id>/screenshots/`:
+- `current_screenshot.png`: continuously refreshed snapshot of the primary display (overwritten)
+- `pretyping_screenshot.png`: snapshot captured at the start of a typing burst (overwritten per burst)
+- `{N}.png`: frozen screenshots referenced by manifest events
 
-- Each recorded event references the **most recent screenshot captured _before_ the action** (a “pre-action” frame).
-- The visual **result** of an action is expected to appear in the **next** screenshot (used by the next event).
-- When idle (no actions), we still keep the “current” screenshot fresh by overwriting it on a fixed interval.
-- Typing is handled so the `type` event references the **pre-typing** state (e.g. empty search bar), not the post-typing state.
+## Core rules
+- **Pre-action frame**: every recorded event points at a screenshot frozen *right before* the action.
+- **Post-action frame**: the *next event’s* pre-action screenshot is typically the best approximation of the prior action’s visible result.
+- **Atomicity**: `current_screenshot.png` is updated via “capture to temp + `os.replace`” and freezing/copying is guarded by a shared lock to avoid partial reads.
 
-## Files on disk
+## Event flow (high level)
+- **Click / Scroll / Special keys**:
+  - flush pending typing (if any)
+  - freeze `current_screenshot.png` to `{N}.png`
+  - write event with `screenshot: "screenshots/{N}.png"`
+  - force-refresh `current_screenshot.png` so the next event sees updates sooner
 
-Within a session directory:
+- **Typing**:
+  - on first character: copy `current_screenshot.png` → `pretyping_screenshot.png` (captures the empty/untyped state)
+  - buffer characters
+  - on flush: freeze `pretyping_screenshot.png` to `{N}.png` and write a single `type` event
+  - then force-refresh `current_screenshot.png` so subsequent actions see typed text
 
-- `screenshots/current_screenshot.png`
-  - Continuously overwritten every **500ms** by a background updater.
-  - Written atomically (capture to temp + `os.replace`) to avoid partial reads.
-- `screenshots/pretyping_screenshot.png`
-  - Overwritten once per typing burst.
-  - Captured from `current_screenshot.png` at the moment typing begins.
-- `screenshots/{N}.png`
-  - Frozen per-event screenshot files referenced by events in `manifest.jsonl`.
-  - Created by **copying** `current_screenshot.png` or `pretyping_screenshot.png` (never renaming the source).
-
-## Core rule: “freeze right before the event”
-
-For non-typing actions (`click`, `scroll`, special `key`):
-
-1. Ensure any pending typing is flushed.
-2. **Freeze** the latest `current_screenshot.png` into the next numbered file (copy under a lock).
-3. Write the event referencing that numbered screenshot path.
-4. Optionally force-refresh `current_screenshot.png` immediately after the action, so the “result” becomes available sooner for the next event.
-
-### “Start screenshot” (no explicit start event)
-
-There is **no explicit** `start` line in the manifest.
-
-Instead, the **first event** freezes the current pre-action frame and that becomes `screenshots/0.png` automatically.
-
-## Typing behavior
-
-Typing is buffered into a burst and recorded as a single `type` event when the buffer is flushed.
-
-- On first typed character of a burst:
-  - Copy `current_screenshot.png` → `pretyping_screenshot.png` (this is the pre-typing frame).
-- On `flush_typing()`:
-  - Freeze `pretyping_screenshot.png` → `screenshots/{N}.png`
-  - Write a `type` event referencing `screenshots/{N}.png`
-  - Force-refresh `current_screenshot.png` so the post-typing state (text visible) is available for the next action.
-
-Special handling:
-
-- Space is treated as a normal character (when Cmd is not held).
-- Backspace/delete edits the typing buffer (does not emit a separate key event).
-
-## Concurrency safety
-
-- The updater’s write (`os.replace`) and all reads/copies used to freeze screenshots share the same lock.
-- `SessionStorage.copy_file()` also includes a small retry loop to handle edge cases around startup/stop timing.
+## Refinement / extraction during recording
+Recording supports an interactive “refine” flow (triggered by **Ctrl+I**) that can:
+- write an `extract` event (with a frozen pre-action screenshot + user-provided query/values), or
+- attach freeform `details` text to the *next* recorded event.

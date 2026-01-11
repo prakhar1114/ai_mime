@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from ai_mime.replay.catalog import list_replayable_workflows
-from ai_mime.schema.schema import (
+from ai_mime.reflect.schema_utils import (
     available_upstream_extracts,
     reindex_schema,
     strip_details_in_schema,
