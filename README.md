@@ -75,6 +75,11 @@ source .venv/bin/activate
 start_app
 ```
 
+PS: The app creates a lot of processes in the background. These might persist on quitting the app. The following command to force kills all these processes:
+```
+pkill -9 -f "ai_mime\.cli:start_app|ai_mime\.app|start_app|AI Mime"
+```
+
 #### Start recording
 - In the menubar app, click **Start Recording**.
 

@@ -148,6 +148,13 @@ COMPUTER_USE_SYSTEM_PROMPT = textwrap.dedent(
     - If you call extract, you MUST include variable_name, query, observation, and task_memory.
     - If you call done, you MUST include "result" and "task_memory".
 
+    Behavior rules:
+    - Decide ONE next action to progress the current subtask, or call done if the expected outcome is met.
+    - Extraction: If the reference steps include an EXTRACT step and you are at the corresponding screen/state, you MUST call extract with that step's variable_name and extract_query. Do not use computer_use for extraction.
+    - If you call computer_use, include a current-step specific observation and an updated task_memory.
+    - If you call done, include result (what was achieved / info to pass) and updated task_memory.
+    - If you seem stuck (observations repeating / screen not changing), try an alternate strategy (e.g., back, close popups, refocus, scroll, open the right app/tab, or retry the entry path).
+
     For each function call, return a JSON object with function name and arguments within <tool_call></tool_call> XML tags:
     <tool_call>
     {"name":"computer_use","arguments":{"action":"left_click","coordinate":[500,500],"observation":"...","task_memory":"..."}}

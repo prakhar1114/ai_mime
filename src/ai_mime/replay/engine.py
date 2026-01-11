@@ -248,7 +248,6 @@ def run_plan(
                 "intent": s.get("intent"),
                 "action_type": s.get("action_type"),
                 "action_value": s.get("action_value"),
-                "variable_name": s.get("variable_name"),
                 "extract_query": (s.get("additional_args") or {}).get("extract_query"),
                 "target_primary": (s.get("target") or {}).get("primary"),
                 "expected_current_state": s.get("expected_current_state"),
@@ -283,17 +282,10 @@ def run_plan(
             user_query = (
                 f"Overall Task: {task_name}\n"
                 f"Current subtask and expected outcome: {subtask_text}\n"
-                f"Additional context: {additional_context}\n"
-                f"Params: {params}\n"
+                f"Additional context (from previous subtasks): {additional_context}\n"
                 f"Task memory: {task_memory}\n"
-                f"History (this subtask): {history[-5:]}\n\n"
-                f"Reference steps (examples) from previous runs: {reference_steps}\n\n"
-                "Extraction: If the reference steps include an EXTRACT step and you are at the corresponding screen/state, you MUST call extract with that step's variable_name and extract_query. Do not use computer_use for extraction.\n"
-                "Decide ONE next action to progress the current subtask, or call done if the expected outcome is met.\n"
-                "If you call computer_use, include a current-step specific observation and an updated task_memory.\n"
-                "If you call done, include result (what was achieved / info to pass) and updated task_memory.\n"
-                "If you seem stuck (observations repeating / screen not changing), try an alternate strategy (e.g., back, close popups, refocus, scroll, open the right app/tab, or retry the entry path).\n"
-                "Return exactly one tool call."
+                f"Recent history (this subtask):\n{history}\n\n"
+                f"Reference steps (ordered examples):\n{reference_steps}\n"
             )
 
             tool_call = predict_tool_call(img_path, user_query, cfg)
@@ -308,6 +300,16 @@ def run_plan(
                 _persist_extracts()
                 task_memory = str(args.get("task_memory") or task_memory)
                 _persist_task_memory(task_memory)
+                # Important: include extract calls in the per-subtask history so the model
+                # "remembers" it already extracted and doesn't loop on extract().
+                history.append(
+                    {
+                        "action": "extract",
+                        "variable_name": vn,
+                        "query": q,
+                        "value": val,
+                    }
+                )
                 _append_event(
                     {
                         "type": "extract",
@@ -328,6 +330,7 @@ def run_plan(
             if name == "done":
                 result = args.get("result")
                 task_memory = str(args.get("task_memory") or "")
+                history.append({"action": "done", "result": result})
                 _append_event(
                     {
                         "type": "done",
