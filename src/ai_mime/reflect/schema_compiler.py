@@ -753,6 +753,26 @@ def compile_workflow_schema(
     if missing_updates:
         raise RuntimeError(f"Pass B output incomplete: missing plan_step_updates for step indices: {missing_updates}")
 
+    # Preserve refined extract queries from Pass A before Pass B overwrites action_value for EXTRACT steps.
+    # Store under additional_args so future per-step arguments can be extended without new top-level fields.
+    for s in step_cards:
+        if not isinstance(s, dict):
+            continue
+        aa = s.get("additional_args")
+        if not isinstance(aa, dict):
+            aa = {}
+        if s.get("action_type") == "EXTRACT":
+            av0 = s.get("action_value")
+            if isinstance(av0, str) and av0.strip():
+                aa["extract_query"] = av0.strip()
+            else:
+                aa.pop("extract_query", None)
+        else:
+            aa.pop("extract_query", None)
+        s["additional_args"] = aa
+        # Backward-compat cleanup: do not carry old field forward.
+        s.pop("extract_query", None)
+
     subtask_set = set(subtasks_any)
     for i, s in enumerate(step_cards):
         u = updates_by_i[i]
@@ -775,11 +795,54 @@ def compile_workflow_schema(
             if av is not None:
                 raise RuntimeError(f"Step {i}: action_type={at} requires action_value=null after Pass B merge.")
 
-    # Remove plan_step_updates from top-level schema (we've merged it into plan.steps).
+    # Ensure EXTRACT steps have a non-empty additional_args.extract_query after merge.
+    for i, s in enumerate(step_cards):
+        if s.get("action_type") != "EXTRACT":
+            continue
+        aa = s.get("additional_args") if isinstance(s.get("additional_args"), dict) else {}
+        eq = aa.get("extract_query") if isinstance(aa, dict) else None
+        if not isinstance(eq, str) or not eq.strip():
+            raise RuntimeError(
+                f"Step {i}: EXTRACT step missing additional_args.extract_query (refined query) from Pass A."
+            )
+
+    # Remove plan_step_updates from top-level schema (we've merged it into plan.subtasks[].steps).
     final_schema.pop("plan_step_updates", None)
 
-    # Always attach plan.steps from Pass A in the final schema (and draft).
-    final_schema["plan"] = {"steps": step_cards}
+    # Build new v2 plan format: plan.subtasks[] where each subtask contains its steps.
+    # Do NOT keep top-level subtasks[] in the final schema; subtask text lives in plan.subtasks[].text.
+    steps_by_subtask: dict[str, list[dict[str, Any]]] = {st: [] for st in subtasks_any}
+    for s in step_cards:
+        st = s.get("subtask")
+        if not isinstance(st, str) or st not in steps_by_subtask:
+            raise RuntimeError("Internal error: step missing valid subtask assignment after merge.")
+        steps_by_subtask[st].append(s)
+
+    plan_subtasks: list[dict[str, Any]] = []
+    for subtask_i, st_text in enumerate(subtasks_any):
+        steps_out: list[dict[str, Any]] = []
+        for local_i, s in enumerate(steps_by_subtask.get(st_text, [])):
+            # Make step indices subtask-local only.
+            s2 = dict(s)
+            s2["i"] = local_i
+            # Remove redundant global subtask string from each step (lives on parent).
+            s2.pop("subtask", None)
+            # Do not keep details in final schema (they should be encoded into intent/etc by Pass A/B).
+            s2.pop("details", None)
+            # Backward-compat cleanup: remove legacy extract_query field if present.
+            s2.pop("extract_query", None)
+            steps_out.append(s2)
+        plan_subtasks.append(
+            {
+                "subtask_i": subtask_i,
+                "text": st_text,
+                "dependencies": [],
+                "steps": steps_out,
+            }
+        )
+
+    final_schema.pop("subtasks", None)
+    final_schema["plan"] = {"subtasks": plan_subtasks}
 
     write_schema_draft(workflow_dir_p, final_schema)
     logger.info("Pass B complete: wrote schema.draft.json")
