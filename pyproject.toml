@@ -19,6 +19,7 @@ dependencies = [
     "sounddevice>=0.4.6",
     "soundfile>=0.12.1",
     "click>=8.0.0",
+    "python-dotenv>=1.0.0",
     "pyobjc-framework-ApplicationServices>=9.0",
     "pyobjc-framework-Cocoa>=9.0",
     "numpy>=1.20.0",
@@ -26,9 +27,14 @@ dependencies = [
     "pydantic>=2.0.0",
     "tqdm>=4.0.0",
     "setuptools",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
     "lmnr[all]"
 ]
 
 [project.scripts]
 start_app = "ai_mime.cli:start_app"
 reflect = "ai_mime.cli:reflect"
+
+[tool.setuptools.package-data]
+"ai_mime.editor.web" = ["*.html", "*.js", "*.css"]

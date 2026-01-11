@@ -4,6 +4,9 @@ from pathlib import Path
 import logging
 import os
 import json
+import time
+import urllib.request
+import webbrowser
 from lmnr import observe
 from queue import Empty
 
@@ -25,6 +28,7 @@ from ai_mime.replay.engine import ReplayConfig, resolve_params, run_plan
 from ai_mime.replay.grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
 from ai_mime.replay.os_executor import exec_computer_use_action
 from ai_mime.screenshot import ScreenshotRecorder
+from ai_mime.editor.server import start_editor_server
 
 
 @observe(name="reflect_and_compile_schema")
@@ -147,6 +151,10 @@ class RecorderApp(rumps.App):
         self.refine_resp_q: multiprocessing.Queue | None = None
         self.dummy_recording = False
 
+        # Local workflow editor (FastAPI) subprocess
+        self.editor_process: multiprocessing.Process | None = None
+        self.editor_port: int | None = None
+
         # Poll refinement requests from the recorder subprocess.
         # This stays idle unless a Ctrl+I request arrives.
         self._refine_timer = rumps.Timer(self._poll_refine_requests, 0.2)
@@ -158,6 +166,10 @@ class RecorderApp(rumps.App):
         self.replay_menu = rumps.MenuItem("Replay", callback=self._on_replay_menu_clicked)
         self._populate_replay_menu()
 
+        # Workflow review / edit
+        self.edit_menu = rumps.MenuItem("Edit Workflow", callback=self._on_edit_menu_clicked)
+        self._populate_edit_menu()
+
         # Options submenu (placed at the bottom, right above the default Quit item).
         self.options_menu = rumps.MenuItem("Options")
         self.dummy_toggle = rumps.MenuItem("Test Recording", callback=self._toggle_dummy_recording)
@@ -167,6 +179,8 @@ class RecorderApp(rumps.App):
             self.start_button,
             None,  # Separator
             self.replay_menu,
+            None,  # Separator
+            self.edit_menu,
             None,  # Separator
             self.options_menu,
         ]
@@ -274,13 +288,83 @@ class RecorderApp(rumps.App):
         # Refresh available workflows right before showing the submenu.
         self._populate_replay_menu()
 
+    def _on_edit_menu_clicked(self, sender):
+        # Refresh available workflows right before showing the submenu.
+        self._populate_edit_menu()
+
+    def _workflows_root(self) -> Path:
+        return Path(self.storage.base_dir).parent / "workflows"
+
+    def _read_json(self, path: Path) -> dict:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _write_json_atomic(self, path: Path, obj: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+
+    def _populate_edit_menu(self):
+
+        try:
+            self.edit_menu.clear()
+        except Exception:
+            pass
+
+        workflows = list_replayable_workflows(self._workflows_root())
+        workflows = sorted(workflows, key=lambda w: w.workflow_dir.name, reverse=True)
+        if not workflows:
+            empty = rumps.MenuItem("No workflows found", callback=None)
+            empty.set_callback(None)
+            self.edit_menu["No workflows found"] = empty
+            return
+
+        for wf in workflows:
+            def _cb(sender, wf=wf):
+                try:
+                    self._open_workflow_editor(wf.workflow_dir, wf.display_name)
+                except Exception as e:
+                    rumps.alert(f"Edit failed: {e}")
+
+            self.edit_menu[wf.display_name] = rumps.MenuItem(wf.display_name, callback=_cb)
+
+    def _ensure_editor_server(self) -> int:
+        if self.editor_process is not None and self.editor_process.is_alive() and self.editor_port is not None:
+            return self.editor_port
+
+        proc, port = start_editor_server(workflows_root=self._workflows_root())
+        self.editor_process = proc
+        self.editor_port = port
+
+        # Best-effort: wait briefly for /health so the browser doesn't immediately 404/connection-refuse.
+        health_url = f"http://127.0.0.1:{port}/health"
+        for _ in range(40):
+            try:
+                with urllib.request.urlopen(health_url, timeout=0.1) as resp:
+                    if getattr(resp, "status", 200) == 200:
+                        break
+            except Exception:
+                time.sleep(0.05)
+
+        return port
+
+    def _open_workflow_editor(self, workflow_dir: Path, display_name: str) -> None:
+        port = self._ensure_editor_server()
+        url = f"http://127.0.0.1:{port}/workflows/{workflow_dir.name}"
+        ok = webbrowser.open(url, new=1)
+        if not ok:
+            raise RuntimeError(f"Failed to open browser for: {url}")
+
     def _populate_replay_menu(self):
         # Clear existing submenu items
         try:
             self.replay_menu.clear()
         except Exception:
-            # Best-effort: if clear isn't available for some reason, recreate the submenu.
-            self.replay_menu = rumps.MenuItem("Replay")
+            pass
+
 
         workflows_root = Path(self.storage.base_dir).parent / "workflows"
         workflows = list_replayable_workflows(workflows_root)

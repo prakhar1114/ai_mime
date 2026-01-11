@@ -238,6 +238,10 @@ def run_plan(
         deps = st.get("dependencies") or []
 
         steps_any = st.get("steps") or []
+        if not isinstance(steps_any, list):
+            # Be robust to malformed schemas; treat non-list as empty list.
+            steps_any = []
+            st["steps"] = []
         reference_steps: list[dict[str, Any]] = [
             {
                 "i": i,
@@ -255,7 +259,11 @@ def run_plan(
 
         # Build Additional context from dependency extracts (query + value).
         additional_context: list[dict[str, Any]] = [
-            {"name": dep, "query": (extract_meta.get(dep) or {}).get("query") or "", "value": extracts.get(dep)}
+            {
+                "name": dep,
+                "query": (extract_meta.get(dep) or {}).get("query") or "",
+                "value": extracts.get(dep),
+            }
             for dep in deps
         ]
 

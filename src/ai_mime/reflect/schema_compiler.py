@@ -89,7 +89,7 @@ Rules:
 - Use `details` to better understand step intent, disambiguate what should be parameterized, and to improve the correctness of subtasks and success criteria.
 - Identify reusable workflow parameters from step action_value strings, and parameterize action_value using single-brace templates like "{{song_name}}".
   Do NOT parameterize which application/site to use (no params like "{{app}}", "{{browser}}", "{{site}}").
-  Only parameterize user-provided content like song names, locations, search terms, etc.
+  Only parameterize user-provided content like song names, locations, search terms, etc., something that will change across multiple task runs based on wholistic task intent
 - task_params: Return a JSON array of param objects:
   {{ "name": "<param_name>", "type": "<string|number|date>", "description": "<clear what this param is>", "example": "...", "sensitive": true|false, "optional": true|false }}
   Descriptions must be concrete and unambiguous (mention where it is used in the workflow). If optional is false, the workflow should be runnable using the example value.
