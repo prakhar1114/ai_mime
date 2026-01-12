@@ -7,7 +7,7 @@ name = "ai-mime"
 version = "0.1.0"
 description = "Record, Reflect, and Replay workflows on macOS"
 authors = [
-    {name = "Your Name", email = "you@example.com"},
+    {name = "Prakhar Jain", email = "prakharjain1114@gmail.com"},
 ]
 readme = "README.md"
 requires-python = ">=3.10"
