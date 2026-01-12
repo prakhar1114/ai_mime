@@ -4,6 +4,12 @@
 A macOS desktop RPA tool for end-to-end workflow automation.
 It records user interactions (mouse, keyboard, window/app context), converts them into a reusable workflow schema, lets you edit parameters/subtasks/dependencies, and replays them to rerun tasks on demand—great for repeatable, multi-step processes across native macOS apps and websites.
 
+## Demo
+
+[Watch the demo on YouTube](https://www.youtube.com/watch?v=ppB4tbPc77U)
+
+[![AI Mime demo](https://img.youtube.com/vi/ppB4tbPc77U/hqdefault.jpg)](https://www.youtube.com/watch?v=ppB4tbPc77U)
+
 ## Record
 Start capturing a workflow by clicking AI Mime → Start Recording in the macOS menu bar. When you’re done, click AI Mime → Stop Recording to save it.
 
