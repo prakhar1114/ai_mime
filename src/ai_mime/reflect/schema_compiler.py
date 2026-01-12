@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 2  # max retries after the first attempt
 
 
-PassAActionType = Literal["CLICK", "TYPE", "SCROLL", "KEYPRESS", "DRAG"]
+PassAActionType = Literal["CLICK", "TYPE", "SCROLL", "KEYPRESS", "DRAG", "EXTRACT"]
 
 
 def _png_data_url(path: Path) -> str:
@@ -50,6 +50,7 @@ User task description: {task_description_user}
 
 Action (ground truth): {action_json}
 Param hint (optional): {param_hint_json}
+Details (optional): {details_text}
 
 You will be given PRE and POST screenshots for this step. The FIRST image is PRE, the SECOND image is POST.
 
@@ -62,7 +63,13 @@ Rules:
 - post_action: 1-2 short lines describing what changed from PRE to POST as a result of the action.
   It must be GENERIC and describe the UI outcome, not the specific parameter/value used (do not repeat typed text, emails, names, etc.).
 - Do NOT parametrize values (do not use templates like "{{email}}"). Keep typed values literal.
-- action_value: only set for TYPE and KEYPRESS. For TYPE, set to the literal typed value from action_details.text. For KEYPRESS, set to the key from action_details.key if present (e.g. "ENTER", "CMD+SPACE").
+- action_value:
+  - TYPE: set to the literal typed value from action_details.text
+  - KEYPRESS: set to the key from action_details.key if present (e.g. "ENTER", "CMD+SPACE")
+  - EXTRACT: set to a refined extraction query describing what to capture from the current screenshot, slightly generalized and suitable for later parameterization
+- For EXTRACT:
+  - intent must include a short example of what was extracted using the recorded action_details.values, formatted as: "Example extracted content: <...>"
+  - post_action should be a minimal-valid placeholder like "not relevant" because EXTRACT does not change the UI.
 - If uncertain about labels, say "unlabeled button" or "icon button" rather than guessing.
 - target.fallback is optional; use null if not needed."""
 
@@ -79,9 +86,10 @@ Step summaries (ordered JSON array):
 
 Rules:
 - detailed_task_description: 3-6 sentences describing the overall workflow (string).
+- Use `details` to better understand step intent, disambiguate what should be parameterized, and to improve the correctness of subtasks and success criteria.
 - Identify reusable workflow parameters from step action_value strings, and parameterize action_value using single-brace templates like "{{song_name}}".
   Do NOT parameterize which application/site to use (no params like "{{app}}", "{{browser}}", "{{site}}").
-  Only parameterize user-provided content like song names, locations, search terms, etc.
+  Only parameterize user-provided content like song names, locations, search terms, etc., something that will change across multiple task runs based on wholistic task intent
 - task_params: Return a JSON array of param objects:
   {{ "name": "<param_name>", "type": "<string|number|date>", "description": "<clear what this param is>", "example": "...", "sensitive": true|false, "optional": true|false }}
   Descriptions must be concrete and unambiguous (mention where it is used in the workflow). If optional is false, the workflow should be runnable using the example value.
@@ -91,9 +99,11 @@ Rules:
   - represent a higher-level target that groups multiple steps together (rule of thumb: ~4-6 steps)
   - preferably stay within a single window/app context (e.g., one subtask for Spotlight→open Spotify; another for Spotify→search and play)
   - avoid being a micro-step (do not create one subtask per step)
+- If an EXTRACT step exists, ensure the relevant subtask(s) explicitly mention what data is being extracted, from where on the screen, and what that extracted data is used for downstream.
 - plan_step_updates: Return updates for EVERY step index, with:
   {{ "i": <int>, "action_value": <string|null>, "subtask": <string> }}
-  - action_value must be the (possibly parameterized) value for that step (null for non-TYPE/non-KEYPRESS steps).
+  - action_value must be the (possibly parameterized) value for that step (string for TYPE/KEYPRESS/EXTRACT; null otherwise).
+  - for parametrization of action values for EXTRACT actions, use the provided step summary field "variable_name" (e.g., "extract_0", "extract_1", ...), which is based on the order of EXTRACT steps in the workflow (not the overall step index).
   - subtask must be EXACTLY one of the strings from subtasks, and every step must have a subtask assignment.
 - success_criteria: a SINGLE generalized string describing how to tell the task succeeded (avoid overly specific UI texts).
 """
@@ -119,7 +129,7 @@ class StepCardModel(BaseModel):
     intent: str = Field(description="1 sentence describing the user intent for this step.")
     action_type: PassAActionType = Field(description="Action type enum for the vision agent.")
     action_value: str | None = Field(
-        description="Optional action value. For TYPE and KEYPRESS, include the value to type/press; otherwise null."
+        description="Optional action value. For TYPE and KEYPRESS, include the value to type/press. For EXTRACT, include the refined extract query. Otherwise null."
     )
     target: StepTarget = Field(description="How to locate the target element, coordinate-free.")
     post_action: list[str] = Field(
@@ -134,12 +144,12 @@ class StepCardModel(BaseModel):
     # Keep action_value behavior inside the schema so Structured Outputs can enforce it.
     # (Avoids additional manual validation code paths.)
     def model_post_init(self, __context: Any) -> None:  # type: ignore[override]
-        if self.action_type in {"TYPE", "KEYPRESS"}:
+        if self.action_type in {"TYPE", "KEYPRESS", "EXTRACT"}:
             if not isinstance(self.action_value, str) or not self.action_value.strip():
-                raise ValueError("action_value must be set for TYPE/KEYPRESS")
+                raise ValueError("action_value must be set for TYPE/KEYPRESS/EXTRACT")
         else:
             if self.action_value is not None:
-                raise ValueError("action_value must be null for non-TYPE/non-KEYPRESS")
+                raise ValueError("action_value must be null for non-TYPE/non-KEYPRESS/non-EXTRACT")
 
 
 class PassBParamSpec(BaseModel):
@@ -295,6 +305,8 @@ class StepInput:
     event_idx: int
     action_json: dict[str, Any]
     param_hint_json: dict[str, Any]
+    details: str | None
+    extract_var_name: str | None
     pre_screenshot: Path | None
     post_screenshot: Path | None
 
@@ -343,6 +355,8 @@ def _map_action_type(action_type: str | None) -> PassAActionType | None:
         return "KEYPRESS"
     if t == "drag":
         return "DRAG"
+    if t == "extract":
+        return "EXTRACT"
     if t == "end":
         return None
     return None
@@ -358,6 +372,7 @@ def derive_step_inputs(workflow_dir: str | os.PathLike[str], events: list[dict[s
     steps: list[StepInput] = []
 
     step_i = 0
+    extract_i = 0
     for event_idx, e in enumerate(events):
         mapped = _map_action_type(e.get("action_type"))
         if mapped is None:
@@ -370,6 +385,14 @@ def derive_step_inputs(workflow_dir: str | os.PathLike[str], events: list[dict[s
 
         pre_path = workflow_dir_p / pre_rel if pre_rel else None
         post_path = workflow_dir_p / post_rel if post_rel else None
+
+        # For EXTRACT, we want a stable snapshot of the current screen. Treat PRE and POST as the same image
+        # so the model does not invent UI changes.
+        extract_var_name: str | None = None
+        if mapped == "EXTRACT":
+            post_path = pre_path
+            extract_var_name = f"extract_{extract_i}"
+            extract_i += 1
 
         # Param hints: MVP only includes typed text.
         param_hint: dict[str, Any] = {}
@@ -387,6 +410,8 @@ def derive_step_inputs(workflow_dir: str | os.PathLike[str], events: list[dict[s
                     "action_details": e.get("action_details") or {},
                 },
                 param_hint_json=param_hint,
+                details=(str(e.get("details")) if e.get("details") is not None else None),
+                extract_var_name=extract_var_name,
                 pre_screenshot=pre_path,
                 post_screenshot=post_path,
             )
@@ -463,6 +488,7 @@ def run_pass_a_step_cards(
             task_description_user=task_description_user,
             action_json=json.dumps({"i": s.i, **s.action_json}, ensure_ascii=False),
             param_hint_json=json.dumps(s.param_hint_json or {}, ensure_ascii=False),
+            details_text=json.dumps(s.details, ensure_ascii=False),
         )
 
         input_payload: Any = [
@@ -491,6 +517,14 @@ def run_pass_a_step_cards(
         except Exception as e:
             raise RuntimeError(f"Pass A step {s.i}: failed to read output_parsed/model_dump: {e}") from e
         card["i"] = s.i
+        # Ensure we always carry forward the input details (null or string) even if the model omits it.
+        card["details"] = s.details
+        # Set variable_name programmatically (do not ask the model to produce extract_0/extract_1/...).
+        vn = s.extract_var_name
+        if vn is not None:
+            if not re.fullmatch(r"extract_[0-9]+", vn):
+                raise RuntimeError(f"Pass A step {s.i}: invalid extract_var_name={vn!r}")
+        card["variable_name"] = vn
         return card
 
     # Determine which step indices are missing.
@@ -517,7 +551,7 @@ def run_pass_a_step_cards(
     _persist_partial()
 
     try:
-        with ThreadPoolExecutor(max_workers=5) as ex:
+        with ThreadPoolExecutor(max_workers=10) as ex:
             futures = {ex.submit(_compile_one, s): s for s in missing}
             with tqdm(total=len(futures), desc="Pass A", unit="step") as pbar:
                 for fut in as_completed(futures):
@@ -570,7 +604,7 @@ def run_pass_b_task_compiler(
     client = OpenAI()
 
     logger.info("Pass B: compiling task schema (model=%s)", model)
-    # Pass B operates on summarized steps (intent/action_type/action_value only).
+    # Pass B operates on summarized steps (include details to improve intent + parametrization).
     step_summaries: list[dict[str, Any]] = []
     for s in step_cards:
         if not isinstance(s, dict):
@@ -581,6 +615,8 @@ def run_pass_b_task_compiler(
                 "intent": s.get("intent"),
                 "action_type": s.get("action_type"),
                 "action_value": s.get("action_value"),
+                "details": s.get("details"),
+                "variable_name": s.get("variable_name"),
             }
         )
     user = PASS_B_USER_TEMPLATE.format(
@@ -717,6 +753,26 @@ def compile_workflow_schema(
     if missing_updates:
         raise RuntimeError(f"Pass B output incomplete: missing plan_step_updates for step indices: {missing_updates}")
 
+    # Preserve refined extract queries from Pass A before Pass B overwrites action_value for EXTRACT steps.
+    # Store under additional_args so future per-step arguments can be extended without new top-level fields.
+    for s in step_cards:
+        if not isinstance(s, dict):
+            continue
+        aa = s.get("additional_args")
+        if not isinstance(aa, dict):
+            aa = {}
+        if s.get("action_type") == "EXTRACT":
+            av0 = s.get("action_value")
+            if isinstance(av0, str) and av0.strip():
+                aa["extract_query"] = av0.strip()
+            else:
+                aa.pop("extract_query", None)
+        else:
+            aa.pop("extract_query", None)
+        s["additional_args"] = aa
+        # Backward-compat cleanup: do not carry old field forward.
+        s.pop("extract_query", None)
+
     subtask_set = set(subtasks_any)
     for i, s in enumerate(step_cards):
         u = updates_by_i[i]
@@ -732,18 +788,61 @@ def compile_workflow_schema(
         # Safety: enforce action_value nullability by action_type after merge.
         at = s.get("action_type")
         av = s.get("action_value")
-        if at in {"TYPE", "KEYPRESS"}:
+        if at in {"TYPE", "KEYPRESS", "EXTRACT"}:
             if not isinstance(av, str) or not av.strip():
                 raise RuntimeError(f"Step {i}: action_type={at} requires non-empty action_value after Pass B merge.")
         else:
             if av is not None:
                 raise RuntimeError(f"Step {i}: action_type={at} requires action_value=null after Pass B merge.")
 
-    # Remove plan_step_updates from top-level schema (we've merged it into plan.steps).
+    # Ensure EXTRACT steps have a non-empty additional_args.extract_query after merge.
+    for i, s in enumerate(step_cards):
+        if s.get("action_type") != "EXTRACT":
+            continue
+        aa = s.get("additional_args") if isinstance(s.get("additional_args"), dict) else {}
+        eq = aa.get("extract_query") if isinstance(aa, dict) else None
+        if not isinstance(eq, str) or not eq.strip():
+            raise RuntimeError(
+                f"Step {i}: EXTRACT step missing additional_args.extract_query (refined query) from Pass A."
+            )
+
+    # Remove plan_step_updates from top-level schema (we've merged it into plan.subtasks[].steps).
     final_schema.pop("plan_step_updates", None)
 
-    # Always attach plan.steps from Pass A in the final schema (and draft).
-    final_schema["plan"] = {"steps": step_cards}
+    # Build new v2 plan format: plan.subtasks[] where each subtask contains its steps.
+    # Do NOT keep top-level subtasks[] in the final schema; subtask text lives in plan.subtasks[].text.
+    steps_by_subtask: dict[str, list[dict[str, Any]]] = {st: [] for st in subtasks_any}
+    for s in step_cards:
+        st = s.get("subtask")
+        if not isinstance(st, str) or st not in steps_by_subtask:
+            raise RuntimeError("Internal error: step missing valid subtask assignment after merge.")
+        steps_by_subtask[st].append(s)
+
+    plan_subtasks: list[dict[str, Any]] = []
+    for subtask_i, st_text in enumerate(subtasks_any):
+        steps_out: list[dict[str, Any]] = []
+        for local_i, s in enumerate(steps_by_subtask.get(st_text, [])):
+            # Make step indices subtask-local only.
+            s2 = dict(s)
+            s2["i"] = local_i
+            # Remove redundant global subtask string from each step (lives on parent).
+            s2.pop("subtask", None)
+            # Do not keep details in final schema (they should be encoded into intent/etc by Pass A/B).
+            s2.pop("details", None)
+            # Backward-compat cleanup: remove legacy extract_query field if present.
+            s2.pop("extract_query", None)
+            steps_out.append(s2)
+        plan_subtasks.append(
+            {
+                "subtask_i": subtask_i,
+                "text": st_text,
+                "dependencies": [],
+                "steps": steps_out,
+            }
+        )
+
+    final_schema.pop("subtasks", None)
+    final_schema["plan"] = {"subtasks": plan_subtasks}
 
     write_schema_draft(workflow_dir_p, final_schema)
     logger.info("Pass B complete: wrote schema.draft.json")

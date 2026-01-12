@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AI Mime — Workflow Editor</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <script>
+      // Replaced by server.py
+      window.__WORKFLOW_ID__ = "__WORKFLOW_ID__";
+    </script>
+
+    <div id="app">
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="brand">AI Mime</div>
+          <div class="divider"></div>
+          <div class="title">
+            <div class="title-main" id="wfTitle">Workflow Editor</div>
+            <div class="title-sub" id="wfSub">Loading…</div>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="dirty" id="dirtyFlag" hidden>Unsaved changes</div>
+          <button class="btn" id="revertBtn" title="Reload from disk">Revert</button>
+          <button class="btn primary" id="saveBtn">Save</button>
+        </div>
+      </header>
+
+      <div class="error-banner" id="errorBanner" hidden>
+        <div class="error-title">Save failed</div>
+        <pre class="error-text" id="errorText"></pre>
+      </div>
+
+      <main class="layout">
+        <aside class="sidebar">
+          <div class="sidebar-title">Subtasks</div>
+          <div class="sidebar-list" id="subtaskList"></div>
+        </aside>
+
+        <section class="content">
+          <section class="card">
+            <div class="card-title">Task</div>
+            <div class="grid2">
+              <label class="field">
+                <div class="label">Task name</div>
+                <input id="taskName" type="text" />
+              </label>
+              <div></div>
+            </div>
+            <label class="field">
+              <div class="label">Detailed task description</div>
+              <textarea id="taskDesc" rows="4"></textarea>
+            </label>
+          </section>
+
+          <section class="card">
+            <div class="card-title row">
+              <div>Parameters</div>
+              <div class="row-right">
+                <button class="btn" id="addParamBtn">+ Add parameter</button>
+              </div>
+            </div>
+            <div class="table" id="paramsTable"></div>
+          </section>
+
+          <section class="card">
+            <div class="card-title row">
+              <div>Subtasks & Steps</div>
+              <div class="row-right">
+                <button class="btn" id="addSubtaskBtn">+ Add subtask</button>
+              </div>
+            </div>
+            <div id="subtasksContainer"></div>
+          </section>
+        </section>
+      </main>
+
+      <div class="modal-backdrop" id="modalBackdrop" hidden>
+        <div class="modal">
+          <div class="modal-title">Add dependency</div>
+          <div class="modal-sub" id="modalSub">Choose an upstream extract variable</div>
+          <input class="modal-search" id="depSearch" type="text" placeholder="Search extract_…" />
+          <div class="modal-list" id="depList"></div>
+          <div class="modal-actions">
+            <button class="btn" id="modalCancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-backdrop" id="stepModalBackdrop" hidden>
+        <div class="modal">
+          <div class="modal-title">Step details</div>
+          <div class="modal-sub" id="stepModalSub">Edit advanced fields for this step</div>
+
+          <label class="field">
+            <div class="label">expected_current_state</div>
+            <textarea id="stepExpected" rows="3"></textarea>
+          </label>
+
+          <div class="grid2">
+            <label class="field">
+              <div class="label">target.primary</div>
+              <input id="stepTargetPrimary" type="text" />
+            </label>
+            <label class="field">
+              <div class="label">target.fallback</div>
+              <input id="stepTargetFallback" type="text" />
+            </label>
+          </div>
+
+          <label class="field">
+            <div class="label">post_action (one per line)</div>
+            <textarea id="stepPostAction" rows="3"></textarea>
+          </label>
+
+          <div class="grid2">
+            <label class="field">
+              <div class="label">variable_name (EXTRACT only)</div>
+              <input id="stepVariableName" type="text" placeholder="extract_0" />
+            </label>
+            <label class="field">
+              <div class="label">additional_args.extract_query (EXTRACT only)</div>
+              <textarea id="stepExtractQuery" rows="2"></textarea>
+            </label>
+          </div>
+
+          <div class="modal-actions">
+            <button class="btn" id="stepModalCancel">Cancel</button>
+            <button class="btn primary" id="stepModalApply">Apply</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-backdrop" id="errorModalBackdrop" hidden>
+        <div class="modal">
+          <div class="modal-title">Save failed</div>
+          <div class="modal-sub">Fix the error and try saving again.</div>
+          <pre class="error-text" id="errorModalText"></pre>
+          <div class="modal-actions">
+            <button class="btn" id="errorModalClose">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

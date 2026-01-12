@@ -91,6 +91,35 @@ COMPUTER_USE_SYSTEM_PROMPT = textwrap.dedent(
       {
         "type": "function",
         "function": {
+          "name": "extract",
+          "description": "Extract information from the CURRENT screenshot without performing any UI action. Use this when the reference steps indicate an EXTRACT step is required at this point.",
+          "parameters": {
+            "type": "object",
+            "required": ["variable_name", "query", "observation", "task_memory"],
+            "properties": {
+              "variable_name": {
+                "type": "string",
+                "description": "Required. The name to store this extraction under (e.g. 'extract_0')."
+              },
+              "query": {
+                "type": "string",
+                "description": "Required. The refined extraction query (what to extract from the screenshot)."
+              },
+              "observation": {
+                "type": "string",
+                "description": "Required. Current UI-specific observation relevant to this extraction."
+              },
+              "task_memory": {
+                "type": "string",
+                "description": "Required. Updated memory string to carry across subtasks. Use sparingly for important results."
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
           "name": "done",
           "description": "Signal that the current subtask is complete and provide the result to carry forward.",
           "parameters": {
@@ -116,11 +145,24 @@ COMPUTER_USE_SYSTEM_PROMPT = textwrap.dedent(
     - If you call computer_use, you MUST include BOTH "observation" and "task_memory" in arguments.
     - "observation" must be current-step specific (what you see/what changed that is relevant right now).
     - "task_memory" must be a concise carried-forward memory; update sparingly with important results.
+    - If you call extract, you MUST include variable_name, query, observation, and task_memory.
     - If you call done, you MUST include "result" and "task_memory".
+
+    Behavior rules:
+    - Decide ONE next action to progress the current subtask, or call done if the expected outcome is met.
+    - Extraction: If the reference steps include an EXTRACT step and you are at the corresponding screen/state, you MUST call extract with that step's variable_name and extract_query. Do not use computer_use for extraction.
+    - If you call computer_use, include a current-step specific observation and an updated task_memory.
+    - If you call done, include result (what was achieved / info to pass) and updated task_memory.
+    - If you seem stuck (observations repeating / screen not changing), try an alternate strategy (e.g., back, close popups, refocus, scroll, open the right app/tab, or retry the entry path).
 
     For each function call, return a JSON object with function name and arguments within <tool_call></tool_call> XML tags:
     <tool_call>
     {"name":"computer_use","arguments":{"action":"left_click","coordinate":[500,500],"observation":"...","task_memory":"..."}}
+    </tool_call>
+
+    Or, to extract from the current screenshot:
+    <tool_call>
+    {"name":"extract","arguments":{"variable_name":"extract_0","query":"...","observation":"...","task_memory":"..."}}
     </tool_call>
 
     Or, to finish the current subtask:
@@ -259,11 +301,15 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
                                 f"Previous output: {last_text}\n\n"
                                 "Return EXACTLY ONE <tool_call> JSON.\n"
                                 "- If name=computer_use: arguments MUST include action, observation (non-empty), task_memory (string).\n"
+                                "- If name=extract: arguments MUST include variable_name (non-empty), query (non-empty), observation (non-empty), task_memory (string).\n"
                                 "- If name=done: arguments MUST include result (non-empty), task_memory (string).\n"
                                 "Do not omit required fields."
                                 "\n\nExamples:\n"
                                 '<tool_call>\n'
                                 '{"name":"computer_use","arguments":{"action":"left_click","coordinate":[500,500],"observation":"Clicked the Search box; it is visible and clickable.","task_memory":"..."}}\n'
+                                "</tool_call>\n"
+                                '<tool_call>\n'
+                                '{"name":"extract","arguments":{"variable_name":"extract_0","query":"Extract the top 3 restaurant names and addresses from the left results list.","observation":"...","task_memory":"..."}}\n'
                                 "</tool_call>\n"
                                 '<tool_call>\n'
                                 '{"name":"done","arguments":{"result":"Spotify is open in the foreground.","task_memory":"Spotify is open."}}\n'
@@ -283,8 +329,8 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
             last_text = content
 
             tool_call = _extract_json_payload(content)
-            if not isinstance(tool_call, dict) or tool_call.get("name") not in {"computer_use", "done"}:
-                raise ReplayError(f"Expected tool call with name=computer_use|done, got: {tool_call}")
+            if not isinstance(tool_call, dict) or tool_call.get("name") not in {"computer_use", "extract", "done"}:
+                raise ReplayError(f"Expected tool call with name=computer_use|extract|done, got: {tool_call}")
             args = tool_call.get("arguments")
             if not isinstance(args, dict):
                 raise ReplayError(f"Tool call missing arguments: {tool_call}")
@@ -319,6 +365,17 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
                 elif action == "wait":
                     if args.get("time") is None:
                         raise ReplayError(f"computer_use action=wait requires arguments.time: {tool_call}")
+            elif name == "extract":
+                vn = args.get("variable_name")
+                q = args.get("query")
+                if not isinstance(vn, str) or not vn.strip():
+                    raise ReplayError(f"extract missing required arguments.variable_name: {tool_call}")
+                if not isinstance(q, str) or not q.strip():
+                    raise ReplayError(f"extract missing required arguments.query: {tool_call}")
+                if not isinstance(args.get("observation"), str) or not args.get("observation", "").strip():
+                    raise ReplayError(f"extract missing required arguments.observation: {tool_call}")
+                if not isinstance(args.get("task_memory"), str):
+                    raise ReplayError(f"extract missing required arguments.task_memory: {tool_call}")
             else:
                 if not isinstance(args.get("result"), str) or not args.get("result", "").strip():
                     raise ReplayError(f"done missing required arguments.result: {tool_call}")

@@ -3,8 +3,8 @@ import time
 import threading
 import os
 from pathlib import Path
+from queue import Empty
 from ai_mime.screenshot import ScreenshotRecorder
-from .audio import AudioRecorder
 
 class CurrentScreenshotUpdater:
     """
@@ -90,15 +90,9 @@ class CurrentScreenshotUpdater:
                 return None
 
 class EventRecorder:
-    def __init__(self, storage):
+    def __init__(self, storage, *, refine_req_q=None, refine_resp_q=None):
         self.storage = storage
         self.screenshot_recorder = ScreenshotRecorder()
-        self.audio_recorder = AudioRecorder()
-
-        # Audio State
-        self.pending_audio_clip = None
-        self.ptt_key = keyboard.Key.f9  # Default PTT
-        self.ptt_active = False
 
         # Typing State
         self.type_buf = []
@@ -112,6 +106,10 @@ class EventRecorder:
         self.mouse_listener = None
         self.keyboard_listener = None
         self.modifiers = set() # Track active modifiers
+        self.paused = False
+        self.pending_details: str | None = None
+        self.refine_req_q = refine_req_q
+        self.refine_resp_q = refine_resp_q
 
         # Current screenshot updater (overwrites current_screenshot.png every 500ms)
         self.current_updater = CurrentScreenshotUpdater(
@@ -147,6 +145,7 @@ class EventRecorder:
         """Stop capturing and cleanup."""
         if not self.recording: return
         self.recording = False
+        self.paused = False
 
         if self.mouse_listener: self.mouse_listener.stop()
         if self.keyboard_listener: self.keyboard_listener.stop()
@@ -155,21 +154,6 @@ class EventRecorder:
 
         # Stop current screenshot updater
         self.current_updater.stop()
-
-        # Stop audio if running
-        if self.ptt_active:
-            saved = self.audio_recorder.stop()
-            if saved: self.pending_audio_clip = saved
-
-        # Handle leftover audio
-        if self.pending_audio_clip:
-             self.storage.write_event({
-                "action_type": "end",
-                "voice_clip": self.storage.get_relative_path(self.pending_audio_clip),
-                "timestamp": time.time(),
-                "screenshot": None,
-                "action_details": {}
-             })
 
     def _freeze_current_screenshot(self):
         """Freeze the most recent pre-action current screenshot into the numbered screenshots/ dir."""
@@ -181,13 +165,18 @@ class EventRecorder:
         self.current_updater.copy_current_to(pretyping_path)
         self.type_screenshot = pretyping_path
 
-    def _consume_audio(self):
-        """Return pending audio clip path (relative) and clear it."""
-        if self.pending_audio_clip:
-            rel = self.storage.get_relative_path(self.pending_audio_clip)
-            self.pending_audio_clip = None
-            return rel
-        return None
+    def _write_event(self, event_data: dict):
+        """
+        Centralized event write:
+        - always sets voice_clip to None (audio disabled)
+        - injects pending 'details' onto the next event if present
+        """
+        event_data.setdefault("voice_clip", None)
+        event_data.setdefault("details", None)
+        if self.pending_details:
+            event_data["details"] = self.pending_details
+            self.pending_details = None
+        self.storage.write_event(event_data)
 
     def flush_typing(self):
         """Flush buffered typing events."""
@@ -207,11 +196,10 @@ class EventRecorder:
             # Fallback: freeze current (best-effort) if we missed typing-burst start.
             screenshot = self._freeze_current_screenshot()
 
-        self.storage.write_event({
+        self._write_event({
             "action_type": "type",
             "action_details": {"text": text},
             "screenshot": screenshot,
-            "voice_clip": self._consume_audio(),
             "timestamp": time.time()
         })
 
@@ -219,7 +207,7 @@ class EventRecorder:
         self.current_updater.force_refresh()
 
     def on_click(self, x, y, button, pressed):
-        if not self.recording: return
+        if not self.recording or self.paused: return
         if pressed:
             # 1. Flush any pending typing
             self.flush_typing()
@@ -228,18 +216,17 @@ class EventRecorder:
             screenshot = self._freeze_current_screenshot()
 
             # 3. Write event
-            self.storage.write_event({
+            self._write_event({
                 "action_type": "click",
                 "action_details": {"button": str(button), "x": x, "y": y, "pressed": True},
                 "screenshot": screenshot,
-                "voice_clip": self._consume_audio(),
                 "timestamp": time.time()
             })
             # 4. Refresh current screenshot to capture result sooner
             self.current_updater.force_refresh()
 
     def on_scroll(self, x, y, dx, dy):
-        if not self.recording: return
+        if not self.recording or self.paused: return
         now = time.time()
         if now - self.last_scroll_time < self.scroll_throttle:
             return
@@ -248,14 +235,73 @@ class EventRecorder:
         self.flush_typing()
         screenshot = self._freeze_current_screenshot()
 
-        self.storage.write_event({
+        self._write_event({
             "action_type": "scroll",
             "action_details": {"x": x, "y": y, "dx": dx, "dy": dy},
             "screenshot": screenshot,
-            "voice_clip": self._consume_audio(),
             "timestamp": now
         })
         self.current_updater.force_refresh()
+
+    def _trigger_refine(self):
+        """
+        Pause recording, request UI input, then either:
+        - write an extract event (with frozen pre-action screenshot)
+        - store details for the next event
+        """
+        if self.paused:
+            return
+        # If no IPC configured, do nothing (but do not record Ctrl+I).
+        if self.refine_req_q is None or self.refine_resp_q is None:
+            return
+
+        self.flush_typing()
+        screenshot = self._freeze_current_screenshot()
+        self.paused = True
+
+        req_id = time.time()
+        try:
+            self.refine_req_q.put({"req_id": req_id, "screenshot": screenshot})
+        except Exception:
+            self.paused = False
+            return
+
+        resp = None
+        # Poll so stop() can break us out.
+        while self.recording and self.paused and resp is None:
+            try:
+                candidate = self.refine_resp_q.get(timeout=0.1)
+            except Empty:
+                continue
+            except Exception:
+                break
+            if isinstance(candidate, dict) and candidate.get("req_id") == req_id:
+                resp = candidate
+
+        # If we were stopped while waiting, just unpause.
+        if not self.recording:
+            self.paused = False
+            return
+
+        kind = (resp or {}).get("kind")
+        if kind == "extract":
+            query = str((resp or {}).get("query") or "").strip()
+            values = str((resp or {}).get("values") or "").strip()
+            self._write_event(
+                {
+                    "action_type": "extract",
+                    "action_details": {"query": query, "values": values},
+                    "screenshot": screenshot,
+                    "timestamp": time.time(),
+                }
+            )
+        elif kind == "details":
+            text = str((resp or {}).get("text") or "").strip()
+            if text:
+                self.pending_details = text
+        # cancel/unknown => no-op
+
+        self.paused = False
 
     def on_press(self, key):
         if not self.recording: return
@@ -270,13 +316,23 @@ class EventRecorder:
         if key in [keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r]:
             self.modifiers.add("shift")
 
-        # PTT Logic
-        if key == self.ptt_key:
-            if not self.ptt_active:
-                self.ptt_active = True
-                path = self.storage.get_audio_path()
-                self.audio_recorder.start(str(path))
-            return # Don't record PTT key itself
+        # Ctrl+I: refinement prompt (do not record this key)
+        try:
+            char = key.char  # type: ignore[attr-defined]
+        except AttributeError:
+            char = None
+
+        # # DEBUG: print every keypress + modifier state (helps debug Chrome vs Desktop).
+        # print(f"[KEY_DEBUG] on_press key={key!r} char={char!r} modifiers={sorted(self.modifiers)} paused={self.paused}")
+
+
+        if "ctrl" in self.modifiers and char is not None and str(char) in ("i", "I", "\t"):
+            self._trigger_refine()
+            return
+
+        # While paused: ignore everything (including typing bursts)
+        if self.paused:
+            return
 
         # Special Keys: Flush typing, then record separately
         # Note: on macOS laptops, F4 is often mapped to Launchpad.
@@ -289,11 +345,10 @@ class EventRecorder:
 
             key_name = str(key).replace("Key.", "").upper()
 
-            self.storage.write_event({
+            self._write_event({
                 "action_type": "key",
                 "action_details": {"key": key_name},
                 "screenshot": screenshot,
-                "voice_clip": self._consume_audio(),
                 "timestamp": time.time()
             })
             self.current_updater.force_refresh()
@@ -309,20 +364,15 @@ class EventRecorder:
              # we will implement a basic modifier tracker.
              pass
 
-        try:
-            # Try to get char (letters, numbers)
-            # pynput keys can be Key or KeyCode; only KeyCode has .char
-            char = key.char  # type: ignore[attr-defined]
-        except AttributeError:
+        if char is None:
             # Handle Cmd+Space (Spotlight/Search)
             if key == keyboard.Key.space and "cmd" in self.modifiers:
                 self.flush_typing()
                 screenshot = self._freeze_current_screenshot()
-                self.storage.write_event({
+                self._write_event({
                     "action_type": "key",
                     "action_details": {"key": "CMD+SPACE"}, # Explicitly log Search
                     "screenshot": screenshot,
-                    "voice_clip": self._consume_audio(),
                     "timestamp": time.time()
                 })
                 self.current_updater.force_refresh()
@@ -364,9 +414,4 @@ class EventRecorder:
         if key in [keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r]:
             self.modifiers.discard("shift")
 
-        if key == self.ptt_key:
-            if self.ptt_active:
-                self.ptt_active = False
-                saved_file = self.audio_recorder.stop()
-                if saved_file:
-                    self.pending_audio_clip = saved_file
+        return

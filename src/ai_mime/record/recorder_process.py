@@ -3,7 +3,14 @@ import multiprocessing
 from .storage import SessionStorage
 from .capture import EventRecorder
 
-def run_recorder_process(name, description, stop_event, session_dir_queue=None):
+def run_recorder_process(
+    name,
+    description,
+    stop_event,
+    session_dir_queue=None,
+    refine_req_q=None,
+    refine_resp_q=None,
+):
     """
     Entry point for the recording child process.
     """
@@ -24,7 +31,7 @@ def run_recorder_process(name, description, stop_event, session_dir_queue=None):
     except Exception:
         pass
 
-    recorder = EventRecorder(storage)
+    recorder = EventRecorder(storage, refine_req_q=refine_req_q, refine_resp_q=refine_resp_q)
 
     # Enable listeners (uncommenting the parts we disabled earlier)
     # The EventRecorder.start() method needs to be "clean" again for this usage.

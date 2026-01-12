@@ -1,8 +1,8 @@
 # AI Mime
 
-**Record, Reflect, and Replay workflows on macOS.**
+**Record, Reflect, Edit, and Replay workflows on macOS.**
 A macOS desktop RPA tool for end-to-end workflow automation.
-It records user interactions (mouse, keyboard, window/app context) and replays them to rerun tasks on demand—great for repeatable, multi-step processes across native macOS apps and websites.
+It records user interactions (mouse, keyboard, window/app context), converts them into a reusable workflow schema, lets you edit parameters/subtasks/dependencies, and replays them to rerun tasks on demand—great for repeatable, multi-step processes across native macOS apps and websites.
 
 ## Record
 Start capturing a workflow by clicking AI Mime → Start Recording in the macOS menu bar. When you’re done, click AI Mime → Stop Recording to save it.
@@ -37,7 +37,8 @@ To function correctly, `ai-mime` requires macOS permissions. Because you are lik
 3.  **Grant Permissions**:
     *   **Accessibility**: Required to monitor global mouse/keyboard inputs. Add your Terminal app (e.g., iTerm, Terminal) AND the python binary from your venv if prompted.
     *   **Screen Recording**: Required to capture screenshots. Add your Terminal app / Python binary.
-    *   **Microphone**: Required for voice notes.
+    *  **Input Monitoring**
+
 Use Cmd+Shift+G when trying to add the python binary in settings.
 
 *Note: If you see "Terminal" in the list but it still doesn't work, try removing it and re-adding it, or run the script from a dedicated terminal window.*
@@ -74,6 +75,11 @@ source .venv/bin/activate
 start_app
 ```
 
+PS: The app creates a lot of processes in the background. These might persist on quitting the app. The following command to force kills all these processes:
+```
+pkill -9 -f "ai_mime\.cli:start_app|ai_mime\.app|start_app|AI Mime"
+```
+
 #### Start recording
 - In the menubar app, click **Start Recording**.
 
@@ -87,6 +93,18 @@ start_app
 
 #### Replay a specific recording
 - Open the menubar app → **Replay** → choose the workflow you want to run (workflows are discovered by scanning `workflows/` for folders that contain `schema.json`).
+
+#### Edit a workflow (browser editor)
+- Open the menubar app → **Edit Workflow** → choose a workflow.
+- Your default browser will open a local editor page (served from `127.0.0.1`).
+- You can edit:
+  - task name + detailed task description
+  - parameters (add/delete; deleted params can be “baked in” using their example value on save)
+  - subtasks (add/insert anywhere/delete)
+  - steps (edit intent/action_type/action_value; delete steps)
+  - dependencies (pick upstream `extract_*` variables)
+  - advanced step details via **Details** (expected state, target, post_action, extract fields)
+- Click **Save** to validate + write back to `workflows/<session_id>/schema.json`. If invalid, the editor shows the error and does not save.
 
 ### Output
 

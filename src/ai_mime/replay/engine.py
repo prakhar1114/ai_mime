@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -8,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from lmnr import observe
+
+from openai import OpenAI  # type: ignore[import-not-found]
 
 
 class ReplayError(RuntimeError):
@@ -45,14 +48,10 @@ def resolve_params(schema: dict[str, Any], overrides: dict[str, str] | None = No
     params: dict[str, str] = {}
 
     task_params = schema.get("task_params") or []
-    if not isinstance(task_params, list):
-        raise ReplayError("schema.json.task_params must be a list")
 
     for p in task_params:
-        if not isinstance(p, dict):
-            continue
         name = p.get("name")
-        if not isinstance(name, str) or not name:
+        if not name:
             continue
         if name in overrides:
             params[name] = str(overrides[name])
@@ -73,8 +72,6 @@ def resolve_params(schema: dict[str, Any], overrides: dict[str, str] | None = No
 def _render_template(s: str | None, params: dict[str, str]) -> str | None:
     if s is None:
         return None
-    if not isinstance(s, str):
-        return str(s)
     # Schema uses single-brace templates like "{query}".
     needed = set(_SINGLE_BRACE_PARAM_RE.findall(s))
     missing = [k for k in sorted(needed) if k not in params]
@@ -106,44 +103,68 @@ def materialize_schema(schema: dict[str, Any], params: dict[str, str]) -> dict[s
     """
     out: dict[str, Any] = dict(schema)
 
-    # Render subtasks
-    subtasks_any = out.get("subtasks") or []
-    if isinstance(subtasks_any, list):
-        rendered: list[str] = []
-        for s in subtasks_any:
-            if s is None:
-                continue
-            rendered_s = _render_template(str(s), params)
-            rendered.append(str(rendered_s) if rendered_s is not None else "")
-        out["subtasks"] = rendered
-
-    # Render plan step action_values
+    # Render plan.subtasks[].text + step action_values + additional_args.
     plan = out.get("plan") or {}
-    steps = plan.get("steps") or []
-    if isinstance(plan, dict) and isinstance(steps, list):
-        new_steps: list[dict[str, Any]] = []
+    subtasks = plan.get("subtasks") or []
+    for st in subtasks:
+        st["text"] = _render_template(st.get("text"), params)
+        steps = st.get("steps") or []
         for s in steps:
-            if not isinstance(s, dict):
-                continue
-            s2 = dict(s)
-            s2["action_value"] = _render_template(s2.get("action_value"), params)
-            # For debugging: also render subtask label if present, without overwriting the template.
-            if isinstance(s2.get("subtask"), str):
-                s2["subtask_rendered"] = _render_template(s2.get("subtask"), params)
-            new_steps.append(s2)
-        out["plan"] = {**plan, "steps": new_steps}
+            s["action_value"] = _render_template(s.get("action_value"), params)
+            aa = s.get("additional_args") or {}
+            # Backward-compat: if an older v2 schema has extract_query at the top-level, fold it in.
+            if s.get("extract_query") and "extract_query" not in aa:
+                aa["extract_query"] = s.get("extract_query")
+            if aa.get("extract_query") is not None:
+                aa["extract_query"] = _render_template(aa.get("extract_query"), params)
+            s["additional_args"] = aa
+            s.pop("extract_query", None)
+    out["plan"] = {**plan, "subtasks": subtasks}
 
     return out
 
 
-def iter_plan_steps(schema: dict[str, Any]) -> list[dict[str, Any]]:
-    plan = schema.get("plan", {})
-    steps = plan.get("steps", [])
-    out: list[dict[str, Any]] = []
-    for s in steps:
-        if isinstance(s, dict):
-            out.append(s)
-    return out
+def _encode_image_data_url(image_path: Path) -> str:
+    suffix = image_path.suffix.lower()
+    if suffix == ".png":
+        mime = "image/png"
+    elif suffix in (".jpg", ".jpeg"):
+        mime = "image/jpeg"
+    elif suffix == ".webp":
+        mime = "image/webp"
+    else:
+        mime = "image/png"
+    b64 = base64.b64encode(image_path.read_bytes()).decode("utf-8")
+    return f"data:{mime};base64,{b64}"
+
+
+def _run_vision_extract(*, image_path: Path, query: str, cfg: ReplayConfig) -> str:
+    """
+    Host-driven extraction: ask the model to extract information from the screenshot given a refined query.
+    Returns best-effort extracted text (may be empty if not found).
+    """
+    if not cfg.api_key:
+        raise ReplayError("Missing replay API key for extraction (cfg.api_key).")
+    if not query.strip():
+        return ""
+    data_url = _encode_image_data_url(image_path)
+    client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
+    messages: Any = [
+        {"role": "system", "content": "You extract requested information from screenshots. Be concise and do not hallucinate."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": data_url}},
+                {"type": "text", "text": f"Extraction query: {query}\n\nReturn ONLY the extracted value as plain text. If not present, return an empty string."},
+            ],
+        },
+    ]
+    try:
+        completion = client.chat.completions.create(model=cfg.model, messages=messages)
+        content = (completion.choices[0].message.content or "").strip()
+        return content
+    except Exception as e:
+        raise ReplayError(f"Extraction call failed: {e}") from e
 
 
 @observe(name="replay_task")
@@ -172,9 +193,11 @@ def run_plan(
     _ = schema.get("detailed_task_description") or ""
     _ = schema.get("success_criteria") or ""
 
-    # From here on, rely only on the rendered schema (it contains all run-relevant strings).
-    steps = iter_plan_steps(schema_rendered)
-    subtasks_rendered: list[str] = schema_rendered.get("subtasks") or []
+    extracts = {}
+
+    plan = schema_rendered.get("plan") or {}
+    subtasks_any = plan.get("subtasks") or []
+    subtasks: list[dict[str, Any]] = subtasks_any
 
     def _sleep(dt: float) -> None:
         if dt and dt > 0:
@@ -192,50 +215,58 @@ def run_plan(
     def _persist_task_memory(mem: str) -> None:
         task_memory_path.write_text(json.dumps({"task_memory": mem}, indent=2), encoding="utf-8")
 
+    def _persist_extracts() -> None:
+        (run_dir / "extracts.json").write_text(json.dumps({"extracts": extracts}, indent=2), encoding="utf-8")
+
     # Cross-subtask memory carried forward (updated by model each iteration).
     task_memory = ""
     _persist_task_memory(task_memory)
 
     max_iters_per_subtask = 30
 
-    def _step_subtask_key(step: dict[str, Any]) -> str | None:
-        st = step.get("subtask_rendered") or step.get("subtask")
-        return st if isinstance(st, str) and st.strip() else None
-
-    def _build_reference_steps_by_subtask() -> dict[str, list[dict[str, Any]]]:
-        """
-        Build a mapping: rendered_subtask -> list of reference step summaries.
-        """
-        out: dict[str, list[dict[str, Any]]] = {s: [] for s in subtasks_rendered}
-        for s in steps:
-            if not isinstance(s, dict):
-                continue
-            st = _step_subtask_key(s)
-            if not st or st not in out:
-                continue
-            target = s.get("target") or {}
-            target_primary = target.get("primary") if isinstance(target, dict) else None
-            out[st].append(
-                {
-                    # Local 0-based index within this subtask's reference sequence.
-                    "i": len(out[st]),
-                    "intent": s.get("intent"),
-                    "action_type": s.get("action_type"),
-                    "action_value": s.get("action_value"),
-                    "target_primary": target_primary,
-                    "expected_current_state": s.get("expected_current_state"),
-                    "post_action": s.get("post_action"),
-                }
-            )
-        return out
-
-    reference_steps_by_subtask = _build_reference_steps_by_subtask()
+    # Map extract variable_name -> {query, subtask_i}.
+    extract_meta: dict[str, dict[str, Any]] = {
+        s["variable_name"]: {"query": s["additional_args"]["extract_query"], "subtask_i": st.get("subtask_i")}
+        for st in subtasks
+        for s in (st.get("steps") or [])
+        if s.get("action_type") == "EXTRACT"
+    }
 
     # Main loop: iterate subtasks, run until the model calls done(), then move to next.
-    for subtask_idx, subtask_text in enumerate(subtasks_rendered):
-        reference_steps = reference_steps_by_subtask.get(subtask_text, [])
+    for subtask_idx, st in enumerate(subtasks):
+        subtask_text = st.get("text") or ""
+        deps = st.get("dependencies") or []
 
-        log(f"Subtask {subtask_idx + 1}/{len(subtasks_rendered)}: {subtask_text}")
+        steps_any = st.get("steps") or []
+        if not isinstance(steps_any, list):
+            # Be robust to malformed schemas; treat non-list as empty list.
+            steps_any = []
+            st["steps"] = []
+        reference_steps: list[dict[str, Any]] = [
+            {
+                "i": i,
+                "intent": s.get("intent"),
+                "action_type": s.get("action_type"),
+                "action_value": s.get("action_value"),
+                "extract_query": (s.get("additional_args") or {}).get("extract_query"),
+                "target_primary": (s.get("target") or {}).get("primary"),
+                "expected_current_state": s.get("expected_current_state"),
+                "post_action": s.get("post_action"),
+            }
+            for i, s in enumerate(steps_any)
+        ]
+
+        # Build Additional context from dependency extracts (query + value).
+        additional_context: list[dict[str, Any]] = [
+            {
+                "name": dep,
+                "query": (extract_meta.get(dep) or {}).get("query") or "",
+                "value": extracts.get(dep),
+            }
+            for dep in deps
+        ]
+
+        log(f"Subtask {subtask_idx + 1}/{len(subtasks)}: {subtask_text}")
         if task_description_user:
             log(f"  task: {task_description_user}")
 
@@ -251,24 +282,55 @@ def run_plan(
             user_query = (
                 f"Overall Task: {task_name}\n"
                 f"Current subtask and expected outcome: {subtask_text}\n"
-                f"Params: {params}\n"
+                f"Additional context (from previous subtasks): {additional_context}\n"
                 f"Task memory: {task_memory}\n"
-                f"History (this subtask): {history[-5:]}\n\n"
-                f"Reference steps (examples) from previous runs: {reference_steps}\n\n"
-                "Decide ONE next action to progress the current subtask, or call done if the expected outcome is met.\n"
-                "If you call computer_use, include a current-step specific observation and an updated task_memory.\n"
-                "If you call done, include result (what was achieved / info to pass) and updated task_memory.\n"
-                "If you seem stuck (observations repeating / screen not changing), try an alternate strategy (e.g., back, close popups, refocus, scroll, open the right app/tab, or retry the entry path).\n"
-                "Return exactly one tool call."
+                f"Recent history (this subtask):\n{history}\n\n"
+                f"Reference steps (ordered examples):\n{reference_steps}\n"
             )
 
             tool_call = predict_tool_call(img_path, user_query, cfg)
             name = tool_call.get("name")
             args = tool_call.get("arguments") or {}
 
+            if name == "extract":
+                vn = args.get("variable_name")
+                q = args.get("query") or ""
+                val = _run_vision_extract(image_path=img_path, query=q, cfg=cfg)
+                extracts[vn] = val
+                _persist_extracts()
+                task_memory = str(args.get("task_memory") or task_memory)
+                _persist_task_memory(task_memory)
+                # Important: include extract calls in the per-subtask history so the model
+                # "remembers" it already extracted and doesn't loop on extract().
+                history.append(
+                    {
+                        "action": "extract",
+                        "variable_name": vn,
+                        "query": q,
+                        "value": val,
+                    }
+                )
+                _append_event(
+                    {
+                        "type": "extract",
+                        "subtask_idx": subtask_idx,
+                        "iter": it,
+                        "variable_name": vn,
+                        "query": q,
+                        "value": val,
+                        "task_memory": task_memory,
+                    }
+                )
+                for item in additional_context:
+                    if item.get("name") == vn:
+                        item["value"] = val
+                log(f"  extract: {vn}={val}")
+                continue
+
             if name == "done":
                 result = args.get("result")
                 task_memory = str(args.get("task_memory") or "")
+                history.append({"action": "done", "result": result})
                 _append_event(
                     {
                         "type": "done",
