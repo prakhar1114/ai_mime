@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Mime — macOS Workflow Automation</title>
+    <meta
+      name="description"
+      content="AI Mime records real workflows on macOS, turns them into reusable editable schemas, and replays them to automate repeatable tasks across apps and websites."
+    />
+    <link rel="stylesheet" href="./landing.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div class="container">
+        <div class="brand">AI Mime</div>
+        <nav class="nav">
+          <a href="./architecture.md">Architecture</a>
+          <a href="https://github.com/prakhar1114/ai_mime">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="container hero-grid">
+          <div>
+            <h1>Workflow automation that starts with how you actually work.</h1>
+            <p class="lead">
+              AI Mime is a macOS desktop RPA system that <strong>records</strong> real user workflows,
+              <strong>reflects</strong> them into a reusable schema, lets you <strong>edit</strong> parameters and
+              dependencies, and <strong>replays</strong> the workflow on demand.
+            </p>
+
+            <div class="pill-row">
+              <span class="pill">Record &gt; Edit Workflow &gt; Replay</span>
+              <span class="pill">Native apps + websites</span>
+              <span class="pill">Parameterizable + reusable</span>
+            </div>
+
+            <!-- <div class="cta-row">
+              <a class="btn primary" href="./architecture.md">Architecture</a>
+            </div> -->
+
+            <div class="how-title">How it works</div>
+            <div class="how-sub">
+              Record a workflow, edit parameters/dependencies, and replay it on demand.
+            </div>
+
+            <div class="hero-media" aria-label="Screenshots of AI Mime">
+              <div class="media-card">
+                <a class="media-link" href="./images/start_recording.png" target="_blank" rel="noopener noreferrer" aria-label="Open full-size Record screenshot">
+                  <img src="./images/start_recording.png" alt="Start Recording" />
+                </a>
+                <div class="caption">Record</div>
+              </div>
+              <div class="media-card">
+                <a class="media-link" href="./images/edit_workflow.png" target="_blank" rel="noopener noreferrer" aria-label="Open full-size Edit Workflow screenshot">
+                  <img src="./images/edit_workflow.png" alt="Edit Workflow" />
+                </a>
+                <div class="caption">Edit Workflow</div>
+              </div>
+              <div class="media-card">
+                <a class="media-link" href="./images/replay.png" target="_blank" rel="noopener noreferrer" aria-label="Open full-size Replay screenshot">
+                  <img src="./images/replay.png" alt="Replay" />
+                </a>
+                <div class="caption">Replay</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <h2>What it does</h2>
+          <div class="cards">
+            <div class="card">
+              <h3>Record real workflows</h3>
+              <p>
+                Capture mouse + keyboard events with pre-action screenshots, so the system has a faithful trace of what
+                happened on screen.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Turn recordings into reusable schemas</h3>
+              <p>
+                Reflection compiles your recording into a structured plan with subtasks, steps, and parameters (like
+                <span class="mono">{song_name}</span>).
+              </p>
+            </div>
+            <div class="card">
+              <h3>Edit + review before you run automation</h3>
+              <p>
+                Use the workflow editor to update parameters/subtasks/steps and add dependency links between subtasks,
+                so later subtasks can consume upstream extracted values.
+              </p>
+            </div>
+            <div class="card">
+              <h3>Replay with grounding + memory</h3>
+              <p>
+                During replay, the model sees the current screenshot, the current subtask + expected outcome, recent
+                history, and reference steps—then chooses the next OS action or declares done.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <h2>How it helps</h2>
+          <div class="bullets">
+            <div class="bullet">
+              <div class="bullet-k">Faster automation</div>
+              <div class="bullet-v">Start from a real recording instead of writing brittle scripts from scratch.</div>
+            </div>
+            <div class="bullet">
+              <div class="bullet-k">More reusable workflows</div>
+              <div class="bullet-v">Parameterize the workflow once and replay it with new inputs on demand.</div>
+            </div>
+            <div class="bullet">
+              <div class="bullet-k">Better reliability</div>
+              <div class="bullet-v">
+                Add dependencies so later subtasks can consume extracted results from earlier subtasks, reducing
+                repetition and drift.
+              </div>
+            </div>
+            <div class="bullet">
+              <div class="bullet-k">Human-in-the-loop where it matters</div>
+              <div class="bullet-v">
+                During recording, use <span class="mono">Ctrl + I</span> to add extracts or extra details when the UI is
+                ambiguous.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="container">
+        <div class="footer-row">
+          <div class="muted">AI Mime — Record, Reflect, Edit, Replay.</div>
+          <div class="muted">
+            <a href="./architecture.md">Architecture</a>
+            <span class="sep">•</span>
+            <a href="https://github.com/">GitHub</a>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

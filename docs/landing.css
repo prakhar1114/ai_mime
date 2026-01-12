@@ -1,0 +1,358 @@
+:root {
+  --bg: #0b0f14;
+  --panel: #101722;
+  --panel2: #0f1620;
+  --text: #e6edf3;
+  --muted: #9fb0c0;
+  --border: #243142;
+  --accent: #4aa3ff;
+  --accent2: #2b7bd8;
+  --shadow: rgba(0, 0, 0, 0.35);
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+    "Segoe UI Emoji";
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(1200px 500px at 15% 0%, rgba(74, 163, 255, 0.14) 0%, rgba(11, 15, 20, 0) 60%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  line-height: 1.45;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.container {
+  width: min(1100px, 100%);
+  margin: 0 auto;
+  padding: 0 18px;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-bottom: 1px solid var(--border);
+  background: rgba(11, 15, 20, 0.72);
+  backdrop-filter: blur(12px);
+}
+
+.header .container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+}
+
+.brand {
+  font-weight: 900;
+  letter-spacing: 0.2px;
+}
+
+.nav {
+  display: flex;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.hero {
+  padding: 56px 0 28px 0;
+}
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 22px;
+  align-items: start;
+}
+
+h1 {
+  margin: 0 0 12px 0;
+  font-size: 44px;
+  line-height: 1.05;
+  letter-spacing: -0.6px;
+}
+
+.lead {
+  margin: 0 0 16px 0;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+.pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0 18px 0;
+}
+
+.pill {
+  display: inline-flex;
+  border: 1px solid rgba(36, 49, 66, 0.8);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 999px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.cta-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.how-title {
+  margin-top: 18px;
+  font-weight: 900;
+  letter-spacing: -0.2px;
+  font-size: 16px;
+}
+
+.how-sub {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text);
+  font-weight: 650;
+}
+
+.btn:hover {
+  border-color: #35506d;
+  text-decoration: none;
+}
+
+.btn.primary {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent2) 100%);
+  border-color: transparent;
+  color: #06111d;
+}
+
+.hero-media {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 18px; /* sits under CTA buttons */
+}
+
+.media-card {
+  border: 1px solid rgba(36, 49, 66, 0.8);
+  background: rgba(255, 255, 255, 0.015);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 18px 50px var(--shadow);
+  /* Fixed-ish card width so screenshots are readable and aligned */
+  flex: 0 1 360px;
+  min-width: 0;
+}
+
+.media-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.media-card:hover {
+  border-color: #35506d;
+}
+
+.media-link:focus-visible {
+  outline: 2px solid rgba(74, 163, 255, 0.7);
+  outline-offset: -2px;
+}
+
+.media-card img {
+  width: 100%;
+  height: 320px;
+  display: block;
+  object-fit: contain; /* reduce without cropping */
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.caption {
+  padding: 10px 12px;
+  border-top: 1px solid rgba(36, 49, 66, 0.6);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.section {
+  padding: 34px 0;
+}
+
+.section.alt {
+  background: rgba(255, 255, 255, 0.01);
+  border-top: 1px solid rgba(36, 49, 66, 0.55);
+  border-bottom: 1px solid rgba(36, 49, 66, 0.55);
+}
+
+h2 {
+  margin: 0 0 12px 0;
+  font-size: 22px;
+  letter-spacing: -0.2px;
+}
+
+h3 {
+  margin: 0 0 8px 0;
+  font-size: 15px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.card {
+  border: 1px solid rgba(36, 49, 66, 0.85);
+  background: rgba(255, 255, 255, 0.015);
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.video-frame {
+  margin-top: 12px;
+  border: 1px solid rgba(36, 49, 66, 0.85);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.video-frame iframe {
+  width: 100%;
+  height: 460px;
+  display: block;
+  border: none;
+}
+
+.video-placeholder {
+  height: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+.vp-title {
+  font-weight: 850;
+}
+
+.vp-sub {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.bullets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.bullet {
+  border: 1px solid rgba(36, 49, 66, 0.85);
+  background: rgba(255, 255, 255, 0.015);
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.bullet-k {
+  font-weight: 850;
+  margin-bottom: 6px;
+}
+
+.bullet-v {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.footer {
+  padding: 26px 0;
+  border-top: 1px solid rgba(36, 49, 66, 0.6);
+}
+
+.footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.sep {
+  margin: 0 8px;
+  color: rgba(159, 176, 192, 0.5);
+}
+
+@media (max-width: 960px) {
+  .hero-grid {
+    grid-template-columns: 1fr;
+  }
+  .hero-media {
+    flex-wrap: wrap;
+  }
+  .media-card {
+    flex: 1 1 320px;
+  }
+  h1 {
+    font-size: 36px;
+  }
+  .cards {
+    grid-template-columns: 1fr;
+  }
+  .bullets {
+    grid-template-columns: 1fr;
+  }
+  .video-frame iframe {
+    height: 340px;
+  }
+}
