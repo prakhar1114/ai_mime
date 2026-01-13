@@ -9,6 +9,7 @@ import urllib.request
 import webbrowser
 from lmnr import observe
 from queue import Empty
+import traceback
 
 # macOS UI (PyObjC / AppKit). Keep this simple and assume it's available.
 import AppKit  # type: ignore[import-not-found]
@@ -84,6 +85,28 @@ def _load_replay_config_from_env() -> ReplayConfig:
     api_key = os.getenv(api_key_env_by_provider[provider])
     return ReplayConfig(model=model, base_url=base_url_by_provider[provider], api_key=api_key)
 
+def _resolve_menubar_icon_path() -> str | None:
+    """
+    Best-effort menubar icon resolution.
+
+    Priority:
+    1) AI_MIME_MENUBAR_ICON env var (absolute or relative path)
+    2) repo docs/logo/icon60.png (best size for macOS menubar)
+    """
+    # When running from the repo, app.py lives at src/ai_mime/app.py.
+    # Try to locate the repo root and use docs/logo assets.
+    try:
+        # app.py: <repo>/src/ai_mime/app.py -> parents[2] == <repo>
+        repo_root = Path(__file__).resolve().parents[2]
+    except Exception:
+        repo_root = None
+    if repo_root:
+        candidate = repo_root / "docs" / "logo" / "icon60.png"
+        if candidate.exists():
+            return str(candidate)
+
+    return None
+
 
 def _run_replay_workflow_schema(workflow_dir: str, overrides: dict[str, str] | None = None) -> None:
     """
@@ -135,7 +158,10 @@ def _run_replay_workflow_schema(workflow_dir: str, overrides: dict[str, str] | N
 
 class RecorderApp(rumps.App):
     def __init__(self):
-        super(RecorderApp, self).__init__("AI Mime", icon=None)
+        icon_path = _resolve_menubar_icon_path()
+        # Keep a non-empty title: rumps can fail to attach/open the menu reliably with an empty title.
+        # (We still show the icon; macOS will render both.)
+        super(RecorderApp, self).__init__("AI Mime", icon=icon_path)
         # We only need storage here to read last session or show info,
         # but the active storage instance will live in the subprocess.
         self.storage = SessionStorage()
@@ -175,15 +201,54 @@ class RecorderApp(rumps.App):
         self.dummy_toggle = rumps.MenuItem("Test Recording", callback=self._toggle_dummy_recording)
         self.options_menu["Test Recording"] = self.dummy_toggle
 
-        self.menu = [
-            self.start_button,
-            None,  # Separator
-            self.replay_menu,
-            None,  # Separator
-            self.edit_menu,
-            None,  # Separator
-            self.options_menu,
-        ]
+        # Build the menu using rumps.Menu APIs (more robust across rumps versions than assigning a raw list).
+        self._build_menu()
+
+    def _log_to_tmp(self, msg: str) -> None:
+        try:
+            Path("/tmp/ai_mime_app.log").write_text(str(msg) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    def _build_menu(self) -> None:
+        """
+        Construct the status bar dropdown menu.
+
+        If menu construction fails, write details to /tmp/ai_mime_app.log and show a visible alert.
+        """
+        try:
+            # Preferred path: mutate the existing rumps menu in-place.
+            try:
+                self.menu.clear()
+
+                self.menu.add(self.start_button)
+                self.menu.add(None)
+                self.menu.add(self.replay_menu)
+                self.menu.add(None)
+                self.menu.add(self.edit_menu)
+                self.menu.add(None)
+                self.menu.add(self.options_menu)
+                return
+            except Exception:
+                # Fallback path: assign list-style menu (works across rumps versions).
+                self.menu = [
+                    self.start_button,
+                    None,
+                    self.replay_menu,
+                    None,
+                    self.edit_menu,
+                    None,
+                    self.options_menu,
+                ]
+                return
+        except Exception as e:
+            detail = f"Menu build failed: {e}\n\n{traceback.format_exc()}"
+            self._log_to_tmp(detail)
+            try:
+                rumps.alert("AI Mime menu failed to initialize. See /tmp/ai_mime_app.log")
+            except Exception:
+                pass
+
 
     def _toggle_dummy_recording(self, _sender):
         # rumps supports a checkmark state via .state (0/1) on macOS.

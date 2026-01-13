@@ -71,8 +71,17 @@ a:hover {
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   font-weight: 900;
   letter-spacing: 0.2px;
+}
+
+.brand-logo {
+  width: 22px;
+  height: 22px;
+  display: block;
 }
 
 .nav {

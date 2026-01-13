@@ -1,8 +1,14 @@
+<div align="center">
+
 # AI Mime
+
+<img src="docs/logo/icon128.png" alt="AI Mime logo" width="72" />
 
 **Record, Reflect, Edit, and Replay workflows on macOS.**
 A macOS desktop RPA tool for end-to-end workflow automation.
 It records user interactions (mouse, keyboard, window/app context), converts them into a reusable workflow schema, lets you edit parameters/subtasks/dependencies, and replays them to rerun tasks on demand—great for repeatable, multi-step processes across native macOS apps and websites.
+
+</div>
 
 ## Demo
 
