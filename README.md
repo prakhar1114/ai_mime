@@ -1,14 +1,43 @@
 <div align="center">
 
-# AI Mime
-
 <img src="docs/logo/icon128.png" alt="AI Mime logo" width="72" />
 
-**Record, Reflect, Edit, and Replay workflows on macOS.**
-A macOS desktop RPA tool for end-to-end workflow automation.
-It records user interactions (mouse, keyboard, window/app context), converts them into a reusable workflow schema, lets you edit parameters/subtasks/dependencies, and replays them to rerun tasks on demand—great for repeatable, multi-step processes across native macOS apps and websites.
+# AI Mime
 
 </div>
+
+**Record, Refine and Replay on macOS.**
+AI Mime is a native macOS RPA tool designed to empower computer use agents with the context they need to succeed. It moves beyond simple text prompts by capturing the rich ground truth required for reliable automation.
+
+- Record: Capture every nuance of a workflow—mouse movements, keystrokes, and window states—providing the detailed ground truth that standard LLMs often lack.
+
+- Refine: Leverage LLMs to transform raw recording data into parameterized agent instructions. This process converts static recordings into dynamic, manageable subtasks, allowing you to define inputs and dependencies that keep the agent operating within strict, observable boundaries.
+
+- Replay: Dispatch computer use agents to execute complex, multi-step processes across native apps and the web on demand, ensuring high fidelity and repeatability.
+
+
+
+## Why AI Mime?
+
+### The Adoption Gap in Computer Use Models
+While the latest computer-use models have demonstrated significant improvements in general-purpose reliability and accuracy, they have yet to see widespread adoption in the Robotic Process Automation (RPA) industry. The primary bottleneck is not the model's intelligence, but the interface of current products.
+
+The Context Problem Existing tools typically rely on users to describe tasks using simple natural language. However, standard text prompts are often too brief to capture the nuance of complex workflows.
+
+- Example: A user might type "Download the monthly invoice," but fail to specify edge cases—such as what to do if the download button is disabled, or which date range to select if the default is incorrect.
+
+When an agent operates with this "low-context" instruction over a long horizon, the probability of error compounds. Without strict boundaries, models may attempt to be "creative" in their problem-solving, leading to unpredictable behaviors that are unacceptable in enterprise automation.
+
+### The AI Mime Solution - Rich Context & Repeatability
+AI Mime bridges this gap by shifting from vague natural language to rich, demonstrated context. Instead of relying on a single long-horizon prompt, AI Mime allows you to:
+
+- Capture Detailed Workflows: "Show" the agent exactly how to perform a task, capturing the precise steps and decision paths.
+
+- Enforce Observability: Break down complex workflows into manageable subtasks, each grounded in high-quality examples.
+
+- Eliminate Unwanted Creativity: By providing a strict chain of steps and rich context, the agent is constrained to operate exactly as instructed, ensuring it executes the workflow rather than "interpreting" it.
+
+In short, AI Mime transforms abstract instructions into repeatable, observable, and error-resistant workflows, making computer-use agents viable for production RPA.
 
 ## Demo
 
