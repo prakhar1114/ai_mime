@@ -11,6 +11,7 @@ from typing import Any, Callable
 from lmnr import observe
 
 from openai import OpenAI  # type: ignore[import-not-found]
+from ai_mime.reflect.schema_utils import validate_schema
 
 
 class ReplayError(RuntimeError):
@@ -30,6 +31,7 @@ class ReplayConfig:
 
 
 _SINGLE_BRACE_PARAM_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
+_EXTRACT_NAME_RE = re.compile(r"^extract_[0-9]+$")
 
 
 def load_schema(workflow_dir: str | os.PathLike[str]) -> dict[str, Any]:
@@ -73,12 +75,22 @@ def _render_template(s: str | None, params: dict[str, str]) -> str | None:
     if s is None:
         return None
     # Schema uses single-brace templates like "{query}".
-    needed = set(_SINGLE_BRACE_PARAM_RE.findall(s))
-    missing = [k for k in sorted(needed) if k not in params]
-    if missing:
-        raise ReplayError(f"Missing params for template {missing} in string: {s}")
+    # We allow unresolved "{extract_i}" placeholders to pass through so they can be
+    # substituted later during runtime once extracts are available.
+
+    def repl(m: re.Match[str]) -> str:
+        key = m.group(1)
+        if key in params:
+            return str(params[key])
+        if _EXTRACT_NAME_RE.fullmatch(key):
+            # Keep unresolved extract placeholders intact (to be filled at runtime).
+            return "{" + key + "}"
+        raise ReplayError(f"Missing params for template ['{key}'] in string: {s}")
+
     try:
-        return s.format(**params)
+        return _SINGLE_BRACE_PARAM_RE.sub(repl, s)
+    except ReplayError:
+        raise
     except Exception as e:
         raise ReplayError(f"Failed to render template '{s}': {e}") from e
 
@@ -184,6 +196,11 @@ def run_plan(
 
     # Load schema and materialize any {param} templates for this run (no LLM).
     schema = load_schema(workflow_dir)
+    try:
+        validate_schema(schema)
+    except Exception as e:
+        # Normalize to a replay error so users know to fix the workflow schema.
+        raise ReplayError(str(e)) from e
     schema_rendered = materialize_schema(schema, params)
     (run_dir / "schema.rendered.json").write_text(json.dumps(schema_rendered, indent=2), encoding="utf-8")
 
@@ -234,7 +251,9 @@ def run_plan(
 
     # Main loop: iterate subtasks, run until the model calls done(), then move to next.
     for subtask_idx, st in enumerate(subtasks):
-        subtask_text = st.get("text") or ""
+        # Render any remaining templates using params + known extracts.
+        render_ctx: dict[str, str] = {**params, **{k: str(v) for k, v in extracts.items() if v is not None}}
+        subtask_text = _render_template(st.get("text") or "", render_ctx) or ""
         deps = st.get("dependencies") or []
 
         steps_any = st.get("steps") or []
@@ -247,8 +266,8 @@ def run_plan(
                 "i": i,
                 "intent": s.get("intent"),
                 "action_type": s.get("action_type"),
-                "action_value": s.get("action_value"),
-                "extract_query": (s.get("additional_args") or {}).get("extract_query"),
+                "action_value": _render_template(s.get("action_value"), render_ctx),
+                "extract_query": _render_template((s.get("additional_args") or {}).get("extract_query"), render_ctx),
                 "target_primary": (s.get("target") or {}).get("primary"),
                 "expected_current_state": s.get("expected_current_state"),
                 "post_action": s.get("post_action"),

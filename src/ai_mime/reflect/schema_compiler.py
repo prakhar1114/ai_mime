@@ -661,6 +661,64 @@ def write_schema(workflow_dir: str | os.PathLike[str], schema: dict[str, Any]) -
 
 _TEMPLATE_RE = re.compile(r"\{\{([a-zA-Z0-9_]+)\}\}")
 
+_EXTRACT_PLACEHOLDER_RE = re.compile(r"\{(extract_[0-9]+)\}")
+_EXTRACT_NAME_RE = re.compile(r"^extract_[0-9]+$")
+
+
+def update_dependencies(schema: dict[str, Any]) -> None:
+    """
+    Infer and populate plan.subtasks[].dependencies based on `{extract_i}` placeholders.
+
+    - Extracts are defined by EXTRACT steps' variable_name (e.g. "extract_0") and are produced
+      within a specific subtask_i.
+    - Any subtask that *references* `{extract_i}` in its text or step action_value should list
+      "extract_i" (without braces) in dependencies, but only if the extract is produced in an
+      earlier subtask (upstream-only).
+    """
+    # Assume schema shape is correct (as produced by our compiler/editor).
+    plan = schema.get("plan") or {}
+    subtasks = plan.get("subtasks") or []
+
+    # Map extract name -> producing subtask_i.
+    produced_in: dict[str, int] = {}
+    for st in subtasks:
+        si = int(st.get("subtask_i"))
+        steps = st.get("steps") or []
+        for s in steps:
+            if s.get("action_type") != "EXTRACT":
+                continue
+            vn = s.get("variable_name")
+            if isinstance(vn, str) and _EXTRACT_NAME_RE.fullmatch(vn):
+                produced_in[vn] = si
+
+    def _find_refs(s: Any) -> set[str]:
+        return set(_EXTRACT_PLACEHOLDER_RE.findall(s)) if isinstance(s, str) else set()
+
+    for st in subtasks:
+        si = int(st.get("subtask_i"))
+
+        existing_deps = [d for d in (st.get("dependencies") or []) if isinstance(d, str) and d.strip()]
+
+        refs: set[str] = set()
+        refs |= _find_refs(st.get("text"))
+        steps = st.get("steps") or []
+        for s in steps:
+            refs |= _find_refs(s.get("action_value"))
+
+        # Only add deps for extracts produced upstream.
+        inferred = [
+            r for r in sorted(refs, key=lambda x: int(x.split("_")[1])) if (produced_in.get(r, 10**9) < si)
+        ]
+
+        # Preserve existing deps, ensure inferred extract deps present, dedupe stable.
+        combined: list[str] = []
+        seen: set[str] = set()
+        for d in existing_deps + inferred:
+            if d not in seen:
+                seen.add(d)
+                combined.append(d)
+        st["dependencies"] = combined
+
 
 def extract_param_templates(step_cards: Iterable[dict[str, Any]]) -> set[str]:
     """
@@ -843,6 +901,9 @@ def compile_workflow_schema(
 
     final_schema.pop("subtasks", None)
     final_schema["plan"] = {"subtasks": plan_subtasks}
+
+    # Populate dependencies based on any `{extract_i}` references in subtask text/action_value.
+    update_dependencies(final_schema)
 
     write_schema_draft(workflow_dir_p, final_schema)
     logger.info("Pass B complete: wrote schema.draft.json")
