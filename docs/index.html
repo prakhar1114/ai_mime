@@ -6,7 +6,7 @@
     <title>AI Mime — macOS Workflow Automation</title>
     <meta
       name="description"
-      content="AI Mime records real workflows on macOS, turns them into reusable editable schemas, and replays them to automate repeatable tasks across apps and websites."
+      content="AI Mime is a native macOS RPA tool that records real workflows and turns them into rich, parameterized instructions that computer-use agents can replay reliably across apps and websites."
     />
     <link rel="icon" type="image/png" sizes="32x32" href="./logo/icon32.png" />
     <link rel="icon" type="image/png" sizes="128x128" href="./logo/icon128.png" />
@@ -42,17 +42,17 @@
       <section class="hero">
         <div class="container hero-grid">
           <div>
-            <h1>Workflow automation that starts with how you actually work.</h1>
+            <h1>Record, refine, and replay workflows on macOS.</h1>
             <p class="lead">
-              AI Mime is a macOS desktop RPA system that <strong>records</strong> real user workflows,
-              <strong>reflects</strong> them into a reusable schema, lets you <strong>edit</strong> parameters and
-              dependencies, and <strong>replays</strong> the workflow on demand.
+              AI Mime is a native macOS RPA tool designed to empower computer-use agents with the context they need to
+              succeed. It moves beyond simple text prompts by capturing rich ground truth, refining it into
+              parameterized instructions, and replaying workflows on demand.
             </p>
 
             <div class="pill-row">
-              <span class="pill">Record &gt; Edit Workflow &gt; Replay</span>
-              <span class="pill">Native apps + websites</span>
-              <span class="pill">Parameterizable + reusable</span>
+              <span class="pill">Record &gt; Refine &gt; Replay</span>
+              <span class="pill">Rich context, not vague prompts</span>
+              <span class="pill">Repeatable + observable</span>
             </div>
 
             <!-- <div class="cta-row">
@@ -61,7 +61,7 @@
 
             <div class="how-title">How it works</div>
             <div class="how-sub">
-              Record a workflow, edit parameters/dependencies, and replay it on demand.
+              Record a workflow, refine it into parameterized subtasks with clear boundaries, and replay it on demand.
             </div>
 
             <div class="hero-media" aria-label="Screenshots of AI Mime">
@@ -115,31 +115,31 @@
           <h2>What it does</h2>
           <div class="cards">
             <div class="card">
-              <h3>Record real workflows</h3>
+              <h3>Record detailed workflows</h3>
               <p>
-                Capture mouse + keyboard events with pre-action screenshots, so the system has a faithful trace of what
-                happened on screen.
+                Capture every nuance of a workflow—mouse movements, keystrokes, and window states—providing the ground
+                truth that standard text prompts often miss.
               </p>
             </div>
             <div class="card">
-              <h3>Turn recordings into reusable schemas</h3>
+              <h3>Refine into parameterized agent instructions</h3>
               <p>
-                Reflection compiles your recording into a structured plan with subtasks, steps, and parameters (like
-                <span class="mono">{song_name}</span>).
+                Leverage LLMs to transform raw recordings into structured, manageable subtasks with inputs and
+                dependencies—turning a static trace into something reusable.
               </p>
             </div>
             <div class="card">
-              <h3>Edit + review before you run automation</h3>
+              <h3>Enforce observability and strict boundaries</h3>
               <p>
-                Use the workflow editor to update parameters/subtasks/steps and add dependency links between subtasks,
-                so later subtasks can consume upstream extracted values.
+                Break long-horizon workflows into smaller, observable steps and dependency-linked subtasks so the agent
+                operates within clear constraints instead of improvising.
               </p>
             </div>
             <div class="card">
-              <h3>Replay with grounding + memory</h3>
+              <h3>Replay for high-fidelity automation</h3>
               <p>
-                During replay, the model sees the current screenshot, the current subtask + expected outcome, recent
-                history, and reference steps—then chooses the next OS action or declares done.
+                Dispatch computer-use agents to execute complex, multi-step processes across native apps and the web on
+                demand—prioritizing repeatability over “creative” interpretation.
               </p>
             </div>
           </div>
@@ -151,25 +151,30 @@
           <h2>How it helps</h2>
           <div class="bullets">
             <div class="bullet">
-              <div class="bullet-k">Faster automation</div>
-              <div class="bullet-v">Start from a real recording instead of writing brittle scripts from scratch.</div>
-            </div>
-            <div class="bullet">
-              <div class="bullet-k">More reusable workflows</div>
-              <div class="bullet-v">Parameterize the workflow once and replay it with new inputs on demand.</div>
-            </div>
-            <div class="bullet">
-              <div class="bullet-k">Better reliability</div>
+              <div class="bullet-k">Bridges the “context gap”</div>
               <div class="bullet-v">
-                Add dependencies so later subtasks can consume extracted results from earlier subtasks, reducing
-                repetition and drift.
+                Instead of relying on a single low-context prompt, you “show” the agent exactly what to do with rich,
+                demonstrated workflow context.
               </div>
             </div>
             <div class="bullet">
-              <div class="bullet-k">Human-in-the-loop where it matters</div>
+              <div class="bullet-k">Makes long tasks more reliable</div>
               <div class="bullet-v">
-                During recording, use <span class="mono">Ctrl + I</span> to add extracts or extra details when the UI is
-                ambiguous.
+                By grounding the agent in strict, observable subtasks, you reduce compounding errors over long horizons.
+              </div>
+            </div>
+            <div class="bullet">
+              <div class="bullet-k">Reduces unwanted creativity</div>
+              <div class="bullet-v">
+                A strict chain of steps plus rich context constrains the agent to execute the workflow rather than
+                “interpret” it.
+              </div>
+            </div>
+            <div class="bullet">
+              <div class="bullet-k">Production-style repeatability</div>
+              <div class="bullet-v">
+                Transform abstract instructions into repeatable, observable, error-resistant workflows across native
+                apps and websites.
               </div>
             </div>
           </div>
@@ -180,7 +185,7 @@
     <footer class="footer">
       <div class="container">
         <div class="footer-row">
-          <div class="muted">AI Mime — Record, Reflect, Edit, Replay.</div>
+          <div class="muted">AI Mime — Record, Refine, Replay.</div>
           <div class="muted">
             <a href="./architecture.md">Architecture</a>
             <span class="sep">•</span>

@@ -8,39 +8,73 @@ def validate_schema(schema: dict) -> None:
     Best-effort validation of the workflow schema format used by this repo.
     Raises ValueError with a readable message on failure.
     """
-    if not isinstance(schema, dict):
-        raise ValueError("schema must be an object")
-    plan = schema.get("plan")
-    if not isinstance(plan, dict):
-        raise ValueError("schema.plan must be an object")
-    subtasks = plan.get("subtasks")
-    if not isinstance(subtasks, list):
-        raise ValueError("schema.plan.subtasks must be a list")
+    # Assume schema shape is correct (as produced by our compiler/editor).
+    # Still raise ValueError with readable messages for real workflow issues.
+    try:
+        plan = schema["plan"]
+        subtasks = plan["subtasks"]
+    except Exception as e:
+        raise ValueError(f"schema missing required plan/subtasks structure: {e}") from e
 
     allowed_action_types = {"CLICK", "TYPE", "SCROLL", "KEYPRESS", "DRAG", "EXTRACT"}
     extract_re = re.compile(r"^extract_[0-9]+$")
+    extract_placeholder_re = re.compile(r"\{(extract_[0-9]+)\}")
+
+    # Map extract variable_name -> producing subtask_i (used to validate dependencies are upstream).
+    produced_in: dict[str, int] = {}
+    for si, st in enumerate(subtasks):
+        for step in st.get("steps") or []:
+            if step.get("action_type") == "EXTRACT":
+                vn = step.get("variable_name")
+                if extract_re.fullmatch(vn):
+                    produced_in[vn] = si
 
     for si, st in enumerate(subtasks):
-        if not isinstance(st, dict):
-            raise ValueError(f"subtask {si}: must be an object")
         if st.get("subtask_i") != si:
             raise ValueError(f"subtask {si}: subtask_i must equal its list index")
-        if not isinstance(st.get("text"), str) or not st.get("text", "").strip():
+        if not str(st.get("text") or "").strip():
             raise ValueError(f"subtask {si}: missing non-empty text")
         deps = st.get("dependencies")
         if deps is None:
             deps = []
             st["dependencies"] = deps
-        if not isinstance(deps, list) or not all(isinstance(d, str) and d.strip() for d in deps):
+        if not isinstance(deps, list):
             raise ValueError(f"subtask {si}: dependencies must be a list[str]")
 
         steps = st.get("steps")
         if not isinstance(steps, list):
             raise ValueError(f"subtask {si}: steps must be a list")
 
+        # Validate that any `{extract_i}` references in this subtask are declared in dependencies,
+        # and that those dependencies are produced upstream.
+        def _extract_refs_from_string(s: object) -> set[str]:
+            return set(extract_placeholder_re.findall(s)) if isinstance(s, str) else set()
+
+        refs: set[str] = set()
+        refs |= _extract_refs_from_string(st.get("text"))
+        for step in steps:
+            refs |= _extract_refs_from_string(step.get("action_value"))
+        for r in sorted(refs):
+            if r not in deps:
+                raise ValueError(f"subtask {si}: references {{{r}}} but dependencies is missing '{r}'")
+            prod_si = produced_in.get(r)
+            if prod_si is None:
+                raise ValueError(f"subtask {si}: dependency '{r}' is not produced by any EXTRACT step upstream")
+            if prod_si >= si:
+                raise ValueError(f"subtask {si}: dependency '{r}' must come from an earlier subtask (found at subtask {prod_si})")
+
+        # Also validate any extract-looking dependencies are upstream-produced.
+        for dep in deps:
+            if extract_re.fullmatch(dep):
+                prod_si = produced_in.get(dep)
+                if prod_si is None:
+                    raise ValueError(f"subtask {si}: dependency '{dep}' is not produced by any EXTRACT step")
+                if prod_si >= si:
+                    raise ValueError(
+                        f"subtask {si}: dependency '{dep}' must come from an earlier subtask (found at subtask {prod_si})"
+                    )
+
         for li, step in enumerate(steps):
-            if not isinstance(step, dict):
-                raise ValueError(f"subtask {si} step {li}: must be an object")
             if step.get("i") != li:
                 raise ValueError(f"subtask {si} step {li}: i must equal its index within the subtask")
             at = step.get("action_type")
@@ -86,19 +120,15 @@ def validate_schema(schema: dict) -> None:
                     raise ValueError(f"subtask {si} step {li}: variable_name must be null for {at}")
 
             # Minimal required fields for replay robustness
-            if not isinstance(step.get("intent"), str) or not step.get("intent", "").strip():
+            if not str(step.get("intent") or "").strip():
                 raise ValueError(f"subtask {si} step {li}: missing intent")
-            if not isinstance(step.get("expected_current_state"), str) or not step.get(
-                "expected_current_state", ""
-            ).strip():
+            if not str(step.get("expected_current_state") or "").strip():
                 raise ValueError(f"subtask {si} step {li}: missing expected_current_state")
             target = step.get("target")
-            if not isinstance(target, dict) or not isinstance(target.get("primary"), str) or not target.get(
-                "primary", ""
-            ).strip():
+            if not isinstance(target, dict) or not str(target.get("primary") or "").strip():
                 raise ValueError(f"subtask {si} step {li}: target.primary required")
             pa = step.get("post_action")
-            if not isinstance(pa, list) or not pa or not all(isinstance(x, str) and x.strip() for x in pa):
+            if not isinstance(pa, list) or not pa:
                 raise ValueError(f"subtask {si} step {li}: post_action must be non-empty list[str]")
 
 
