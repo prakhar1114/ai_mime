@@ -646,10 +646,14 @@ def run_pass_b_task_compiler(
         raise RuntimeError(f"Pass B: failed to read output_parsed/model_dump: {e}") from e
 
 
-def write_schema_draft(workflow_dir: str | os.PathLike[str], schema_draft: dict[str, Any]) -> Path:
+def write_plan_creation(workflow_dir: str | os.PathLike[str], plan_creation: dict[str, Any]) -> Path:
+    """
+    Checkpoint for Pass B raw output (task-level planning), kept separate from final schema.json.
+    Expected to include: detailed_task_description, task_params, success_criteria, subtasks, plan_step_updates.
+    """
     workflow_dir_p = Path(workflow_dir)
-    path = workflow_dir_p / "schema.draft.json"
-    _write_json_atomic(path, schema_draft)
+    path = workflow_dir_p / "plan_creation.json"
+    _write_json_atomic(path, plan_creation)
     return path
 
 def write_schema(workflow_dir: str | os.PathLike[str], schema: dict[str, Any]) -> Path:
@@ -663,6 +667,37 @@ _TEMPLATE_RE = re.compile(r"\{\{([a-zA-Z0-9_]+)\}\}")
 
 _EXTRACT_PLACEHOLDER_RE = re.compile(r"\{(extract_[0-9]+)\}")
 _EXTRACT_NAME_RE = re.compile(r"^extract_[0-9]+$")
+
+
+def sanitize_subtask_text_extract_placeholders(schema: dict[str, Any]) -> None:
+    """
+    Pass B may include "{extract_i}" in the *producing* subtask's text. That is not a real
+    runtime dependency (the extract doesn't exist yet) and it breaks validation.
+
+    For any subtask that produces extract variables (via EXTRACT steps), replace occurrences of
+    "{extract_i}" with "extract_i" in that same subtask's text.
+    """
+    plan = schema.get("plan") or {}
+    subtasks = plan.get("subtasks") or []
+
+    for st in subtasks:
+        si = int(st.get("subtask_i"))
+        steps = st.get("steps") or []
+        produced_here: set[str] = set()
+        for s in steps:
+            if s.get("action_type") == "EXTRACT":
+                vn = s.get("variable_name")
+                if isinstance(vn, str) and _EXTRACT_NAME_RE.fullmatch(vn):
+                    produced_here.add(vn)
+        if not produced_here:
+            continue
+        text = st.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        # Only de-template placeholders for extracts produced in this same subtask.
+        for vn in sorted(produced_here, key=lambda x: int(x.split("_")[1])):
+            text = text.replace("{" + vn + "}", vn)
+        st["text"] = text
 
 
 def update_dependencies(schema: dict[str, Any]) -> None:
@@ -744,8 +779,8 @@ def compile_workflow_schema(
     """
     End-to-end compile:
       - Pass A -> step_cards.json
-      - Pass B -> schema.draft.json
-      - Write schema.json from Pass B
+      - Pass B -> plan_creation.json (raw Pass B output incl. plan_step_updates)
+      - Finalize -> schema.json (merged v2 plan.subtasks)
     Returns the final schema object written to schema.json.
     """
     workflow_dir_p = Path(workflow_dir)
@@ -756,24 +791,36 @@ def compile_workflow_schema(
     # If final output exists, reuse it and avoid re-running any passes.
     schema_path = workflow_dir_p / "schema.json"
     existing_schema = _read_json_if_exists(schema_path)
-    if isinstance(existing_schema, dict) and isinstance(existing_schema.get("plan"), dict) and isinstance(
-        existing_schema.get("plan", {}).get("steps"), list
+    if (
+        isinstance(existing_schema, dict)
+        and isinstance(existing_schema.get("plan"), dict)
+        and (
+            isinstance(existing_schema.get("plan", {}).get("subtasks"), list)
+            or isinstance(existing_schema.get("plan", {}).get("steps"), list)
+        )
     ):
         logger.info("Schema compile: found existing schema.json; skipping all passes.")
         return existing_schema
 
     # Pass A: must be complete before Pass B.
     # Note: run_pass_a_step_cards() handles partial persistence + resume via step_cards.json.
-    step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p, model=model)
-    write_step_cards(workflow_dir_p, step_cards)
-    logger.info("Pass A complete: step_cards.json (%d steps)", len(step_cards))
+    step_cards_path = workflow_dir_p / "step_cards.json"
+    existing_step_cards = _read_json_if_exists(step_cards_path)
+    if isinstance(existing_step_cards, list) and existing_step_cards:
+        step_cards = existing_step_cards
+        logger.info("Pass A: found existing step_cards.json; skipping.")
+    else:
+        step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p, model=model)
+        write_step_cards(workflow_dir_p, step_cards)
+        logger.info("Pass A complete: step_cards.json (%d steps)", len(step_cards))
 
-    # Pass B: must be complete before writing schema.json.
-    draft_path = workflow_dir_p / "schema.draft.json"
-    existing_draft = _read_json_if_exists(draft_path)
-    if isinstance(existing_draft, dict) and "task_params" in existing_draft and "detailed_task_description" in existing_draft:
-        logger.info("Pass B: found existing schema.draft.json; skipping.")
-        final_schema: dict[str, Any] = dict(existing_draft)
+    # Pass B checkpoint: plan_creation.json contains RAW Pass B output (incl. plan_step_updates).
+    plan_creation_path = workflow_dir_p / "plan_creation.json"
+    existing_plan_creation = _read_json_if_exists(plan_creation_path)
+
+    if isinstance(existing_plan_creation, dict) and isinstance(existing_plan_creation.get("plan_step_updates"), list):
+        logger.info("Pass B: found existing plan_creation checkpoint; skipping.")
+        plan_creation: dict[str, Any] = dict(existing_plan_creation)
     else:
         task_compiler_out = run_pass_b_task_compiler(
             workflow_dir=workflow_dir_p,
@@ -781,13 +828,16 @@ def compile_workflow_schema(
             model=model,
         )
 
-        final_schema = {
-            "task_name": task_name,
-            "task_description_user": task_description_user,
-            **task_compiler_out,
-        }
+        plan_creation = dict(task_compiler_out)
+        write_plan_creation(workflow_dir_p, plan_creation)
+        logger.info("Pass B complete: wrote plan_creation.json")
 
-        # Do not write draft until we attach the plan below (so reruns can skip Pass B safely).
+    # Build final schema by merging plan_creation + step_cards into a v2 plan.subtasks format.
+    final_schema: dict[str, Any] = {
+        "task_name": task_name,
+        "task_description_user": task_description_user,
+        **plan_creation,
+    }
 
     # Merge Pass B per-step updates back into the full Pass A step cards.
     updates_any = final_schema.get("plan_step_updates")
@@ -902,11 +952,11 @@ def compile_workflow_schema(
     final_schema.pop("subtasks", None)
     final_schema["plan"] = {"subtasks": plan_subtasks}
 
+    # Pass B sometimes writes "{extract_i}" into the producing subtask text; de-template those.
+    sanitize_subtask_text_extract_placeholders(final_schema)
+
     # Populate dependencies based on any `{extract_i}` references in subtask text/action_value.
     update_dependencies(final_schema)
-
-    write_schema_draft(workflow_dir_p, final_schema)
-    logger.info("Pass B complete: wrote schema.draft.json")
 
     write_schema(workflow_dir_p, final_schema)
     logger.info("Wrote schema.json")

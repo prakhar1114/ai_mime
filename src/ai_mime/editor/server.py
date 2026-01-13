@@ -22,6 +22,7 @@ from ai_mime.reflect.schema_utils import (
 )
 
 _SINGLE_BRACE_PARAM_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
+_EXTRACT_NAME_RE = re.compile(r"^extract_[0-9]+$")
 
 
 def _workflows_root_from_env() -> Path:
@@ -82,7 +83,9 @@ def _apply_deleted_param_examples(*, schema: dict[str, Any], deleted_param_examp
 
     def _subst_in_str(s: str, *, ctx: str) -> str:
         needed = set(_SINGLE_BRACE_PARAM_RE.findall(s))
-        missing = sorted([k for k in needed if k not in declared and k not in subs])
+        # `{extract_i}` placeholders are runtime-filled; they are not task_params and should not
+        # block saves even if not declared.
+        missing = sorted([k for k in needed if k not in declared and k not in subs and not _EXTRACT_NAME_RE.fullmatch(k)])
         if missing:
             raise ValueError(
                 f"Template references missing params {missing} in {ctx}. "
