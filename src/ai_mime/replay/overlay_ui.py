@@ -35,6 +35,24 @@ def _label(
         tf.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)  # type: ignore[attr-defined]
     except Exception:
         pass
+    # Ensure multi-line labels behave like labels: wrap, and (if supported) truncate the last
+    # visible line instead of expanding the overlay for long/unbroken strings.
+    try:
+        tf.setUsesSingleLineMode_(False)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        cell = tf.cell()
+        try:
+            cell.setWraps_(True)
+        except Exception:
+            pass
+        try:
+            cell.setTruncatesLastVisibleLine_(True)
+        except Exception:
+            pass
+    except Exception:
+        pass
     if font is not None:
         try:
             tf.setFont_(font)
@@ -286,14 +304,36 @@ class ReplayOverlay:
 
         # Constrain wrapping/lines for a compact UI.
         try:
-            # Allow 1 extra line as requested.
-            self._subtask.setMaximumNumberOfLines_(3)
+            self._subtask.setMaximumNumberOfLines_(2)
         except Exception:
             pass
         try:
-            self._pred.setMaximumNumberOfLines_(1)
+            self._pred.setMaximumNumberOfLines_(2)
         except Exception:
             pass
+        # Force wrapping even for long/unbroken strings; truncate beyond the max lines.
+        for v in (self._subtask, self._pred):
+            try:
+                v.setLineBreakMode_(AppKit.NSLineBreakByCharWrapping)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            try:
+                cell = v.cell()
+                try:
+                    cell.setWraps_(True)
+                except Exception:
+                    pass
+                try:
+                    cell.setTruncatesLastVisibleLine_(True)
+                except Exception:
+                    pass
+                # Some macOS versions respect truncation better when the cell is set too.
+                try:
+                    cell.setLineBreakMode_(AppKit.NSLineBreakByCharWrapping)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
         # Stack layout
         stack = AppKit.NSStackView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, width, height))
@@ -412,6 +452,10 @@ class ReplayOverlay:
         # Hint preferred wrapping width (helps NSTextField compute multi-line intrinsic size).
         try:
             self._subtask.setPreferredMaxLayoutWidth_(float(width - 26.0))
+        except Exception:
+            pass
+        try:
+            self._pred.setPreferredMaxLayoutWidth_(float(width - 26.0))
         except Exception:
             pass
 
