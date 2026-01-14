@@ -10,6 +10,7 @@ import webbrowser
 from lmnr import observe
 from queue import Empty
 import traceback
+from typing import Any
 
 # macOS UI (PyObjC / AppKit). Keep this simple and assume it's available.
 import AppKit  # type: ignore[import-not-found]
@@ -25,11 +26,12 @@ from ai_mime.record.recorder_process import run_recorder_process
 
 from ai_mime.replay.catalog import list_replayable_workflows
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
-from ai_mime.replay.engine import ReplayConfig, resolve_params, run_plan
+from ai_mime.replay.engine import ReplayConfig, ReplayStopped, resolve_params, run_plan
 from ai_mime.replay.grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
 from ai_mime.replay.os_executor import exec_computer_use_action
 from ai_mime.screenshot import ScreenshotRecorder
 from ai_mime.editor.server import start_editor_server
+from ai_mime.replay.overlay_ui import ReplayOverlay
 
 
 @observe(name="reflect_and_compile_schema")
@@ -108,7 +110,14 @@ def _resolve_menubar_icon_path() -> str | None:
     return None
 
 
-def _run_replay_workflow_schema(workflow_dir: str, overrides: dict[str, str] | None = None) -> None:
+def _run_replay_workflow_schema(
+    workflow_dir: str,
+    overrides: dict[str, str] | None = None,
+    event_queue: Any | None = None,
+    exclude_window_id: int | None = None,
+    pause_event: Any | None = None,
+    stop_event: Any | None = None,
+) -> None:
     """
     Background task (runs in its own process): replay schema.json plan using Qwen tool calls.
     """
@@ -122,7 +131,7 @@ def _run_replay_workflow_schema(workflow_dir: str, overrides: dict[str, str] | N
 
         def _capture(dst: Path) -> Path:
             dst.parent.mkdir(parents=True, exist_ok=True)
-            saved = screenshotter.capture(dst)
+            saved = screenshotter.capture(dst, exclude_window_id=exclude_window_id)
             if not saved:
                 raise RuntimeError("Screenshot capture failed (check Screen Recording permission).")
             return Path(saved)
@@ -136,6 +145,9 @@ def _run_replay_workflow_schema(workflow_dir: str, overrides: dict[str, str] | N
             capture_screenshot=_capture,
             exec_action=exec_computer_use_action,
             log=print,
+            event_queue=event_queue,
+            pause_event=pause_event,
+            stop_event=stop_event,
         )
 
         # Final notification + exit.
@@ -145,8 +157,33 @@ def _run_replay_workflow_schema(workflow_dir: str, overrides: dict[str, str] | N
             message="Replay finished",
         )
         print("Task Complete")
+    except ReplayStopped:
+        try:
+            if event_queue is not None:
+                try:
+                    if hasattr(event_queue, "put_nowait"):
+                        event_queue.put_nowait({"type": "replay_stopped"})
+                    else:
+                        event_queue.put({"type": "replay_stopped"})
+                except Exception:
+                    pass
+            rumps.notification(
+                title="Replay stopped",
+                subtitle=str(Path(workflow_dir).name),
+                message="Stopped by user",
+            )
+        finally:
+            print("Replay stopped by user.")
     except Exception as e:
         try:
+            if event_queue is not None:
+                try:
+                    if hasattr(event_queue, "put_nowait"):
+                        event_queue.put_nowait({"type": "replay_failed", "error": str(e)})
+                    else:
+                        event_queue.put({"type": "replay_failed", "error": str(e)})
+                except Exception:
+                    pass
             rumps.notification(
                 title="Replay failed",
                 subtitle=str(Path(workflow_dir).name),
@@ -173,6 +210,12 @@ class RecorderApp(rumps.App):
         self.session_dir = None
         self.reflect_process = None
         self.replay_process = None
+        self.replay_event_q: multiprocessing.Queue | None = None
+        self._replay_overlay: ReplayOverlay | None = None
+        self._replay_state: dict[str, Any] = {}
+        # multiprocessing.Event isn't typed cleanly across platforms; keep this as Any.
+        self._replay_pause_event: Any | None = None
+        self._replay_stop_event: Any | None = None
         self.refine_req_q: multiprocessing.Queue | None = None
         self.refine_resp_q: multiprocessing.Queue | None = None
         self.dummy_recording = False
@@ -185,6 +228,10 @@ class RecorderApp(rumps.App):
         # This stays idle unless a Ctrl+I request arrives.
         self._refine_timer = rumps.Timer(self._poll_refine_requests, 0.2)
         self._refine_timer.start()
+
+        # Poll replay progress events from the replay worker.
+        self._replay_timer = rumps.Timer(self._poll_replay_events, 0.1)
+        self._replay_timer.start()
 
         # Menu Items
         self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
@@ -272,6 +319,154 @@ class RecorderApp(rumps.App):
 
         resp = self._run_refine_popup(req)
         self.refine_resp_q.put(resp)
+
+    def _ensure_replay_overlay(self) -> ReplayOverlay:
+        if self._replay_overlay is not None:
+            return self._replay_overlay
+
+        def _toggle_pause(paused: bool) -> None:
+            ev = self._replay_pause_event
+            if ev is None:
+                return
+            try:
+                if paused:
+                    ev.clear()
+                else:
+                    ev.set()
+            except Exception:
+                pass
+
+        def _stop() -> None:
+            se = self._replay_stop_event
+            pe = self._replay_pause_event
+            try:
+                if se is not None:
+                    se.set()
+            finally:
+                # Ensure we're not stuck paused while trying to stop.
+                try:
+                    if pe is not None:
+                        pe.set()
+                except Exception:
+                    pass
+
+        self._replay_overlay = ReplayOverlay(on_toggle_pause=_toggle_pause, on_stop=_stop)
+        self._replay_overlay.show()
+        return self._replay_overlay
+
+    def _close_replay_overlay(self) -> None:
+        if self._replay_overlay is None:
+            return
+        try:
+            self._replay_overlay.close()
+        finally:
+            self._replay_overlay = None
+            self.replay_event_q = None
+            self._replay_state = {}
+            self._replay_pause_event = None
+            self._replay_stop_event = None
+
+    def _fmt_tool_call(self, name: Any, args: Any) -> str:
+        n = "" if name is None else str(name)
+        if not isinstance(args, dict):
+            return n
+
+        def _truncate(s: Any, nmax: int = 140) -> str:
+            t = "" if s is None else str(s)
+            t = t.replace("\n", " ").strip()
+            return (t[: nmax - 1] + "…") if len(t) > nmax else t
+
+        if n == "computer_use":
+            action = args.get("action")
+            coord = args.get("coordinate")
+            keys = args.get("keys")
+            text = args.get("text")
+            parts = [f"computer_use: {action}"]
+            if coord is not None:
+                parts.append(f"coord={coord}")
+            if keys is not None:
+                parts.append(f"keys={keys}")
+            if text:
+                parts.append(f"text={_truncate(text)}")
+            return " | ".join(parts)
+        if n == "extract":
+            vn = args.get("variable_name")
+            q = args.get("query")
+            return f"extract: {vn} | query={_truncate(q)}"
+        if n == "done":
+            return f"done: {_truncate(args.get('result'))}"
+        return f"{n}: {_truncate(args)}"
+
+    def _poll_replay_events(self, _):
+        # If the worker died unexpectedly, close overlay.
+        if self.replay_process is not None and hasattr(self.replay_process, "is_alive"):
+            try:
+                alive = bool(self.replay_process.is_alive())
+                if not alive and self._replay_overlay is not None:
+                    self._close_replay_overlay()
+            except Exception:
+                pass
+
+        if self.replay_event_q is None:
+            return
+
+        # Drain queue quickly; keep only latest values to reduce UI churn.
+        updated = False
+        while True:
+            try:
+                evt = self.replay_event_q.get_nowait()
+            except Empty:
+                break
+            except Exception:
+                break
+
+            if not isinstance(evt, dict):
+                continue
+            et = evt.get("type")
+
+            if et == "replay_started":
+                updated = True
+            elif et == "subtask_started":
+                self._replay_state["subtask_idx"] = evt.get("subtask_idx")
+                self._replay_state["subtask_total"] = evt.get("subtask_total")
+                self._replay_state["subtask_text"] = evt.get("subtask_text") or ""
+                updated = True
+            elif et == "predicted_tool_call":
+                self._replay_state["predicted_action"] = self._fmt_tool_call(evt.get("name"), evt.get("arguments"))
+                updated = True
+            elif et == "pixel_action":
+                updated = True
+            elif et == "extract_result":
+                # Keep memory updated; surface extraction in predicted_action if no better signal.
+                self._replay_state["predicted_action"] = f"extract: {evt.get('variable_name')} | query={evt.get('query')}"
+                updated = True
+            elif et == "done":
+                # IMPORTANT: "done" in engine events means the *current subtask* finished,
+                # not the whole replay. Keep the overlay running until replay_finished.
+                try:
+                    res = evt.get("result")
+                    if res:
+                        self._replay_state["predicted_action"] = f"done: {str(res)}"
+                except Exception:
+                    pass
+                updated = True
+            elif et == "replay_finished":
+                # Close overlay at the end of the entire replay run.
+                self._close_replay_overlay()
+                return
+            elif et == "replay_stopped":
+                self._close_replay_overlay()
+                return
+            elif et == "replay_failed":
+                # Close overlay on failure; show error via menubar notification already.
+                self._close_replay_overlay()
+                return
+
+        if updated and self._replay_overlay is not None:
+            try:
+                self._replay_overlay.update(**self._replay_state)
+            except Exception:
+                pass
 
     def _run_refine_popup(self, req: dict) -> dict:
         """
@@ -447,9 +642,14 @@ class RecorderApp(rumps.App):
                 logging.basicConfig(level=logging.INFO)
                 # Start replay in background so UI stays responsive.
                 try:
+                    if self.replay_process is not None and getattr(self.replay_process, "is_alive", lambda: False)():
+                        rumps.alert("Replay already running. Please wait for it to finish.")
+                        return
+
                     schema_path = wf.workflow_dir / "schema.json"
                     schema = json.loads(schema_path.read_text(encoding="utf-8"))
                     task_params = schema.get("task_params") or []
+                    task_name = str(schema.get("task_name") or wf.display_name or "").strip()
 
                     overrides: dict[str, str] = {}
                     if isinstance(task_params, list) and task_params:
@@ -491,9 +691,33 @@ class RecorderApp(rumps.App):
                                 if v:
                                     overrides[k] = v
 
+                    # Create overlay in the UI process and pass its window id to the worker so
+                    # screenshots can be captured *below* it (overlay never appears in agent images).
+                    pause_ev = multiprocessing.Event()
+                    pause_ev.set()  # running by default
+                    stop_ev = multiprocessing.Event()
+                    self._replay_pause_event = pause_ev
+                    self._replay_stop_event = stop_ev
+                    overlay = self._ensure_replay_overlay()
+                    overlay_id = overlay.window_id()
+                    if overlay_id <= 0:
+                        # Strong guarantee: if we can't get a window id, we can't safely exclude.
+                        raise RuntimeError("Failed to initialize replay overlay window id.")
+
+                    # Set up replay event queue for overlay updates.
+                    self.replay_event_q = multiprocessing.Queue()
+                    self._replay_state = {}
+
                     self.replay_process = multiprocessing.Process(
                         target=_run_replay_workflow_schema,
-                        args=(str(wf.workflow_dir), overrides),
+                        args=(
+                            str(wf.workflow_dir),
+                            overrides,
+                            self.replay_event_q,
+                            overlay_id,
+                            pause_ev,
+                            stop_ev,
+                        ),
                     )
                     self.replay_process.start()
                     rumps.notification(
@@ -502,6 +726,7 @@ class RecorderApp(rumps.App):
                         message="Replaying schema plan in background",
                     )
                 except Exception as e:
+                    self._close_replay_overlay()
                     rumps.alert(f"Replay failed to start: {e}")
 
             self.replay_menu[wf.display_name] = rumps.MenuItem(wf.display_name, callback=_cb)
