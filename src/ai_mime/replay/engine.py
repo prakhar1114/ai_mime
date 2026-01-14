@@ -18,6 +18,12 @@ class ReplayError(RuntimeError):
     pass
 
 
+class ReplayStopped(RuntimeError):
+    """
+    Control-surface stop (user requested). Not an error condition.
+    """
+
+
 @dataclass(frozen=True)
 class ReplayConfig:
     model: str
@@ -190,9 +196,24 @@ def run_plan(
     capture_screenshot: Callable[[Path], Path],
     exec_action: Callable[[dict[str, Any], ReplayConfig], None],
     log: Callable[[str], None] = print,
+    event_queue: Any | None = None,
+    pause_event: Any | None = None,
+    stop_event: Any | None = None,
 ) -> None:
     workflow_dir_p = Path(workflow_dir)
     run_dir = _ensure_run_dir(workflow_dir_p)
+
+    def _emit(obj: dict[str, Any]) -> None:
+        if event_queue is None:
+            return
+        try:
+            # Prefer non-blocking puts to avoid stalling replay.
+            if hasattr(event_queue, "put_nowait"):
+                event_queue.put_nowait(obj)
+            else:
+                event_queue.put(obj)
+        except Exception:
+            pass
 
     # Load schema and materialize any {param} templates for this run (no LLM).
     schema = load_schema(workflow_dir)
@@ -216,9 +237,54 @@ def run_plan(
     subtasks_any = plan.get("subtasks") or []
     subtasks: list[dict[str, Any]] = subtasks_any
 
+    _emit(
+        {
+            "type": "replay_started",
+            "task_name": task_name,
+            "task_description_user": task_description_user,
+            "subtask_total": len(subtasks),
+        }
+    )
+
     def _sleep(dt: float) -> None:
         if dt and dt > 0:
             time.sleep(dt)
+
+    def _check_control() -> None:
+        # Stop always wins.
+        try:
+            if stop_event is not None and bool(getattr(stop_event, "is_set")()):
+                raise ReplayStopped("Replay stopped by user.")
+        except ReplayStopped:
+            raise
+        except Exception:
+            pass
+
+        # Pause: block until resumed (but keep checking stop).
+        if pause_event is None:
+            return
+        try:
+            is_set = bool(getattr(pause_event, "is_set")())
+        except Exception:
+            return
+        while not is_set:
+            # Allow stop while paused.
+            try:
+                if stop_event is not None and bool(getattr(stop_event, "is_set")()):
+                    raise ReplayStopped("Replay stopped by user.")
+            except ReplayStopped:
+                raise
+            except Exception:
+                pass
+            try:
+                # Wait briefly; avoids busy looping.
+                getattr(pause_event, "wait")(0.2)
+            except Exception:
+                time.sleep(0.2)
+            try:
+                is_set = bool(getattr(pause_event, "is_set")())
+            except Exception:
+                return
 
     # Per-run debug artifacts.
     events_path = run_dir / "events.jsonl"
@@ -251,6 +317,7 @@ def run_plan(
 
     # Main loop: iterate subtasks, run until the model calls done(), then move to next.
     for subtask_idx, st in enumerate(subtasks):
+        _check_control()
         # Render any remaining templates using params + known extracts.
         render_ctx: dict[str, str] = {**params, **{k: str(v) for k, v in extracts.items() if v is not None}}
         subtask_text = _render_template(st.get("text") or "", render_ctx) or ""
@@ -289,9 +356,19 @@ def run_plan(
         if task_description_user:
             log(f"  task: {task_description_user}")
 
+        _emit(
+            {
+                "type": "subtask_started",
+                "subtask_idx": subtask_idx,
+                "subtask_total": len(subtasks),
+                "subtask_text": subtask_text,
+            }
+        )
+
         history: list[dict[str, Any]] = []
 
         for it in range(max_iters_per_subtask):
+            _check_control()
             _sleep(cfg.delay_s)
 
             img_path = run_dir / f"subtask_{subtask_idx:02d}_iter_{it:03d}.png"
@@ -311,7 +388,28 @@ def run_plan(
             name = tool_call.get("name")
             args = tool_call.get("arguments") or {}
 
+            # Emit what the model predicted before we execute it.
+            try:
+                args_slim: dict[str, Any] = {}
+                if isinstance(args, dict):
+                    # Keep only commonly useful keys; avoid huge payloads.
+                    for k in ("action", "coordinate", "keys", "text", "query", "variable_name", "result", "observation", "task_memory", "pixels", "time"):
+                        if k in args:
+                            args_slim[k] = args.get(k)
+                _emit(
+                    {
+                        "type": "predicted_tool_call",
+                        "subtask_idx": subtask_idx,
+                        "iter": it,
+                        "name": name,
+                        "arguments": args_slim,
+                    }
+                )
+            except Exception:
+                pass
+
             if name == "extract":
+                _check_control()
                 vn = args.get("variable_name")
                 q = args.get("query") or ""
                 val = _run_vision_extract(image_path=img_path, query=q, cfg=cfg)
@@ -344,6 +442,17 @@ def run_plan(
                     if item.get("name") == vn:
                         item["value"] = val
                 log(f"  extract: {vn}={val}")
+                _emit(
+                    {
+                        "type": "extract_result",
+                        "subtask_idx": subtask_idx,
+                        "iter": it,
+                        "variable_name": vn,
+                        "query": q,
+                        "value": val,
+                        "task_memory": task_memory,
+                    }
+                )
                 continue
 
             if name == "done":
@@ -361,8 +470,18 @@ def run_plan(
                 )
                 _persist_task_memory(task_memory)
                 log(f"  done: {result}")
+                _emit(
+                    {
+                        "type": "done",
+                        "subtask_idx": subtask_idx,
+                        "iter": it,
+                        "result": result,
+                        "task_memory": task_memory,
+                    }
+                )
                 break
 
+            _check_control()
             pixel_action = tool_call_to_pixel_action(img_path, tool_call)
             observation = pixel_action.get("observation")
             task_memory = str(pixel_action.get("task_memory") or "")
@@ -381,6 +500,16 @@ def run_plan(
             _persist_task_memory(task_memory)
 
             log(f"  action: {pixel_action.get('action')} | obs: {observation}")
+            _emit(
+                {
+                    "type": "pixel_action",
+                    "subtask_idx": subtask_idx,
+                    "iter": it,
+                    "action": pixel_action.get("action"),
+                    "observation": observation,
+                    "task_memory": task_memory,
+                }
+            )
             _sleep(cfg.click_delay_s)
             try:
                 exec_action(pixel_action, cfg)
@@ -399,9 +528,20 @@ def run_plan(
                     }
                 )
                 log(f"  exec_error: {msg}")
+                _emit(
+                    {
+                        "type": "exec_error",
+                        "subtask_idx": subtask_idx,
+                        "iter": it,
+                        "error": msg,
+                        "pixel_action": pixel_action,
+                        "task_memory": task_memory,
+                    }
+                )
                 continue
             _sleep(cfg.after_step_delay_s)
         else:
             raise ReplayError(f"Subtask {subtask_idx} exceeded max iterations ({max_iters_per_subtask})")
 
     log("Task Complete")
+    _emit({"type": "replay_finished"})
