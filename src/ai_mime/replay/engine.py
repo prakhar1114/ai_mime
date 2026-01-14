@@ -481,6 +481,7 @@ def run_plan(
                 )
                 break
 
+            _check_control()
             pixel_action = tool_call_to_pixel_action(img_path, tool_call)
             observation = pixel_action.get("observation")
             task_memory = str(pixel_action.get("task_memory") or "")
