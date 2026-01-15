@@ -43,6 +43,9 @@ class RecordingOverlayActionHandler(AppKit.NSObject):  # type: ignore[misc]
     def cancelRecording_(self, sender):  # noqa: N802
         self._overlay._cancel_recording()  # type: ignore[attr-defined]
 
+    def finishRecording_(self, sender):  # noqa: N802
+        self._overlay._finish_recording()  # type: ignore[attr-defined]
+
     def submit_(self, sender):  # noqa: N802
         self._overlay._submit_form()  # type: ignore[attr-defined]
 
@@ -64,10 +67,18 @@ class RecordingOverlay:
       - Expanded: inline form + Submit/Cancel
     """
 
-    def __init__(self, *, refine_cmd_q: Any, refine_resp_q: Any, on_cancel_recording: Any) -> None:
+    def __init__(
+        self,
+        *,
+        refine_cmd_q: Any,
+        refine_resp_q: Any,
+        on_cancel_recording: Any,
+        on_finish_recording: Any,
+    ) -> None:
         self._cmd_q = refine_cmd_q
         self._resp_q = refine_resp_q
         self._on_cancel_recording = on_cancel_recording
+        self._on_finish_recording = on_finish_recording
         self._state = RecordingOverlayState()
         self._action_handler = RecordingOverlayActionHandler.alloc().init()
         self._action_handler._overlay = self  # type: ignore[attr-defined]
@@ -77,7 +88,7 @@ class RecordingOverlay:
         # Width is dynamic: collapsed is compact; expanded grows up to a max.
         self._max_width = 560.0
         self._collapsed_width = 360.0
-        self._height_collapsed = 86.0
+        self._height_collapsed = 118.0
         self._height_details = 140.0
         self._height_extract = 190.0
 
@@ -257,6 +268,17 @@ class RecordingOverlay:
         b = AppKit.NSButton.buttonWithTitle_target_action_(title, self._action_handler, action)  # type: ignore[attr-defined]
         return style_small_button(b)
 
+    def _icon_button(self, title: str, action: str, symbol_name: str) -> Any:
+        b = self._button(title, action)
+        try:
+            img = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol_name, None)  # type: ignore[attr-defined]
+            if img is not None:
+                b.setImage_(img)
+                b.setImagePosition_(AppKit.NSImageLeft)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        return b
+
     def _render_collapsed(self) -> None:
         self._state.mode = "collapsed"
         self._state.req_id = None
@@ -264,29 +286,30 @@ class RecordingOverlay:
 
         self._set_size(self._collapsed_width, self._height_collapsed)
 
-        title_row = AppKit.NSStackView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, self._collapsed_width, 22))
-        title_row.setOrientation_(AppKit.NSUserInterfaceLayoutOrientationHorizontal)  # type: ignore[attr-defined]
-        title_row.setAlignment_(AppKit.NSLayoutAttributeCenterY)  # type: ignore[attr-defined]
-        title_row.setSpacing_(8.0)
-        title_row.addArrangedSubview_(self._title_label("Recording"))
-        spacer = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 1, 1))
-        title_row.addArrangedSubview_(spacer)
+        self._stack.addArrangedSubview_(self._title_label("Recording"))
+
+        # Tight 2x2 grid of icon buttons.
+        b_details = self._icon_button("Add more details", "addDetails:", "square.and.pencil")
+        b_extract = self._icon_button("Extract Data", "extractData:", "doc.text.magnifyingglass")
+        b_finish = self._icon_button("Finish Recording", "finishRecording:", "checkmark.circle")
+        b_cancel = self._icon_button("Cancel recording", "cancelRecording:", "xmark.circle")
+
+        grid = AppKit.NSGridView.gridViewWithViews_([[b_details, b_extract], [b_finish, b_cancel]])  # type: ignore[attr-defined]
         try:
-            spacer.setContentHuggingPriority_forOrientation_(1, AppKit.NSLayoutConstraintOrientationHorizontal)  # type: ignore[attr-defined]
+            grid.setRowSpacing_(6.0)
+            grid.setColumnSpacing_(6.0)
         except Exception:
             pass
-        title_row.addArrangedSubview_(self._button("Cancel recording", "cancelRecording:"))
-        self._stack.addArrangedSubview_(title_row)
-
-        row = AppKit.NSStackView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, self._collapsed_width, 28))
-        row.setOrientation_(AppKit.NSUserInterfaceLayoutOrientationHorizontal)  # type: ignore[attr-defined]
-        row.setAlignment_(AppKit.NSLayoutAttributeCenterY)  # type: ignore[attr-defined]
-        row.setSpacing_(10.0)
-
-        row.addArrangedSubview_(self._button("Add more details", "addDetails:"))
-        row.addArrangedSubview_(self._button("Extract Data", "extractData:"))
-
-        self._stack.addArrangedSubview_(row)
+        try:
+            # Make columns equal width for a clean grid.
+            cols = list(grid.columns())
+            if len(cols) >= 2:
+                w = float((self._collapsed_width - 6.0) / 2.0)
+                cols[0].setWidth_(w)
+                cols[1].setWidth_(w)
+        except Exception:
+            pass
+        self._stack.addArrangedSubview_(grid)
 
     def _begin_refine(self, kind: str) -> None:
         if self._state.mode != "collapsed":
@@ -318,7 +341,7 @@ class RecordingOverlay:
         self._clear_stack()
         self._set_size(self._max_width, self._height_details)
 
-        self._stack.addArrangedSubview_(self._header_with_cancel("Add more details"))
+        self._stack.addArrangedSubview_(self._title_label("Add more details"))
         self._details_field.setStringValue_("")
         self._stack.addArrangedSubview_(self._details_field)
         self._stack.addArrangedSubview_(self._submit_cancel_row())
@@ -333,7 +356,7 @@ class RecordingOverlay:
         self._clear_stack()
         self._set_size(self._max_width, self._height_extract)
 
-        self._stack.addArrangedSubview_(self._header_with_cancel("Extract Data"))
+        self._stack.addArrangedSubview_(self._title_label("Extract Data"))
         self._query_field.setStringValue_("")
         self._values_field.setStringValue_("")
         self._stack.addArrangedSubview_(self._query_field)
@@ -361,21 +384,6 @@ class RecordingOverlay:
 
         row.addArrangedSubview_(self._button("Cancel", "cancel:"))
         row.addArrangedSubview_(self._button("Submit", "submit:"))
-        return row
-
-    def _header_with_cancel(self, title: str) -> Any:
-        row = AppKit.NSStackView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, self._max_width, 22))
-        row.setOrientation_(AppKit.NSUserInterfaceLayoutOrientationHorizontal)  # type: ignore[attr-defined]
-        row.setAlignment_(AppKit.NSLayoutAttributeCenterY)  # type: ignore[attr-defined]
-        row.setSpacing_(8.0)
-        row.addArrangedSubview_(self._title_label(title))
-        spacer = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 1, 1))
-        row.addArrangedSubview_(spacer)
-        try:
-            spacer.setContentHuggingPriority_forOrientation_(1, AppKit.NSLayoutConstraintOrientationHorizontal)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        row.addArrangedSubview_(self._button("Cancel recording", "cancelRecording:"))
         return row
 
     def _submit_form(self) -> None:
@@ -412,6 +420,14 @@ class RecordingOverlay:
     def _cancel_recording(self) -> None:
         try:
             cb = self._on_cancel_recording
+            if cb is not None:
+                cb()
+        except Exception:
+            pass
+
+    def _finish_recording(self) -> None:
+        try:
+            cb = self._on_finish_recording
             if cb is not None:
                 cb()
         except Exception:

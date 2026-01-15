@@ -28,7 +28,12 @@ from ai_mime.record.overlay_ui import RecordingOverlay
 
 
 @observe(name="reflect_and_compile_schema")
-def _run_reflect_and_compile_schema(session_dir: str, model: str = "gpt-5-mini") -> None:
+def _run_reflect_and_compile_schema(
+    session_dir: str,
+    model: str = "gpt-5-mini",
+    *,
+    clean_manifest_tail: bool = False,
+) -> None:
     """
     Background task (runs in its own process):
     - reflect_session(session_dir) -> workflows/<session_name>/
@@ -38,7 +43,7 @@ def _run_reflect_and_compile_schema(session_dir: str, model: str = "gpt-5-mini")
     recordings_dir = session_dir_p.parent
     workflows_root = recordings_dir.parent / "workflows"
 
-    out_dir = reflect_session(session_dir_p, workflows_root)
+    out_dir = reflect_session(session_dir_p, workflows_root, clean_manifest_tail=clean_manifest_tail)
     print(f"Reflect finished: {out_dir}")
     compile_schema_for_workflow_dir(out_dir, model=model)
     print(f"Schema compiled: {out_dir / 'schema.json'}")
@@ -634,7 +639,8 @@ class RecorderApp(rumps.App):
         if not self.is_recording:
             self.start_recording()
         else:
-            self.stop_recording()
+            # Menubar stop can still record the final click, so enable legacy tail cleanup.
+            self.stop_recording(clean_manifest_tail=True)
 
     def start_recording(self):
         # Prompt for session name
@@ -679,6 +685,7 @@ class RecorderApp(rumps.App):
                 refine_cmd_q=self.refine_cmd_q,
                 refine_resp_q=self.refine_resp_q,
                 on_cancel_recording=self.cancel_recording,
+                on_finish_recording=self.finish_recording,
             )
             self._recording_overlay.show()
             overlay_id = self._recording_overlay.window_id()
@@ -726,7 +733,17 @@ class RecorderApp(rumps.App):
         self._skip_reflect_once = True
         self.stop_recording(join_timeout=1.0, cancelled=True)
 
-    def stop_recording(self, *, join_timeout: float = 10.0, cancelled: bool = False):
+    def finish_recording(self):
+        # Stop normally. Since this is from the overlay, we don't need tail cleanup.
+        self.stop_recording(clean_manifest_tail=False, cancelled=False)
+
+    def stop_recording(
+        self,
+        *,
+        join_timeout: float = 10.0,
+        cancelled: bool = False,
+        clean_manifest_tail: bool = False,
+    ):
         try:
             if self.stop_event:
                 self.stop_event.set()
@@ -760,6 +777,7 @@ class RecorderApp(rumps.App):
                 self.reflect_process = multiprocessing.Process(
                     target=_run_reflect_and_compile_schema,
                     args=(self.session_dir, "gpt-5-mini"),
+                    kwargs={"clean_manifest_tail": bool(clean_manifest_tail)},
                 )
                 self.reflect_process.start()
                 rumps.notification(

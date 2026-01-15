@@ -160,6 +160,7 @@ def reflect_session(
     workflows_root: str | os.PathLike[str],
     *,
     style: ClickAnnotationStyle | None = None,
+    clean_manifest_tail: bool = False,
 ) -> Path:
     """
     Convert a recording session dir into a reusable workflow folder.
@@ -196,13 +197,14 @@ def reflect_session(
 
     # Load + transform manifest
     events = _read_jsonl(manifest_src)
-    if events:
-        # Remove last line (click on Stop Recording)
-        events = events[:-1]
-    if events:
-        # Remove action from new last line (click on AI Mime): represent as null action.
-        events[-1]["action_type"] = None
-        events[-1]["action_details"] = {}
+    if clean_manifest_tail:
+        if events:
+            # Remove last line (click on Stop Recording)
+            events = events[:-1]
+        if events:
+            # Remove action from new last line (click on AI Mime): represent as null action.
+            events[-1]["action_type"] = None
+            events[-1]["action_details"] = {}
 
     # Copy screenshots referenced by the *updated* manifest (annotate clicks)
     _copy_or_annotate_screenshots(
