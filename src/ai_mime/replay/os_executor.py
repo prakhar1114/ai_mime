@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import sys
 import time
 from typing import Iterable
 
+import Quartz  # type: ignore[import-not-found]
 from pynput import keyboard, mouse
 
 from .engine import ReplayConfig, ReplayError
@@ -94,8 +94,11 @@ def exec_type(text: str, cfg: ReplayConfig) -> None:
 
 
 def exec_mouse_move(x: int, y: int, cfg: ReplayConfig) -> None:
-    m = mouse.Controller()
-    m.position = (int(x), int(y))
+    # Use Quartz so cursor movement coordinates match our Quartz click/scroll events.
+    x_i = int(x)
+    y_i = int(y)
+    Quartz.CGWarpMouseCursorPosition((float(x_i), float(y_i)))  # type: ignore[attr-defined]
+    Quartz.CGAssociateMouseAndMouseCursorPosition(True)  # type: ignore[attr-defined]
 
 
 def exec_click(x: int, y: int, cfg: ReplayConfig, *, button: mouse.Button = mouse.Button.left, clicks: int = 1) -> None:
@@ -103,67 +106,65 @@ def exec_click(x: int, y: int, cfg: ReplayConfig, *, button: mouse.Button = mous
     y_i = int(y)
     n = max(1, int(clicks))
 
-    # Prefer native Quartz events on macOS; they tend to be far more reliable for double-click
-    # semantics across apps than rapid synthetic Controller.click loops.
-    if sys.platform == "darwin":
-        try:
-            import Quartz  # type: ignore[import-not-found]
+    if button == mouse.Button.left:
+        down = Quartz.kCGEventLeftMouseDown  # type: ignore[attr-defined]
+        up = Quartz.kCGEventLeftMouseUp  # type: ignore[attr-defined]
+        btn = Quartz.kCGMouseButtonLeft  # type: ignore[attr-defined]
+    elif button == mouse.Button.right:
+        down = Quartz.kCGEventRightMouseDown  # type: ignore[attr-defined]
+        up = Quartz.kCGEventRightMouseUp  # type: ignore[attr-defined]
+        btn = Quartz.kCGMouseButtonRight  # type: ignore[attr-defined]
+    else:
+        down = Quartz.kCGEventOtherMouseDown  # type: ignore[attr-defined]
+        up = Quartz.kCGEventOtherMouseUp  # type: ignore[attr-defined]
+        btn = Quartz.kCGMouseButtonCenter  # type: ignore[attr-defined]
 
-            if button == mouse.Button.left:
-                down = Quartz.kCGEventLeftMouseDown  # type: ignore[attr-defined]
-                up = Quartz.kCGEventLeftMouseUp  # type: ignore[attr-defined]
-                btn = Quartz.kCGMouseButtonLeft  # type: ignore[attr-defined]
-            elif button == mouse.Button.right:
-                down = Quartz.kCGEventRightMouseDown  # type: ignore[attr-defined]
-                up = Quartz.kCGEventRightMouseUp  # type: ignore[attr-defined]
-                btn = Quartz.kCGMouseButtonRight  # type: ignore[attr-defined]
-            else:
-                down = Quartz.kCGEventOtherMouseDown  # type: ignore[attr-defined]
-                up = Quartz.kCGEventOtherMouseUp  # type: ignore[attr-defined]
-                btn = Quartz.kCGMouseButtonCenter  # type: ignore[attr-defined]
+    # Use a realistic multi-click interval.
+    inter_click_delay_s = 0.12 if n > 1 else 0.03
 
-            # Use a realistic double-click interval.
-            inter_click_delay_s = 0.12 if n > 1 else 0.03
+    # Ensure cursor is at the target point before clicking.
+    Quartz.CGWarpMouseCursorPosition((float(x_i), float(y_i)))  # type: ignore[attr-defined]
+    Quartz.CGAssociateMouseAndMouseCursorPosition(True)  # type: ignore[attr-defined]
+    time.sleep(0.02)
 
-            for i in range(n):
-                pt = (float(x_i), float(y_i))
-                ev_down = Quartz.CGEventCreateMouseEvent(None, down, pt, btn)  # type: ignore[attr-defined]
-                ev_up = Quartz.CGEventCreateMouseEvent(None, up, pt, btn)  # type: ignore[attr-defined]
+    for i in range(n):
+        pt = (float(x_i), float(y_i))
+        ev_down = Quartz.CGEventCreateMouseEvent(None, down, pt, btn)  # type: ignore[attr-defined]
+        ev_up = Quartz.CGEventCreateMouseEvent(None, up, pt, btn)  # type: ignore[attr-defined]
 
-                # clickState is 1 for single click, 2 for second click, etc.
-                Quartz.CGEventSetIntegerValueField(ev_down, Quartz.kCGMouseEventClickState, i + 1)  # type: ignore[attr-defined]
-                Quartz.CGEventSetIntegerValueField(ev_up, Quartz.kCGMouseEventClickState, i + 1)  # type: ignore[attr-defined]
+        # clickState is 1 for single click, 2 for second click, etc.
+        Quartz.CGEventSetIntegerValueField(ev_down, Quartz.kCGMouseEventClickState, i + 1)  # type: ignore[attr-defined]
+        Quartz.CGEventSetIntegerValueField(ev_up, Quartz.kCGMouseEventClickState, i + 1)  # type: ignore[attr-defined]
 
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev_down)  # type: ignore[attr-defined]
-                time.sleep(0.01)
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev_up)  # type: ignore[attr-defined]
-                if i < n - 1:
-                    time.sleep(inter_click_delay_s)
-            return
-        except Exception:
-            # Fall back to pynput if Quartz isn't available or posting fails.
-            pass
-
-    m = mouse.Controller()
-    m.position = (x_i, y_i)
-    time.sleep(0.03)
-    # Use Controller.click(count=n) so the library can generate multi-click semantics itself.
-    try:
-        m.click(button, count=n)
-    except TypeError:
-        # Older pynput signature fallback.
-        for _ in range(n):
-            m.click(button)
-            time.sleep(0.12 if n > 1 else 0.03)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev_down)  # type: ignore[attr-defined]
+        time.sleep(0.01)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev_up)  # type: ignore[attr-defined]
+        if i < n - 1:
+            time.sleep(inter_click_delay_s)
 
 
-def exec_scroll(pixels: float, cfg: ReplayConfig) -> None:
-    m = mouse.Controller()
-    # pynput uses steps; best-effort map pixels to 1 step per ~120px.
-    dy = int(round(float(pixels) / 120.0))
-    if dy == 0:
-        dy = 1 if pixels > 0 else -1
-    m.scroll(0, dy)
+def exec_scroll(pixels: float, cfg: ReplayConfig, *, horizontal: bool = False) -> None:
+    px = float(pixels)
+
+    # Convention: positive pixels scroll DOWN/RIGHT. Quartz often treats positive deltas as UP/LEFT,
+    # so invert here.
+    delta = int(round(-px))
+    if delta == 0:
+        delta = -1 if px > 0 else 1
+
+    # Clamp to a reasonable range to avoid giant jumps that some apps ignore.
+    delta = max(-2000, min(2000, delta))
+
+    v = 0
+    h = 0
+    if horizontal:
+        h = delta
+    else:
+        v = delta
+
+    unit = Quartz.kCGScrollEventUnitPixel  # type: ignore[attr-defined]
+    ev = Quartz.CGEventCreateScrollWheelEvent(None, unit, 2, v, h)  # type: ignore[attr-defined]
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)  # type: ignore[attr-defined]
 
 
 def exec_wait(seconds: float, cfg: ReplayConfig) -> None:
@@ -214,7 +215,7 @@ def exec_computer_use_action(action: dict, cfg: ReplayConfig) -> None:
         pixels = action.get("pixels")
         if pixels is None:
             raise ReplayError(f"action=scroll requires pixels: {action}")
-        exec_scroll(float(pixels), cfg)
+        exec_scroll(float(pixels), cfg, horizontal=(a == "hscroll"))
         return
 
     if a == "wait":
