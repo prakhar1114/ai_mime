@@ -33,25 +33,43 @@ def _run_reflect_and_compile_schema(
     model: str = "gpt-5-mini",
     *,
     clean_manifest_tail: bool = False,
+    event_queue: Any | None = None,
 ) -> None:
     """
     Background task (runs in its own process):
     - reflect_session(session_dir) -> workflows/<session_name>/
     - compile schema.json inside that workflow dir
     """
-    session_dir_p = Path(session_dir)
-    recordings_dir = session_dir_p.parent
-    workflows_root = recordings_dir.parent / "workflows"
+    # Ensure INFO logs from schema compiler show up in this subprocess.
+    try:
+        logging.basicConfig(level=logging.INFO)
+    except Exception:
+        pass
 
-    out_dir = reflect_session(session_dir_p, workflows_root, clean_manifest_tail=clean_manifest_tail)
-    print(f"Reflect finished: {out_dir}")
-    compile_schema_for_workflow_dir(out_dir, model=model)
-    print(f"Schema compiled: {out_dir / 'schema.json'}")
-    rumps.notification(
-        title="Processing complete",
-        subtitle=out_dir.name,
-        message="Task available for running",
-    )
+    def _emit(obj: dict[str, Any]) -> None:
+        if event_queue is None:
+            return
+        try:
+            if hasattr(event_queue, "put_nowait"):
+                event_queue.put_nowait(obj)
+            else:
+                event_queue.put(obj)
+        except Exception:
+            pass
+
+    try:
+        session_dir_p = Path(session_dir)
+        recordings_dir = session_dir_p.parent
+        workflows_root = recordings_dir.parent / "workflows"
+
+        out_dir = reflect_session(session_dir_p, workflows_root, clean_manifest_tail=clean_manifest_tail)
+        print(f"Reflect finished: {out_dir}")
+        compile_schema_for_workflow_dir(out_dir, model=model)
+        print(f"Schema compiled: {out_dir / 'schema.json'}")
+        _emit({"type": "reflect_compile_done", "workflow_dir": str(out_dir)})
+    except Exception as e:
+        _emit({"type": "reflect_compile_failed", "error": str(e), "session_dir": str(session_dir)})
+        raise
 
 
 def _load_replay_config_from_env() -> ReplayConfig:
@@ -207,6 +225,7 @@ class RecorderApp(rumps.App):
         self.session_dir_queue = None
         self.session_dir = None
         self.reflect_process = None
+        self.reflect_event_q: multiprocessing.Queue | None = None
         self.replay_process = None
         self.replay_event_q: multiprocessing.Queue | None = None
         self._replay_overlay: ReplayOverlay | None = None
@@ -227,6 +246,10 @@ class RecorderApp(rumps.App):
         # Poll replay progress events from the replay worker.
         self._replay_timer = rumps.Timer(self._poll_replay_events, 0.1)
         self._replay_timer.start()
+
+        # Poll reflect/schema compilation completion from the reflect worker.
+        self._reflect_timer = rumps.Timer(self._poll_reflect_events, 0.2)
+        self._reflect_timer.start()
 
         # Menu Items
         self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
@@ -447,6 +470,51 @@ class RecorderApp(rumps.App):
                 self._replay_overlay.update(**self._replay_state)
             except Exception:
                 pass
+
+    def _poll_reflect_events(self, _):
+        # Drain reflect queue quickly; emit a single notification from the UI process.
+        q = self.reflect_event_q
+        if q is None:
+            return
+        while True:
+            try:
+                evt = q.get_nowait()
+            except Empty:
+                break
+            except Exception:
+                break
+            if not isinstance(evt, dict):
+                continue
+            et = evt.get("type")
+            if et == "reflect_compile_done":
+                try:
+                    wf_dir = Path(str(evt.get("workflow_dir") or ""))
+                    name = wf_dir.name if wf_dir.name else "Workflow"
+                except Exception:
+                    name = "Workflow"
+                rumps.notification(
+                    title="Processing complete",
+                    subtitle=name,
+                    message="Task available for running",
+                )
+                # Cleanup queue after completion.
+                try:
+                    self.reflect_event_q = None
+                except Exception:
+                    pass
+                return
+            if et == "reflect_compile_failed":
+                msg = str(evt.get("error") or "Unknown error")
+                rumps.notification(
+                    title="Processing failed",
+                    subtitle="Reflect/compile error",
+                    message=msg,
+                )
+                try:
+                    self.reflect_event_q = None
+                except Exception:
+                    pass
+                return
 
     def _on_replay_menu_clicked(self, sender):
         # Refresh available workflows right before showing the submenu.
@@ -774,10 +842,15 @@ class RecorderApp(rumps.App):
         # Kick off reflect+schema compilation in the background (do not block UI).
         if self.session_dir and not self.dummy_recording and not self._skip_reflect_once and not cancelled:
             try:
+                # Queue used to notify completion back to the UI process (so notifications reliably show).
+                self.reflect_event_q = multiprocessing.Queue()
                 self.reflect_process = multiprocessing.Process(
                     target=_run_reflect_and_compile_schema,
                     args=(self.session_dir, "gpt-5-mini"),
-                    kwargs={"clean_manifest_tail": bool(clean_manifest_tail)},
+                    kwargs={
+                        "clean_manifest_tail": bool(clean_manifest_tail),
+                        "event_queue": self.reflect_event_q,
+                    },
                 )
                 self.reflect_process.start()
                 rumps.notification(

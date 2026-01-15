@@ -137,7 +137,7 @@ def _copy_or_annotate_screenshots(
         if not screenshot:
             continue
         screenshot_paths.add(screenshot)
-        if e.get("action_type") == "click":
+        if e.get("action_type") in {"click", "double_click", "right_click", "middle_click"}:
             details = e.get("action_details") or {}
             x = details.get("x")
             y = details.get("y")

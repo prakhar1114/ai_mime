@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from typing import Iterable
 
@@ -98,12 +99,62 @@ def exec_mouse_move(x: int, y: int, cfg: ReplayConfig) -> None:
 
 
 def exec_click(x: int, y: int, cfg: ReplayConfig, *, button: mouse.Button = mouse.Button.left, clicks: int = 1) -> None:
+    x_i = int(x)
+    y_i = int(y)
+    n = max(1, int(clicks))
+
+    # Prefer native Quartz events on macOS; they tend to be far more reliable for double-click
+    # semantics across apps than rapid synthetic Controller.click loops.
+    if sys.platform == "darwin":
+        try:
+            import Quartz  # type: ignore[import-not-found]
+
+            if button == mouse.Button.left:
+                down = Quartz.kCGEventLeftMouseDown  # type: ignore[attr-defined]
+                up = Quartz.kCGEventLeftMouseUp  # type: ignore[attr-defined]
+                btn = Quartz.kCGMouseButtonLeft  # type: ignore[attr-defined]
+            elif button == mouse.Button.right:
+                down = Quartz.kCGEventRightMouseDown  # type: ignore[attr-defined]
+                up = Quartz.kCGEventRightMouseUp  # type: ignore[attr-defined]
+                btn = Quartz.kCGMouseButtonRight  # type: ignore[attr-defined]
+            else:
+                down = Quartz.kCGEventOtherMouseDown  # type: ignore[attr-defined]
+                up = Quartz.kCGEventOtherMouseUp  # type: ignore[attr-defined]
+                btn = Quartz.kCGMouseButtonCenter  # type: ignore[attr-defined]
+
+            # Use a realistic double-click interval.
+            inter_click_delay_s = 0.12 if n > 1 else 0.03
+
+            for i in range(n):
+                pt = (float(x_i), float(y_i))
+                ev_down = Quartz.CGEventCreateMouseEvent(None, down, pt, btn)  # type: ignore[attr-defined]
+                ev_up = Quartz.CGEventCreateMouseEvent(None, up, pt, btn)  # type: ignore[attr-defined]
+
+                # clickState is 1 for single click, 2 for second click, etc.
+                Quartz.CGEventSetIntegerValueField(ev_down, Quartz.kCGMouseEventClickState, i + 1)  # type: ignore[attr-defined]
+                Quartz.CGEventSetIntegerValueField(ev_up, Quartz.kCGMouseEventClickState, i + 1)  # type: ignore[attr-defined]
+
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev_down)  # type: ignore[attr-defined]
+                time.sleep(0.01)
+                Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev_up)  # type: ignore[attr-defined]
+                if i < n - 1:
+                    time.sleep(inter_click_delay_s)
+            return
+        except Exception:
+            # Fall back to pynput if Quartz isn't available or posting fails.
+            pass
+
     m = mouse.Controller()
-    m.position = (int(x), int(y))
-    time.sleep(0.02)
-    for _ in range(max(1, int(clicks))):
-        m.click(button)
-        time.sleep(0.03)
+    m.position = (x_i, y_i)
+    time.sleep(0.03)
+    # Use Controller.click(count=n) so the library can generate multi-click semantics itself.
+    try:
+        m.click(button, count=n)
+    except TypeError:
+        # Older pynput signature fallback.
+        for _ in range(n):
+            m.click(button)
+            time.sleep(0.12 if n > 1 else 0.03)
 
 
 def exec_scroll(pixels: float, cfg: ReplayConfig) -> None:

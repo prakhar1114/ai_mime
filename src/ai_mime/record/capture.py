@@ -128,6 +128,14 @@ class EventRecorder:
         self.refine_resp_q = refine_resp_q
         self._refine_thread = None
 
+        # Double-click buffering: we delay emitting a single click briefly so we can collapse
+        # two close clicks into a single double_click event.
+        self._double_click_max_interval_s = 0.35
+        self._double_click_max_dist_px = 8.0
+        self._pending_click_lock = threading.Lock()
+        self._pending_click: dict | None = None
+        self._pending_click_timer: threading.Timer | None = None
+
         # Current screenshot updater (overwrites current_screenshot.png every 500ms)
         self.current_updater = CurrentScreenshotUpdater(
             screenshot_recorder=self.screenshot_recorder,
@@ -164,13 +172,16 @@ class EventRecorder:
     def stop(self):
         """Stop capturing and cleanup."""
         if not self.recording: return
-        self.recording = False
-        self.paused = False
-
+        # Stop listeners first so no new events arrive while we flush buffers.
         if self.mouse_listener: self.mouse_listener.stop()
         if self.keyboard_listener: self.keyboard_listener.stop()
 
+        # Flush while recording is still True so a final buffered click isn't dropped.
+        self.paused = False
         self.flush_typing()
+        self._flush_pending_click()
+
+        self.recording = False
 
         # Stop current screenshot updater
         self.current_updater.stop()
@@ -221,6 +232,7 @@ class EventRecorder:
             return
         resp_q = self.refine_resp_q
 
+        self._flush_pending_click()
         self.flush_typing()
         screenshot = self._freeze_current_screenshot()
         self.paused = True
@@ -340,6 +352,60 @@ class EventRecorder:
         # After typing, refresh current screenshot so subsequent actions see the typed result quickly.
         self.current_updater.force_refresh()
 
+    def _cancel_pending_click_timer(self) -> None:
+        t = self._pending_click_timer
+        self._pending_click_timer = None
+        if t is None:
+            return
+        try:
+            t.cancel()
+        except Exception:
+            pass
+
+    def _emit_click_like_event(
+        self,
+        *,
+        action_type: str,
+        button_str: str,
+        x: float,
+        y: float,
+        screenshot: str,
+        timestamp: float,
+    ) -> None:
+        self._write_event(
+            {
+                "action_type": action_type,
+                "action_details": {"button": button_str, "x": x, "y": y, "pressed": True},
+                "screenshot": screenshot,
+                "timestamp": timestamp,
+            }
+        )
+
+    def _flush_pending_click(self) -> None:
+        """
+        If a click is buffered (waiting to see if it becomes a double click), emit it now as a single click.
+        """
+        pending = None
+        with self._pending_click_lock:
+            pending = self._pending_click
+            self._pending_click = None
+            self._cancel_pending_click_timer()
+        if not pending:
+            return
+        if not self.recording or self.paused:
+            return
+        self._emit_click_like_event(
+            action_type="click",
+            button_str=str(pending.get("button_str") or ""),
+            x=float(pending.get("x") or 0.0),
+            y=float(pending.get("y") or 0.0),
+            screenshot=str(pending.get("screenshot") or ""),
+            timestamp=float(pending.get("timestamp") or time.time()),
+        )
+        # After emitting a click (even if delayed), refresh current screenshot so subsequent actions
+        # see post-click UI changes quickly.
+        self.current_updater.force_refresh()
+
     def on_click(self, x, y, button, pressed):
         if not self.recording or self.paused: return
         if pressed:
@@ -350,24 +416,122 @@ class EventRecorder:
                         return
                 except Exception:
                     pass
+
+            now = time.time()
+
             # 1. Flush any pending typing
             self.flush_typing()
 
             # 2. Freeze latest pre-action screenshot
             screenshot = self._freeze_current_screenshot()
 
-            # 3. Write event
-            self._write_event({
-                "action_type": "click",
-                "action_details": {"button": str(button), "x": x, "y": y, "pressed": True},
-                "screenshot": screenshot,
-                "timestamp": time.time()
-            })
-            # 4. Refresh current screenshot to capture result sooner
-            self.current_updater.force_refresh()
+            button_str = str(button)
+
+            # Right/middle clicks: record immediately (no buffering) so we don't distort timing.
+            # Also allows reflection/schema to preserve them explicitly for replay.
+            if button_str.endswith(".right") or button_str.endswith("Button.right") or "right" in button_str.lower():
+                self._flush_pending_click()
+                self._emit_click_like_event(
+                    action_type="right_click",
+                    button_str=button_str,
+                    x=float(x),
+                    y=float(y),
+                    screenshot=screenshot,
+                    timestamp=now,
+                )
+                self.current_updater.force_refresh()
+                return
+            if button_str.endswith(".middle") or button_str.endswith("Button.middle") or "middle" in button_str.lower():
+                self._flush_pending_click()
+                self._emit_click_like_event(
+                    action_type="middle_click",
+                    button_str=button_str,
+                    x=float(x),
+                    y=float(y),
+                    screenshot=screenshot,
+                    timestamp=now,
+                )
+                self.current_updater.force_refresh()
+                return
+
+            def _dist_ok(px: float, py: float, qx: float, qy: float) -> bool:
+                dx = float(px) - float(qx)
+                dy = float(py) - float(qy)
+                return (dx * dx + dy * dy) ** 0.5 <= float(self._double_click_max_dist_px)
+
+            flush_click: dict | None = None
+            emit_double: dict | None = None
+            with self._pending_click_lock:
+                pending = self._pending_click
+                if pending:
+                    same_btn = str(pending.get("button_str") or "") == button_str
+                    dt_ok = (now - float(pending.get("timestamp") or 0.0)) <= float(self._double_click_max_interval_s)
+                    dist_ok = _dist_ok(
+                        float(pending.get("x") or 0.0),
+                        float(pending.get("y") or 0.0),
+                        float(x),
+                        float(y),
+                    )
+
+                    if same_btn and dt_ok and dist_ok:
+                        # Collapse into a single double_click event using the FIRST click's pre-action screenshot.
+                        self._cancel_pending_click_timer()
+                        self._pending_click = None
+                        first = pending
+                        emit_double = {
+                            "action_type": "double_click",
+                            "button_str": str(first.get("button_str") or button_str),
+                            "x": float(first.get("x") or x),
+                            "y": float(first.get("y") or y),
+                            "screenshot": str(first.get("screenshot") or screenshot),
+                            "timestamp": float(first.get("timestamp") or now),
+                        }
+                    else:
+                        # Flush the previous pending click now, then buffer this new one.
+                        self._cancel_pending_click_timer()
+                        self._pending_click = None
+                        flush_click = pending
+
+                # If no pending click existed or we just flushed an old one, buffer this click.
+                if emit_double is None:
+                    self._pending_click = {
+                        "button_str": button_str,
+                        "x": float(x),
+                        "y": float(y),
+                        "screenshot": screenshot,
+                        "timestamp": now,
+                    }
+                    # Timer flushes the click as a normal click if no second click arrives.
+                    t = threading.Timer(self._double_click_max_interval_s, self._flush_pending_click)
+                    t.daemon = True
+                    self._pending_click_timer = t
+                    t.start()
+
+            # Emit any flushed/combined events outside the lock.
+            if flush_click and self.recording and not self.paused:
+                self._emit_click_like_event(
+                    action_type="click",
+                    button_str=str(flush_click.get("button_str") or ""),
+                    x=float(flush_click.get("x") or 0.0),
+                    y=float(flush_click.get("y") or 0.0),
+                    screenshot=str(flush_click.get("screenshot") or ""),
+                    timestamp=float(flush_click.get("timestamp") or time.time()),
+                )
+                self.current_updater.force_refresh()
+            if emit_double and self.recording and not self.paused:
+                self._emit_click_like_event(
+                    action_type="double_click",
+                    button_str=str(emit_double.get("button_str") or button_str),
+                    x=float(emit_double.get("x") or x),
+                    y=float(emit_double.get("y") or y),
+                    screenshot=str(emit_double.get("screenshot") or screenshot),
+                    timestamp=float(emit_double.get("timestamp") or now),
+                )
+                self.current_updater.force_refresh()
 
     def on_scroll(self, x, y, dx, dy):
         if not self.recording or self.paused: return
+        self._flush_pending_click()
         now = time.time()
         if now - self.last_scroll_time < self.scroll_throttle:
             return
@@ -386,6 +550,8 @@ class EventRecorder:
 
     def on_press(self, key):
         if not self.recording: return
+        if not self.paused:
+            self._flush_pending_click()
 
         # Track Modifiers
         if key in [keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r]:

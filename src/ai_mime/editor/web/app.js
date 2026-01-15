@@ -46,7 +46,7 @@
     errorModalClose: $("errorModalClose"),
   };
 
-  const ACTION_TYPES = ["CLICK", "TYPE", "SCROLL", "KEYPRESS", "DRAG", "EXTRACT"];
+  const ACTION_TYPES = ["CLICK", "DOUBLE_CLICK", "RIGHT_CLICK", "MIDDLE_CLICK", "TYPE", "SCROLL", "KEYPRESS", "DRAG", "EXTRACT"];
 
   let originalSchema = null;
   let schema = null;
