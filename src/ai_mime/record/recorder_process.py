@@ -8,8 +8,9 @@ def run_recorder_process(
     description,
     stop_event,
     session_dir_queue=None,
-    refine_req_q=None,
+    refine_cmd_q=None,
     refine_resp_q=None,
+    exclude_window_id=None,
 ):
     """
     Entry point for the recording child process.
@@ -31,7 +32,12 @@ def run_recorder_process(
     except Exception:
         pass
 
-    recorder = EventRecorder(storage, refine_req_q=refine_req_q, refine_resp_q=refine_resp_q)
+    recorder = EventRecorder(
+        storage,
+        refine_cmd_q=refine_cmd_q,
+        refine_resp_q=refine_resp_q,
+        exclude_window_id=exclude_window_id,
+    )
 
     # Enable listeners (uncommenting the parts we disabled earlier)
     # The EventRecorder.start() method needs to be "clean" again for this usage.

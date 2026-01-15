@@ -16,7 +16,17 @@ def validate_schema(schema: dict) -> None:
     except Exception as e:
         raise ValueError(f"schema missing required plan/subtasks structure: {e}") from e
 
-    allowed_action_types = {"CLICK", "TYPE", "SCROLL", "KEYPRESS", "DRAG", "EXTRACT"}
+    allowed_action_types = {
+        "CLICK",
+        "DOUBLE_CLICK",
+        "RIGHT_CLICK",
+        "MIDDLE_CLICK",
+        "TYPE",
+        "SCROLL",
+        "KEYPRESS",
+        "DRAG",
+        "EXTRACT",
+    }
     extract_re = re.compile(r"^extract_[0-9]+$")
     extract_placeholder_re = re.compile(r"\{(extract_[0-9]+)\}")
 
