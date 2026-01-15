@@ -11,10 +11,18 @@ class CurrentScreenshotUpdater:
     Continuously captures the primary display to screenshots/current_screenshot.png.
     Writes are made atomic by capturing to a temp file and os.replace()ing into place.
     """
-    def __init__(self, screenshot_recorder: ScreenshotRecorder, storage, interval_s: float = 0.5):
+    def __init__(
+        self,
+        screenshot_recorder: ScreenshotRecorder,
+        storage,
+        interval_s: float = 0.5,
+        *,
+        exclude_window_id: int | None = None,
+    ):
         self.screenshot_recorder = screenshot_recorder
         self.storage = storage
         self.interval_s = interval_s
+        self.exclude_window_id = exclude_window_id
         self._stop_event = threading.Event()
         self._thread = None
         self._capture_lock = threading.Lock()
@@ -74,7 +82,7 @@ class CurrentScreenshotUpdater:
             tmp_path = dest_path.with_suffix(".tmp.png")
             try:
                 # Capture to temp path first.
-                saved_tmp = self.screenshot_recorder.capture(tmp_path)
+                saved_tmp = self.screenshot_recorder.capture(tmp_path, exclude_window_id=self.exclude_window_id)
                 if not saved_tmp:
                     return None
                 # Atomic swap into place.
@@ -90,9 +98,17 @@ class CurrentScreenshotUpdater:
                 return None
 
 class EventRecorder:
-    def __init__(self, storage, *, refine_req_q=None, refine_resp_q=None):
+    def __init__(
+        self,
+        storage,
+        *,
+        refine_cmd_q=None,
+        refine_resp_q=None,
+        exclude_window_id: int | None = None,
+    ):
         self.storage = storage
         self.screenshot_recorder = ScreenshotRecorder()
+        self.exclude_window_id = exclude_window_id
 
         # Typing State
         self.type_buf = []
@@ -108,14 +124,16 @@ class EventRecorder:
         self.modifiers = set() # Track active modifiers
         self.paused = False
         self.pending_details: str | None = None
-        self.refine_req_q = refine_req_q
+        self.refine_cmd_q = refine_cmd_q
         self.refine_resp_q = refine_resp_q
+        self._refine_thread = None
 
         # Current screenshot updater (overwrites current_screenshot.png every 500ms)
         self.current_updater = CurrentScreenshotUpdater(
             screenshot_recorder=self.screenshot_recorder,
             storage=self.storage,
             interval_s=0.5,
+            exclude_window_id=self.exclude_window_id,
         )
 
     def start(self):
@@ -141,6 +159,8 @@ class EventRecorder:
         self.mouse_listener.start()
         self.keyboard_listener.start()
 
+        self._start_refine_listener()
+
     def stop(self):
         """Stop capturing and cleanup."""
         if not self.recording: return
@@ -154,6 +174,120 @@ class EventRecorder:
 
         # Stop current screenshot updater
         self.current_updater.stop()
+
+        if self._refine_thread is not None:
+            try:
+                self._refine_thread.join(timeout=1.0)
+            except Exception:
+                pass
+            self._refine_thread = None
+
+    def _start_refine_listener(self):
+        if self._refine_thread is not None:
+            return
+        if self.refine_cmd_q is None or self.refine_resp_q is None:
+            return
+        cmd_q = self.refine_cmd_q
+        resp_q = self.refine_resp_q
+
+        def _run():
+            while self.recording:
+                try:
+                    cmd = cmd_q.get(timeout=0.01)
+                except Empty:
+                    continue
+                except Exception:
+                    continue
+                if not isinstance(cmd, dict):
+                    continue
+                if cmd.get("type") != "begin_refine":
+                    continue
+                try:
+                    kind = str(cmd.get("kind") or "")
+                    req_id = float(cmd.get("req_id") or 0.0)
+                except Exception:
+                    continue
+                if req_id <= 0:
+                    continue
+                self._handle_begin_refine(kind=kind, req_id=req_id)
+
+        self._refine_thread = threading.Thread(target=_run, daemon=True)
+        self._refine_thread.start()
+
+    def _handle_begin_refine(self, *, kind: str, req_id: float) -> None:
+        if self.paused:
+            return
+        if self.refine_resp_q is None:
+            return
+        resp_q = self.refine_resp_q
+
+        self.flush_typing()
+        screenshot = self._freeze_current_screenshot()
+        self.paused = True
+
+        resp = None
+        while self.recording and self.paused and resp is None:
+            try:
+                candidate = resp_q.get(timeout=0.05)
+            except Empty:
+                continue
+            except Exception:
+                break
+            if isinstance(candidate, dict) and candidate.get("req_id") == req_id:
+                resp = candidate
+
+        if not self.recording:
+            self.paused = False
+            return
+
+        rkind = str((resp or {}).get("kind") or "").strip().lower()
+        if rkind == "extract":
+            query = str((resp or {}).get("query") or "").strip()
+            values = str((resp or {}).get("values") or "").strip()
+            if query or values:
+                self._write_event(
+                    {
+                        "action_type": "extract",
+                        "action_details": {"query": query, "values": values},
+                        "screenshot": screenshot,
+                        "timestamp": time.time(),
+                    }
+                )
+        elif rkind == "details":
+            text = str((resp or {}).get("text") or "").strip()
+            if text:
+                self.pending_details = text
+        # cancel/unknown => no-op
+
+        self.paused = False
+
+    def _point_in_window(self, *, window_id: int, x: float, y: float) -> bool:
+        """
+        Best-effort: return True if (x,y) lies within the bounds of the given window.
+        Used to avoid recording clicks on the recording overlay itself.
+        """
+        try:
+            import Quartz  # type: ignore[import-not-found]
+
+            info = Quartz.CGWindowListCopyWindowInfo(  # type: ignore[attr-defined]
+                Quartz.kCGWindowListOptionOnScreenOnly,  # type: ignore[attr-defined]
+                Quartz.kCGNullWindowID,  # type: ignore[attr-defined]
+            )
+            for w in info or []:
+                wn = w.get("kCGWindowNumber")
+                if wn is None:
+                    continue
+                if int(wn) != int(window_id):
+                    continue
+                b = w.get("kCGWindowBounds") or {}
+                bx = float(b.get("X", 0.0))
+                by = float(b.get("Y", 0.0))
+                bw = float(b.get("Width", 0.0))
+                bh = float(b.get("Height", 0.0))
+                return (bx <= float(x) <= bx + bw) and (by <= float(y) <= by + bh)
+        except Exception:
+            return False
+        return False
 
     def _freeze_current_screenshot(self):
         """Freeze the most recent pre-action current screenshot into the numbered screenshots/ dir."""
@@ -209,6 +343,13 @@ class EventRecorder:
     def on_click(self, x, y, button, pressed):
         if not self.recording or self.paused: return
         if pressed:
+            # Don't record interactions with the recording overlay UI itself.
+            if self.exclude_window_id is not None:
+                try:
+                    if self._point_in_window(window_id=int(self.exclude_window_id), x=float(x), y=float(y)):
+                        return
+                except Exception:
+                    pass
             # 1. Flush any pending typing
             self.flush_typing()
 
@@ -243,66 +384,6 @@ class EventRecorder:
         })
         self.current_updater.force_refresh()
 
-    def _trigger_refine(self):
-        """
-        Pause recording, request UI input, then either:
-        - write an extract event (with frozen pre-action screenshot)
-        - store details for the next event
-        """
-        if self.paused:
-            return
-        # If no IPC configured, do nothing (but do not record Ctrl+I).
-        if self.refine_req_q is None or self.refine_resp_q is None:
-            return
-
-        self.flush_typing()
-        screenshot = self._freeze_current_screenshot()
-        self.paused = True
-
-        req_id = time.time()
-        try:
-            self.refine_req_q.put({"req_id": req_id, "screenshot": screenshot})
-        except Exception:
-            self.paused = False
-            return
-
-        resp = None
-        # Poll so stop() can break us out.
-        while self.recording and self.paused and resp is None:
-            try:
-                candidate = self.refine_resp_q.get(timeout=0.1)
-            except Empty:
-                continue
-            except Exception:
-                break
-            if isinstance(candidate, dict) and candidate.get("req_id") == req_id:
-                resp = candidate
-
-        # If we were stopped while waiting, just unpause.
-        if not self.recording:
-            self.paused = False
-            return
-
-        kind = (resp or {}).get("kind")
-        if kind == "extract":
-            query = str((resp or {}).get("query") or "").strip()
-            values = str((resp or {}).get("values") or "").strip()
-            self._write_event(
-                {
-                    "action_type": "extract",
-                    "action_details": {"query": query, "values": values},
-                    "screenshot": screenshot,
-                    "timestamp": time.time(),
-                }
-            )
-        elif kind == "details":
-            text = str((resp or {}).get("text") or "").strip()
-            if text:
-                self.pending_details = text
-        # cancel/unknown => no-op
-
-        self.paused = False
-
     def on_press(self, key):
         if not self.recording: return
 
@@ -316,7 +397,6 @@ class EventRecorder:
         if key in [keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r]:
             self.modifiers.add("shift")
 
-        # Ctrl+I: refinement prompt (do not record this key)
         try:
             char = key.char  # type: ignore[attr-defined]
         except AttributeError:
@@ -325,10 +405,6 @@ class EventRecorder:
         # # DEBUG: print every keypress + modifier state (helps debug Chrome vs Desktop).
         # print(f"[KEY_DEBUG] on_press key={key!r} char={char!r} modifiers={sorted(self.modifiers)} paused={self.paused}")
 
-
-        if "ctrl" in self.modifiers and char is not None and str(char) in ("i", "I", "\t"):
-            self._trigger_refine()
-            return
 
         # While paused: ignore everything (including typing bursts)
         if self.paused:

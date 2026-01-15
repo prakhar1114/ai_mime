@@ -12,14 +12,6 @@ from queue import Empty
 import traceback
 from typing import Any
 
-# macOS UI (PyObjC / AppKit). Keep this simple and assume it's available.
-import AppKit  # type: ignore[import-not-found]
-
-NSAlert = AppKit.NSAlert  # type: ignore[attr-defined]
-NSView = AppKit.NSView  # type: ignore[attr-defined]
-NSTextField = AppKit.NSTextField  # type: ignore[attr-defined]
-NSPopUpButton = AppKit.NSPopUpButton  # type: ignore[attr-defined]
-
 from ai_mime.record.storage import SessionStorage
 # We don't import EventRecorder here anymore to avoid loading pynput in the UI process
 from ai_mime.record.recorder_process import run_recorder_process
@@ -32,6 +24,7 @@ from ai_mime.replay.os_executor import exec_computer_use_action
 from ai_mime.screenshot import ScreenshotRecorder
 from ai_mime.editor.server import start_editor_server
 from ai_mime.replay.overlay_ui import ReplayOverlay
+from ai_mime.record.overlay_ui import RecordingOverlay
 
 
 @observe(name="reflect_and_compile_schema")
@@ -216,18 +209,15 @@ class RecorderApp(rumps.App):
         # multiprocessing.Event isn't typed cleanly across platforms; keep this as Any.
         self._replay_pause_event: Any | None = None
         self._replay_stop_event: Any | None = None
-        self.refine_req_q: multiprocessing.Queue | None = None
+        self.refine_cmd_q: multiprocessing.Queue | None = None
         self.refine_resp_q: multiprocessing.Queue | None = None
+        self._recording_overlay: RecordingOverlay | None = None
+        self._skip_reflect_once = False
         self.dummy_recording = False
 
         # Local workflow editor (FastAPI) subprocess
         self.editor_process: multiprocessing.Process | None = None
         self.editor_port: int | None = None
-
-        # Poll refinement requests from the recorder subprocess.
-        # This stays idle unless a Ctrl+I request arrives.
-        self._refine_timer = rumps.Timer(self._poll_refine_requests, 0.2)
-        self._refine_timer.start()
 
         # Poll replay progress events from the replay worker.
         self._replay_timer = rumps.Timer(self._poll_replay_events, 0.1)
@@ -304,21 +294,6 @@ class RecorderApp(rumps.App):
             self.dummy_toggle.state = int(self.dummy_recording)
         except Exception:
             pass
-
-    def _poll_refine_requests(self, _):
-        """
-        Recorder subprocess sends a refinement request over a queue.
-        We show a small separate modal popup and send response back.
-        """
-        if not self.refine_req_q or not self.refine_resp_q:
-            return
-        try:
-            req = self.refine_req_q.get_nowait()
-        except Empty:
-            return
-
-        resp = self._run_refine_popup(req)
-        self.refine_resp_q.put(resp)
 
     def _ensure_replay_overlay(self) -> ReplayOverlay:
         if self._replay_overlay is not None:
@@ -467,82 +442,6 @@ class RecorderApp(rumps.App):
                 self._replay_overlay.update(**self._replay_state)
             except Exception:
                 pass
-
-    def _run_refine_popup(self, req: dict) -> dict:
-        """
-        Show separate modal popups:
-        - Step 1: choose Extract/Add details (dropdown only)
-        - Step 2: show only the relevant fields for the chosen action
-        Returns structured dict to send back to recorder process.
-        """
-        # Step 1: choose action kind
-        choose_alert = NSAlert.alloc().init()
-        choose_alert.setMessageText_("Action refinement")
-        choose_alert.setInformativeText_("Choose Extract or Add details. Recording is paused until you submit/cancel.")
-        choose_alert.addButtonWithTitle_("Next")
-        choose_alert.addButtonWithTitle_("Cancel")
-
-        choose_view = NSView.alloc().initWithFrame_(((0, 0), (320, 40)))
-        dropdown = NSPopUpButton.alloc().initWithFrame_pullsDown_(((0, 8), (220, 26)), False)
-        dropdown.addItemsWithTitles_(["Extract", "Add details"])
-        choose_view.addSubview_(dropdown)
-        choose_alert.setAccessoryView_(choose_view)
-
-        rc = choose_alert.runModal()
-        if int(rc) != 1000:
-            return {"kind": "cancel", "req_id": req.get("req_id")}
-
-        kind = str(dropdown.titleOfSelectedItem() or "")
-
-        # Step 2: show only relevant fields
-        if kind == "Extract":
-            alert = NSAlert.alloc().init()
-            alert.setMessageText_("Extract")
-            alert.setInformativeText_("Fill query + extracted values.")
-            alert.addButtonWithTitle_("Submit")
-            alert.addButtonWithTitle_("Cancel")
-
-            view = NSView.alloc().initWithFrame_(((0, 0), (460, 90)))
-            query = NSTextField.alloc().initWithFrame_(((0, 50), (460, 24)))
-            query.setPlaceholderString_("Query (what to extract from the page)")
-            view.addSubview_(query)
-
-            values = NSTextField.alloc().initWithFrame_(((0, 12), (460, 24)))
-            values.setPlaceholderString_("Values (what you extracted)")
-            view.addSubview_(values)
-
-            alert.setAccessoryView_(view)
-            rc2 = alert.runModal()
-            if int(rc2) != 1000:
-                return {"kind": "cancel", "req_id": req.get("req_id")}
-            return {
-                "kind": "extract",
-                "query": str(query.stringValue() or "").strip(),
-                "values": str(values.stringValue() or "").strip(),
-                "req_id": req.get("req_id"),
-            }
-
-        # Add details
-        alert = NSAlert.alloc().init()
-        alert.setMessageText_("Add details")
-        alert.setInformativeText_("These details will be attached to the next recorded event.")
-        alert.addButtonWithTitle_("Submit")
-        alert.addButtonWithTitle_("Cancel")
-
-        view = NSView.alloc().initWithFrame_(((0, 0), (460, 50)))
-        details = NSTextField.alloc().initWithFrame_(((0, 12), (460, 24)))
-        details.setPlaceholderString_("Details (natural language)")
-        view.addSubview_(details)
-        alert.setAccessoryView_(view)
-
-        rc2 = alert.runModal()
-        if int(rc2) != 1000:
-            return {"kind": "cancel", "req_id": req.get("req_id")}
-        return {
-            "kind": "details",
-            "text": str(details.stringValue() or "").strip(),
-            "req_id": req.get("req_id"),
-        }
 
     def _on_replay_menu_clicked(self, sender):
         # Refresh available workflows right before showing the submenu.
@@ -770,9 +669,22 @@ class RecorderApp(rumps.App):
         try:
             self.stop_event = multiprocessing.Event()
             self.session_dir_queue = multiprocessing.Queue()
-            self.refine_req_q = multiprocessing.Queue()
+            self.refine_cmd_q = multiprocessing.Queue()
             self.refine_resp_q = multiprocessing.Queue()
             self.session_dir = None
+
+            # Create recording overlay in the UI process and pass its window id to the recorder
+            # so screenshots can be captured *below* it (overlay never appears in images).
+            self._recording_overlay = RecordingOverlay(
+                refine_cmd_q=self.refine_cmd_q,
+                refine_resp_q=self.refine_resp_q,
+                on_cancel_recording=self.cancel_recording,
+            )
+            self._recording_overlay.show()
+            overlay_id = self._recording_overlay.window_id()
+            if overlay_id <= 0:
+                raise RuntimeError("Failed to initialize recording overlay window id.")
+
             self.recorder_process = multiprocessing.Process(
                 target=run_recorder_process,
                 args=(
@@ -780,8 +692,9 @@ class RecorderApp(rumps.App):
                     description,
                     self.stop_event,
                     self.session_dir_queue,
-                    self.refine_req_q,
+                    self.refine_cmd_q,
                     self.refine_resp_q,
+                    overlay_id,
                 ),
             )
             self.recorder_process.start()
@@ -797,31 +710,52 @@ class RecorderApp(rumps.App):
             self.title = "🔴 Rec"
             self.start_button.title = "Stop Recording"
         except Exception as e:
+            # Best-effort cleanup if overlay/queues were partially created.
+            try:
+                if self._recording_overlay is not None:
+                    self._recording_overlay.close()
+            except Exception:
+                pass
+            self._recording_overlay = None
+            self.refine_cmd_q = None
+            self.refine_resp_q = None
             rumps.alert(f"Error starting: {e}")
 
-    def stop_recording(self):
+    def cancel_recording(self):
+        # Stop immediately and skip reflect/schema compilation.
+        self._skip_reflect_once = True
+        self.stop_recording(join_timeout=1.0, cancelled=True)
+
+    def stop_recording(self, *, join_timeout: float = 10.0, cancelled: bool = False):
         try:
             if self.stop_event:
                 self.stop_event.set()
 
             if self.recorder_process:
                 # Recorder should stop quickly now that reflect/schema compilation is offloaded.
-                self.recorder_process.join(timeout=10)
+                self.recorder_process.join(timeout=join_timeout)
                 if self.recorder_process.is_alive():
                     self.recorder_process.terminate()
                 self.recorder_process = None
-                self.refine_req_q = None
+                self.refine_cmd_q = None
                 self.refine_resp_q = None
 
         except Exception as e:
             rumps.alert(f"Error stopping: {e}")
+
+        finally:
+            if self._recording_overlay is not None:
+                try:
+                    self._recording_overlay.close()
+                finally:
+                    self._recording_overlay = None
 
         self.is_recording = False
         self.title = "AI Mime"
         self.start_button.title = "Start Recording"
 
         # Kick off reflect+schema compilation in the background (do not block UI).
-        if self.session_dir and not self.dummy_recording:
+        if self.session_dir and not self.dummy_recording and not self._skip_reflect_once and not cancelled:
             try:
                 self.reflect_process = multiprocessing.Process(
                     target=_run_reflect_and_compile_schema,
@@ -842,10 +776,19 @@ class RecorderApp(rumps.App):
                 subtitle="Reflect skipped",
                 message=Path(self.session_dir).name,
             )
+        elif self.session_dir and (self._skip_reflect_once or cancelled):
+            rumps.notification(
+                title="Recording cancelled",
+                subtitle="Reflect skipped",
+                message=Path(self.session_dir).name,
+            )
+
+        # Reset one-shot flag.
+        self._skip_reflect_once = False
 
         rumps.notification(
-            title="Recording Saved",
-            subtitle="Session capture finished",
+            title="Recording Saved" if not cancelled else "Recording stopped",
+            subtitle="Session capture finished" if not cancelled else "Cancelled by user",
             message="The background recording process has stopped.",
         )
 

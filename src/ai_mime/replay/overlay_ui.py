@@ -18,6 +18,8 @@ from pathlib import Path
 # macOS UI (PyObjC / AppKit). Assume it's available in this app context.
 import AppKit  # type: ignore[import-not-found]
 
+from ai_mime.overlay.ui_common import active_screen_visible_frame
+
 
 def _label(
     text: str = "",
@@ -108,6 +110,27 @@ class ReplayOverlayState:
     predicted_action: str = ""
 
 
+class ReplayOverlayActionHandler(AppKit.NSObject):  # type: ignore[misc]
+    def pause_(self, sender):  # noqa: N802 - ObjC selector
+        try:
+            self._overlay._handle_pause_clicked()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    def stop_(self, sender):  # noqa: N802 - ObjC selector
+        try:
+            self._overlay._handle_stop_clicked()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    def tick_(self, sender):  # noqa: N802 - ObjC selector
+        # 90-degree step rotation animation.
+        try:
+            self._overlay._advance_icon_rotation()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
 class ReplayOverlay:
     """
     A small always-on-top overlay panel with a spinner and the key fields:
@@ -125,25 +148,7 @@ class ReplayOverlay:
         self._paused = False
         self._on_toggle_pause = on_toggle_pause
         self._on_stop = on_stop
-
-        class _ActionHandler(AppKit.NSObject):  # type: ignore[misc]
-            def pause_(self, sender):  # noqa: N802 - ObjC selector
-                try:
-                    self._overlay._handle_pause_clicked()  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-
-            def stop_(self, sender):  # noqa: N802 - ObjC selector
-                try:
-                    self._overlay._handle_stop_clicked()  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-
-            def tick_(self, sender):  # noqa: N802 - ObjC selector
-                # 90-degree step rotation animation.
-                self._overlay._advance_icon_rotation()  # type: ignore[attr-defined]
-
-        self._action_handler = _ActionHandler.alloc().init()
+        self._action_handler = ReplayOverlayActionHandler.alloc().init()
         try:
             self._action_handler._overlay = self  # type: ignore[attr-defined]
         except Exception:
@@ -162,18 +167,15 @@ class ReplayOverlay:
         width = 420.0
         height = 142.0
 
-        # Place near bottom-right of the main screen with some margin.
+        # Place at the middle of the right edge of the active screen with some margin.
         try:
-            screen = AppKit.NSScreen.mainScreen()
-            # visibleFrame excludes menu bar / dock.
-            frame = screen.visibleFrame() if screen is not None else ((0, 0), (1440, 900))
-            (sx, sy), (sw, sh) = frame  # type: ignore[misc]
+            sx, sy, sw, sh = active_screen_visible_frame()
         except Exception:
             sx, sy, sw, sh = 0.0, 0.0, 1440.0, 900.0
 
         margin = 16.0
         x = float(sx + sw - width - margin)
-        y = float(sy + margin)
+        y = float(sy + (sh - height) / 2.0)
 
         rect = AppKit.NSMakeRect(x, y, width, height)
 
