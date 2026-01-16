@@ -113,9 +113,15 @@ def load_user_config(*, repo_root: Path | None = None) -> ResolvedUserConfig:
     reflect_api_key = cfg_file.reflect.resolve_api_key()
     replay_api_key = cfg_file.replay.resolve_api_key()
 
+    def _norm_base(s: str | None) -> str | None:
+        if s is None:
+            return None
+        ss = str(s).strip()
+        return ss if ss else None
+
     reflect = ResolvedReflectConfig(
         model=cfg_file.reflect.model,
-        api_base=cfg_file.reflect.api_base,
+        api_base=_norm_base(cfg_file.reflect.api_base),
         api_key=reflect_api_key,
         extra_kwargs=dict(cfg_file.reflect.extra_kwargs or {}),
         pass_a_model=cfg_file.reflect.pass_a.model,
@@ -125,7 +131,7 @@ def load_user_config(*, repo_root: Path | None = None) -> ResolvedUserConfig:
     )
     replay = ResolvedLLMConfig(
         model=cfg_file.replay.model,
-        api_base=cfg_file.replay.api_base,
+        api_base=_norm_base(cfg_file.replay.api_base),
         api_key=replay_api_key,
         extra_kwargs=dict(cfg_file.replay.extra_kwargs or {}),
     )

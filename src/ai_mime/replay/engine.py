@@ -11,6 +11,7 @@ from typing import Any, Callable
 from lmnr import observe
 
 from ai_mime.reflect.schema_utils import validate_schema
+# Use the shared LLM client (supports both structured + plain text calls).
 from ai_mime.litellm_client import LiteLLMChatClient
 
 
@@ -177,13 +178,14 @@ def _run_vision_extract(*, image_path: Path, query: str, cfg: ReplayConfig) -> s
     ]
     try:
         llm = LiteLLMChatClient()
-        return llm.create(
+        out = llm.create(
             messages=messages,
             model=cfg.model,
             api_base=cfg.base_url,
             api_key=cfg.api_key,
             extra_kwargs=cfg.llm_extra_kwargs,
-        ).strip()
+        )
+        return ("" if out is None else str(out)).strip()
     except Exception as e:
         raise ReplayError(f"Extraction call failed: {e}") from e
 

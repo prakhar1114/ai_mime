@@ -22,7 +22,17 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 2  # max retries after the first attempt
 
 
-PassAActionType = Literal["CLICK", "TYPE", "SCROLL", "KEYPRESS", "DRAG", "EXTRACT"]
+PassAActionType = Literal[
+    "CLICK",
+    "DOUBLE_CLICK",
+    "RIGHT_CLICK",
+    "MIDDLE_CLICK",
+    "TYPE",
+    "SCROLL",
+    "KEYPRESS",
+    "DRAG",
+    "EXTRACT",
+]
 
 
 def _png_data_url(path: Path) -> str:
@@ -107,11 +117,14 @@ Step summaries (ordered JSON array):
 
 **3. Parameterization Logic (Task Params)**
 - Identify values in step `action_value` that should be dynamic (user inputs).
-- **Scope**: ONLY parameterize user-content (song names, search terms, dates).
-- **Restrictions**:
-  - Do NOT parameterize infrastructure/app names.
-  - Do NOT parameterize values that come from upstream `EXTRACT` steps.
-- **Output**: Define these in `task_params` with clear types, descriptions, and examples.
+- **The "Semantic Meaning" Rule**: Only parameterize values that represent **User Intent**—things the user would care to change between runs (e.g., "Song Name", "Price", "City").
+- **What to EXCLUDE (Keep Action Value NULL)**:
+  - **Structural Data**: Do not parameterize values that are just housekeeping or formatting logic.
+    - *Example:* If the workflow adds a row to a sheet and types an index number ("1", "2"...), this is NOT a parameter.
+    - *Example:* If the workflow types a fixed header like "Date" or "Total".
+  - **Infrastructure**: App names, URLs, "Chrome", "Spotify".
+  - **Dependencies**: Values that come from upstream `EXTRACT` steps.
+- **Output**: Define legitimate user parameters in `task_params` with clear types, descriptions, and examples.
 
 **4. Handling Data Dependencies (Extracts)**
 - **Identification**: Use the provided `variable_name` from the step summary (e.g., "extract_0", "extract_1").
@@ -124,9 +137,12 @@ Step summaries (ordered JSON array):
 - You must generate an update object for **every** step index provided in the input.
 - **action_value**:
   - For `EXTRACT` steps: Return the variable name (e.g., "extract_0").
-  - For `TYPE`/`KEYPRESS` steps: Return the template string (e.g., "{{song_name}}") OR `null` (if sourced from an extract).
+  - For `TYPE`/`KEYPRESS` steps:
+    - Return `{{param_name}}` if it is a user input.
+    - Return `null` if the value is structural (e.g., an index number) or sourced from an extract.
   - For others: `null`.
 - **subtask**: Must be an EXACT string match to one of the strings defined in your `subtasks` list.
+  - *Note:* If you set `action_value` to `null` for a structural step (like typing an index), your subtask text MUST describe what to type (e.g., "Enter the next sequential index number").
 """
 
 
@@ -264,6 +280,12 @@ def _map_action_type(action_type: str | None) -> PassAActionType | None:
     t = str(action_type).lower()
     if t == "click":
         return "CLICK"
+    if t == "double_click":
+        return "DOUBLE_CLICK"
+    if t == "right_click":
+        return "RIGHT_CLICK"
+    if t == "middle_click":
+        return "MIDDLE_CLICK"
     if t == "type":
         return "TYPE"
     if t == "scroll":
