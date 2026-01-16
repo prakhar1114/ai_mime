@@ -33,9 +33,9 @@ AI Mime is a native macOS RPA tool designed to empower computer use agents with 
       <sub>End-to-end walkthrough (record → edit → replay)</sub>
     </td>
     <td align="center">
-      <a href="https://youtu.be/Ru9wwhC7jYg?si=KSuWr9zyhzPL1CMN">
+      <a href="https://youtu.be/gkqMfT_jE7U?si=KSuWr9zyhzPL1CMN">
         <img
-          src="https://img.youtube.com/vi/Ru9wwhC7jYg/hqdefault.jpg"
+          src="https://img.youtube.com/vi/gkqMfT_jE7U/hqdefault.jpg"
           alt="AI Mime demo — automate expense sheet filing"
           width="280"
         />
