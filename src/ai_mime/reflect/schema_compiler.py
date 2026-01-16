@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional
 
-from pydantic import BaseModel, Field  # type: ignore[import-not-found]
+from pydantic import BaseModel, ConfigDict, Field  # type: ignore[import-not-found]
 from tqdm import tqdm  # type: ignore[import-not-found]
 
 from ai_mime.user_config import ResolvedReflectConfig
@@ -149,12 +149,19 @@ Step summaries (ordered JSON array):
 class StepTarget(BaseModel):
     """Coordinate-free selector description for the target UI element."""
 
+    model_config = ConfigDict(extra="forbid")
+
     primary: str = Field(description="Primary target description using visible text/icons + relative location.")
-    fallback: Optional[str] = Field(description="Fallback target description if primary isn't found, still coordinate-free.")
+    fallback: str | None = Field(
+        default=None,
+        description="Fallback target description if primary isn't found, still coordinate-free.",
+    )
 
 
 class StepCardModel(BaseModel):
     """Reusable per-step instruction derived from PRE/POST screenshots + action."""
+
+    model_config = ConfigDict(extra="forbid")
 
     i: int = Field(description="0-based step index within the workflow.")
     expected_current_state: str = Field(
@@ -191,6 +198,9 @@ class StepCardModel(BaseModel):
 
 class PassBParamSpec(BaseModel):
     """Workflow parameter specification."""
+
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(description="Parameter name (deduplicated), e.g. 'email'.")
     type: str = Field(description="Parameter primitive type as a string (e.g. 'string', 'number', 'date').")
     description: str = Field(description="Short human-readable description of what this parameter represents.")
@@ -207,6 +217,8 @@ class PassBParamSpec(BaseModel):
 class PassBStepUpdate(BaseModel):
     """Per-step plan augmentation produced by Pass B."""
 
+    model_config = ConfigDict(extra="forbid")
+
     i: int = Field(description="0-based step index within the workflow plan.")
     action_value: str | None = Field(
         description="Possibly parameterized action value for this step. Null for non-TYPE/non-KEYPRESS steps."
@@ -216,6 +228,8 @@ class PassBStepUpdate(BaseModel):
 
 class PassBOutput(BaseModel):
     """Task-level compiled schema produced from Pass A steps (summarized) + Pass B augmentation."""
+
+    model_config = ConfigDict(extra="forbid")
 
     detailed_task_description: str = Field(description="3-6 sentence description of the overall workflow.")
     subtasks: list[str] = Field(
@@ -697,7 +711,6 @@ def extract_param_templates(step_cards: Iterable[dict[str, Any]]) -> set[str]:
     return found
 
 
-@observe()
 def compile_workflow_schema(
     *,
     workflow_dir: str | os.PathLike[str],

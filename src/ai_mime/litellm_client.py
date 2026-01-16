@@ -184,7 +184,7 @@ class LiteLLMChatClient:
                 resp = client.chat.completions.create(
                     model=self._strip_provider_prefix(m),
                     messages=messages,  # type: ignore[arg-type]
-                    max_tokens=max_tokens,
+                    max_completion_tokens=max_tokens,
                     **merged_kwargs,
                 )
                 return (resp.choices[0].message.content or "").strip()
@@ -192,7 +192,7 @@ class LiteLLMChatClient:
             resp = completion(
                 model=m,
                 messages=messages,
-                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
                 api_base=base,
                 api_key=key,
                 **merged_kwargs,
@@ -224,7 +224,7 @@ class LiteLLMChatClient:
             resp = client.chat.completions.create(
                 model=self._strip_provider_prefix(m),
                 messages=messages,  # type: ignore[arg-type]
-                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
                 response_format=self._response_format_for_model(response_model_t),  # type: ignore[arg-type]
                 **merged_kwargs,
             )
@@ -238,7 +238,7 @@ class LiteLLMChatClient:
                 resp = completion(
                     model=m,
                     messages=messages,
-                    max_tokens=max_tokens,
+                    max_completion_tokens=max_tokens,
                     response_format=self._response_format_for_model(response_model_t),
                     api_base=base,
                     api_key=key,
