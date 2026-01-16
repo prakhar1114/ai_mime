@@ -5,13 +5,13 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 from lmnr import observe
 
-from openai import OpenAI  # type: ignore[import-not-found]
 from ai_mime.reflect.schema_utils import validate_schema
+from ai_mime.litellm_client import LiteLLMChatClient
 
 
 class ReplayError(RuntimeError):
@@ -27,8 +27,9 @@ class ReplayStopped(RuntimeError):
 @dataclass(frozen=True)
 class ReplayConfig:
     model: str
-    base_url: str
+    base_url: str | None
     api_key: str | None
+    llm_extra_kwargs: dict[str, Any] = field(default_factory=dict)
     delay_s: float = 0.35
     click_delay_s: float = 0.2
     after_step_delay_s: float = 0.4
@@ -161,12 +162,9 @@ def _run_vision_extract(*, image_path: Path, query: str, cfg: ReplayConfig) -> s
     Host-driven extraction: ask the model to extract information from the screenshot given a refined query.
     Returns best-effort extracted text (may be empty if not found).
     """
-    if not cfg.api_key:
-        raise ReplayError("Missing replay API key for extraction (cfg.api_key).")
     if not query.strip():
         return ""
     data_url = _encode_image_data_url(image_path)
-    client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
     messages: Any = [
         {"role": "system", "content": "You extract requested information from screenshots. Be concise and do not hallucinate."},
         {
@@ -178,9 +176,14 @@ def _run_vision_extract(*, image_path: Path, query: str, cfg: ReplayConfig) -> s
         },
     ]
     try:
-        completion = client.chat.completions.create(model=cfg.model, messages=messages)
-        content = (completion.choices[0].message.content or "").strip()
-        return content
+        llm = LiteLLMChatClient()
+        return llm.create(
+            messages=messages,
+            model=cfg.model,
+            api_base=cfg.base_url,
+            api_key=cfg.api_key,
+            extra_kwargs=cfg.llm_extra_kwargs,
+        ).strip()
     except Exception as e:
         raise ReplayError(f"Extraction call failed: {e}") from e
 

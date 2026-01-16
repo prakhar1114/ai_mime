@@ -1,0 +1,35 @@
+reflect:
+  # LiteLLM model string. Examples:
+  # - openai/gpt-5-mini
+  # - openai/<served_model_name> (when pointing api_base to a local vLLM OpenAI server)
+  # Default reflect model (can be overridden per pass below)
+  model: "openai/gpt-5.2"
+  api_base: "https://api.openai.com/v1"
+  api_key_env: "OPENAI_API_KEY"
+  # OpenAI reasoning controls (supported by reasoning-capable models)
+  # Docs: https://platform.openai.com/docs/guides/latest-model
+  extra_kwargs:
+    reasoning:
+      effort: "medium"
+  pass_a:
+    model: "openai/gpt-5-mini"
+    max_tokens: 2000
+  pass_b:
+    model: "openai/gpt-5.2"
+    max_tokens: 7000
+
+replay:
+  # Example local provider:
+  # model: "ollama/llama3.1"
+  # api_base: "http://127.0.0.1:11434/v1"
+  #
+  # Example hosted provider via OpenAI-compatible endpoint:
+  # model: "openai/<provider_model_name>"
+  # api_base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+  # api_key_env: "DASHSCOPE_API_KEY"
+  model: "openai/gpt-5.2"
+  api_base: "https://api.openai.com/v1"
+  api_key_env: "OPENAI_API_KEY"
+  extra_kwargs:
+    reasoning:
+      effort: null

@@ -3,6 +3,7 @@ from pathlib import Path
 import logging
 from lmnr import observe
 from ai_mime.permissions import check_permissions
+from ai_mime.user_config import load_user_config
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
 from ai_mime.app import run_app
 
@@ -33,18 +34,12 @@ def start_app():
     show_default=True,
     help="Base recordings directory (used when --session is a folder name or omitted).",
 )
-@click.option(
-    "--model",
-    "model",
-    default="gpt-5-mini",
-    show_default=True,
-    help="OpenAI model name to use for reflect compilation.",
-)
 
 @observe(name="reflect_session")
-def reflect(session, recordings_dir, model):
+def reflect(session, recordings_dir):
     """Convert recordings into useful assets."""
     logging.basicConfig(level=logging.INFO)
+    user_cfg = load_user_config()
     recordings_dir_p = Path(recordings_dir)
     if session:
         session_path = Path(session)
@@ -67,7 +62,8 @@ def reflect(session, recordings_dir, model):
     click.echo(f"Workflow created: {out_dir}")
 
     try:
-        compile_schema_for_workflow_dir(out_dir, model=model)
+        llm_cfg = user_cfg.reflect
+        compile_schema_for_workflow_dir(out_dir, llm_cfg=llm_cfg)
         click.echo(f"Schema compiled: {out_dir / 'schema.json'}")
     except Exception as e:
         raise click.ClickException(f"Schema compilation failed: {e}")

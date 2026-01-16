@@ -9,6 +9,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
+from ai_mime.user_config import ResolvedReflectConfig
 from ai_mime.reflect.schema_compiler import compile_workflow_schema
 
 
@@ -221,9 +222,9 @@ def reflect_session(
 
 def compile_schema_for_workflow_dir(
     workflow_dir: str | os.PathLike[str],
-    model: str = "gpt-5-mini",
+    llm_cfg: ResolvedReflectConfig,
 ) -> dict[str, Any]:
     """
     Compile a parametrizable, coordinate-free schema into <workflow_dir>/schema.json.
     """
-    return compile_workflow_schema(workflow_dir=workflow_dir, model=model)
+    return compile_workflow_schema(workflow_dir=workflow_dir, llm_cfg=llm_cfg)

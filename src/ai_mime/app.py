@@ -17,6 +17,7 @@ from ai_mime.record.storage import SessionStorage
 from ai_mime.record.recorder_process import run_recorder_process
 
 from ai_mime.replay.catalog import list_replayable_workflows
+from ai_mime.user_config import ResolvedLLMConfig, ResolvedReflectConfig, ResolvedUserConfig, load_user_config
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
 from ai_mime.replay.engine import ReplayConfig, ReplayStopped, resolve_params, run_plan
 from ai_mime.replay.grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
@@ -30,7 +31,7 @@ from ai_mime.record.overlay_ui import RecordingOverlay
 @observe(name="reflect_and_compile_schema")
 def _run_reflect_and_compile_schema(
     session_dir: str,
-    model: str = "gpt-5-mini",
+    reflect_llm_cfg: ResolvedReflectConfig,
     *,
     clean_manifest_tail: bool = False,
     event_queue: Any | None = None,
@@ -64,44 +65,13 @@ def _run_reflect_and_compile_schema(
 
         out_dir = reflect_session(session_dir_p, workflows_root, clean_manifest_tail=clean_manifest_tail)
         print(f"Reflect finished: {out_dir}")
-        compile_schema_for_workflow_dir(out_dir, model=model)
+        compile_schema_for_workflow_dir(out_dir, llm_cfg=reflect_llm_cfg)
         print(f"Schema compiled: {out_dir / 'schema.json'}")
         _emit({"type": "reflect_compile_done", "workflow_dir": str(out_dir)})
     except Exception as e:
         _emit({"type": "reflect_compile_failed", "error": str(e), "session_dir": str(session_dir)})
         raise
 
-
-def _load_replay_config_from_env() -> ReplayConfig:
-    """
-    Replay grounding uses OpenAI-compatible Chat Completions.
-
-    Configure via env:
-      - REPLAY_PROVIDER: "openai" | "gemini" | "qwen"
-      - REPLAY_MODEL: provider-specific model name
-    """
-    provider = (os.getenv("REPLAY_PROVIDER") or "").strip().lower()
-    model = (os.getenv("REPLAY_MODEL") or "").strip()
-    if not provider:
-        raise RuntimeError('Missing REPLAY_PROVIDER. Use "openai", "gemini", or "qwen".')
-    if not model:
-        raise RuntimeError("Missing REPLAY_MODEL.")
-
-    base_url_by_provider = {
-        "openai": "https://api.openai.com/v1",
-        "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-    }
-    api_key_env_by_provider = {
-        "openai": "OPENAI_API_KEY",
-        "gemini": "GEMINI_API_KEY",
-        "qwen": "DASHSCOPE_API_KEY",
-    }
-    if provider not in base_url_by_provider:
-        raise RuntimeError(f"Unsupported REPLAY_PROVIDER={provider!r}. Use one of: openai, gemini, qwen.")
-
-    api_key = os.getenv(api_key_env_by_provider[provider])
-    return ReplayConfig(model=model, base_url=base_url_by_provider[provider], api_key=api_key)
 
 def _resolve_menubar_icon_path() -> str | None:
     """
@@ -128,6 +98,7 @@ def _resolve_menubar_icon_path() -> str | None:
 
 def _run_replay_workflow_schema(
     workflow_dir: str,
+    replay_llm_cfg: ResolvedLLMConfig,
     overrides: dict[str, str] | None = None,
     event_queue: Any | None = None,
     exclude_window_id: int | None = None,
@@ -142,7 +113,12 @@ def _run_replay_workflow_schema(
         schema = json.loads((wf_dir / "schema.json").read_text(encoding="utf-8"))
         params = resolve_params(schema, overrides=overrides or {})
 
-        cfg = _load_replay_config_from_env()
+        cfg = ReplayConfig(
+            model=replay_llm_cfg.model,
+            base_url=replay_llm_cfg.api_base,
+            api_key=replay_llm_cfg.api_key,
+            llm_extra_kwargs=dict(replay_llm_cfg.extra_kwargs or {}),
+        )
         screenshotter = ScreenshotRecorder()
 
         def _capture(dst: Path) -> Path:
@@ -210,11 +186,12 @@ def _run_replay_workflow_schema(
 
 
 class RecorderApp(rumps.App):
-    def __init__(self):
+    def __init__(self, *, user_cfg: ResolvedUserConfig):
         icon_path = _resolve_menubar_icon_path()
         # Keep a non-empty title: rumps can fail to attach/open the menu reliably with an empty title.
         # (We still show the icon; macOS will render both.)
         super(RecorderApp, self).__init__("AI Mime", icon=icon_path)
+        self._user_cfg = user_cfg
         # We only need storage here to read last session or show info,
         # but the active storage instance will live in the subprocess.
         self.storage = SessionStorage()
@@ -684,6 +661,7 @@ class RecorderApp(rumps.App):
                         target=_run_replay_workflow_schema,
                         args=(
                             str(wf.workflow_dir),
+                            self._user_cfg.replay,
                             overrides,
                             self.replay_event_q,
                             overlay_id,
@@ -846,7 +824,7 @@ class RecorderApp(rumps.App):
                 self.reflect_event_q = multiprocessing.Queue()
                 self.reflect_process = multiprocessing.Process(
                     target=_run_reflect_and_compile_schema,
-                    args=(self.session_dir, "gpt-5-mini"),
+                    args=(self.session_dir, self._user_cfg.reflect),
                     kwargs={
                         "clean_manifest_tail": bool(clean_manifest_tail),
                         "event_queue": self.reflect_event_q,
@@ -886,5 +864,6 @@ class RecorderApp(rumps.App):
 
 def run_app():
     multiprocessing.freeze_support()
-    app = RecorderApp()
+    user_cfg = load_user_config()
+    app = RecorderApp(user_cfg=user_cfg)
     app.run()
