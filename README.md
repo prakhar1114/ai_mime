@@ -17,6 +17,35 @@ AI Mime is a native macOS RPA tool designed to empower computer use agents with 
 
 
 
+## Demo
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://www.youtube.com/watch?v=ppB4tbPc77U">
+        <img
+          src="https://img.youtube.com/vi/ppB4tbPc77U/hqdefault.jpg"
+          alt="AI Mime demo — send a message on whatsapp"
+          width="280"
+        />
+      </a>
+      <br />
+      <sub>End-to-end walkthrough (record → edit → replay)</sub>
+    </td>
+    <td align="center">
+      <a href="https://www.youtube.com/watch?v=qlOCOCtKqzU">
+        <img
+          src="https://img.youtube.com/vi/qlOCOCtKqzU/hqdefault.jpg"
+          alt="AI Mime demo — automate expense sheet filing"
+          width="280"
+        />
+      </a>
+      <br />
+      <sub>Automate expense sheet filing</sub>
+    </td>
+  </tr>
+</table>
+
 ## Why AI Mime?
 
 ### The Adoption Gap in Computer Use Models
@@ -38,12 +67,6 @@ AI Mime bridges this gap by shifting from vague natural language to rich, demons
 - Eliminate Unwanted Creativity: By providing a strict chain of steps and rich context, the agent is constrained to operate exactly as instructed, ensuring it executes the workflow rather than "interpreting" it.
 
 In short, AI Mime transforms abstract instructions into repeatable, observable, and error-resistant workflows, making computer-use agents viable for production RPA.
-
-## Demo
-
-[Watch the demo on YouTube](https://www.youtube.com/watch?v=ppB4tbPc77U)
-
-[![AI Mime demo](https://img.youtube.com/vi/ppB4tbPc77U/hqdefault.jpg)](https://www.youtube.com/watch?v=ppB4tbPc77U)
 
 ## Record
 Start capturing a workflow by clicking AI Mime → Start Recording in the macOS menu bar. When you’re done, click AI Mime → Stop Recording to save it.

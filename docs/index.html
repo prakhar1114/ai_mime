@@ -90,92 +90,77 @@
 
       <section class="section alt" id="demo">
         <div class="container">
-          <h2>Demo</h2>
-          <p class="muted">
-            A short end-to-end walkthrough (record → edit → replay).
-            <a href="https://www.youtube.com/watch?v=ppB4tbPc77U" target="_blank" rel="noopener noreferrer">Open on YouTube</a>.
-          </p>
-          <div class="video-frame" role="group" aria-label="AI Mime demo video">
-            <iframe
-              width="560"
-              height="315"
-              src="https://www.youtube.com/embed/ppB4tbPc77U?si=LDRu64jOhKKhtgWy"
-              title="YouTube video player"
-              frameborder="0"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-              referrerpolicy="strict-origin-when-cross-origin"
-              allowfullscreen
-            ></iframe>
+          <h2>Demos</h2>
+          <div class="video-grid" aria-label="AI Mime demo videos">
+            <div class="video-item">
+              <div class="video-caption muted">
+                <div class="video-caption-title">End-to-end walkthrough (record → edit → replay)</div>
+                <div>
+                  <a href="https://www.youtube.com/watch?v=ppB4tbPc77U" target="_blank" rel="noopener noreferrer">Open on YouTube</a>.
+                </div>
+              </div>
+              <div class="video-frame" role="group" aria-label="AI Mime end-to-end demo video">
+                <iframe
+                  width="560"
+                  height="315"
+                  src="https://www.youtube.com/embed/ppB4tbPc77U?si=LDRu64jOhKKhtgWy"
+                  title="AI Mime demo — end-to-end walkthrough"
+                  frameborder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  referrerpolicy="strict-origin-when-cross-origin"
+                  allowfullscreen
+                ></iframe>
+              </div>
+            </div>
+
+            <div class="video-item">
+              <div class="video-caption muted">
+                <div class="video-caption-title">Automate expense sheet filing</div>
+                <div>
+                  <a href="https://www.youtube.com/watch?v=qlOCOCtKqzU" target="_blank" rel="noopener noreferrer">Open on YouTube</a>.
+                </div>
+              </div>
+              <div class="video-frame" role="group" aria-label="AI Mime expense sheet filing demo video">
+                <iframe
+                  width="560"
+                  height="315"
+                  src="https://www.youtube.com/embed/qlOCOCtKqzU?si=98TGUM8VexF4AG4r"
+                  title="AI Mime demo — expense sheet filing"
+                  frameborder="0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  referrerpolicy="strict-origin-when-cross-origin"
+                  allowfullscreen
+                ></iframe>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
-      <section class="section">
+      <section class="section" id="why">
         <div class="container">
-          <h2>What it does</h2>
+          <h2>Why AI Mime?</h2>
+          <p class="muted" style="margin: 0 0 12px 0;">
+            Computer-use models are getting better, but RPA still breaks down when instructions are low-context and tasks
+            run for a long time. AI Mime makes automation reliable by grounding agents in real demonstrations.
+          </p>
+
           <div class="cards">
             <div class="card">
-              <h3>Record detailed workflows</h3>
-              <p>
-                Capture every nuance of a workflow—mouse movements, keystrokes, and window states—providing the ground
-                truth that standard text prompts often miss.
-              </p>
+              <h3>Rich context, not vague prompts</h3>
+              <p>Record what actually happened—UI state, clicks, keystrokes—so the agent isn’t guessing.</p>
             </div>
             <div class="card">
-              <h3>Refine into parameterized agent instructions</h3>
-              <p>
-                Leverage LLMs to transform raw recordings into structured, manageable subtasks with inputs and
-                dependencies—turning a static trace into something reusable.
-              </p>
+              <h3>Strict, observable boundaries</h3>
+              <p>Refine recordings into parameterized subtasks with clear inputs and dependencies.</p>
             </div>
             <div class="card">
-              <h3>Enforce observability and strict boundaries</h3>
-              <p>
-                Break long-horizon workflows into smaller, observable steps and dependency-linked subtasks so the agent
-                operates within clear constraints instead of improvising.
-              </p>
+              <h3>Less “creativity”, more repeatability</h3>
+              <p>Replay workflows with high fidelity across native apps and the web—on demand.</p>
             </div>
             <div class="card">
-              <h3>Replay for high-fidelity automation</h3>
-              <p>
-                Dispatch computer-use agents to execute complex, multi-step processes across native apps and the web on
-                demand—prioritizing repeatability over “creative” interpretation.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="container">
-          <h2>How it helps</h2>
-          <div class="bullets">
-            <div class="bullet">
-              <div class="bullet-k">Bridges the “context gap”</div>
-              <div class="bullet-v">
-                Instead of relying on a single low-context prompt, you “show” the agent exactly what to do with rich,
-                demonstrated workflow context.
-              </div>
-            </div>
-            <div class="bullet">
-              <div class="bullet-k">Makes long tasks more reliable</div>
-              <div class="bullet-v">
-                By grounding the agent in strict, observable subtasks, you reduce compounding errors over long horizons.
-              </div>
-            </div>
-            <div class="bullet">
-              <div class="bullet-k">Reduces unwanted creativity</div>
-              <div class="bullet-v">
-                A strict chain of steps plus rich context constrains the agent to execute the workflow rather than
-                “interpret” it.
-              </div>
-            </div>
-            <div class="bullet">
-              <div class="bullet-k">Production-style repeatability</div>
-              <div class="bullet-v">
-                Transform abstract instructions into repeatable, observable, error-resistant workflows across native
-                apps and websites.
-              </div>
+              <h3>Production-shaped workflows</h3>
+              <p>Turn a one-off trace into something reusable, inspectable, and easy to iterate on.</p>
             </div>
           </div>
         </div>
