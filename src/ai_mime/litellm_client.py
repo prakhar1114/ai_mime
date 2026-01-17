@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, cast
 
 from openai import OpenAI  # type: ignore[import-not-found]
 from litellm import completion  # type: ignore[import-not-found]
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class LiteLLMChatClient:
@@ -144,6 +147,114 @@ class LiteLLMChatClient:
         content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
         return "" if content is None else str(content).strip()
 
+    @staticmethod
+    def _output_text_preview(resp: Any, limit: int = 800) -> str:
+        t = getattr(resp, "output_text", None)
+        if t is None:
+            return "<no output_text available>"
+        s = str(t)
+        return s if len(s) <= limit else (s[:limit] + "…")
+
+    def _responses_parse_with_retries(
+        self,
+        *,
+        where: str,
+        client: OpenAI,
+        model: str,
+        input_payload: Any,
+        text_format: type[BaseModel],
+        max_output_tokens: int | None,
+        reasoning: Any | None,
+        extra_kwargs: dict[str, Any],
+        repair_user_message: str,
+        max_retries: int,
+    ) -> Any:
+        """
+        Execute OpenAI-compatible Responses API structured parse with retries.
+
+        On failure, retries append a repair message including:
+        - failure reason
+        - previous output_text (if any)
+        - a directive to return only schema-valid JSON
+        """
+        prev_resp: Any | None = None
+        last_err: Exception | None = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                kwargs: dict[str, Any] = {
+                    "model": model,
+                    "input": input_payload,
+                    "text_format": text_format,
+                    "max_output_tokens": max_output_tokens,
+                    **extra_kwargs,
+                }
+                if reasoning is not None:
+                    kwargs["reasoning"] = reasoning
+                if attempt > 0 and prev_resp is not None and getattr(prev_resp, "id", None):
+                    kwargs["previous_response_id"] = prev_resp.id
+
+                resp = client.responses.parse(**kwargs)
+                prev_resp = resp
+
+                event = getattr(resp, "output_parsed", None)
+                if event is None:
+                    raise RuntimeError(f"{where}: output_parsed is None. output_text={self._output_text_preview(resp)}")
+                return resp
+            except TypeError:
+                # Some SDK versions may not accept previous_response_id; retry without it.
+                try:
+                    kwargs2: dict[str, Any] = {
+                        "model": model,
+                        "input": input_payload,
+                        "text_format": text_format,
+                        "max_output_tokens": max_output_tokens,
+                        **extra_kwargs,
+                    }
+                    if reasoning is not None:
+                        kwargs2["reasoning"] = reasoning
+                    resp = client.responses.parse(**kwargs2)
+                    prev_resp = resp
+                    event = getattr(resp, "output_parsed", None)
+                    if event is None:
+                        raise RuntimeError(
+                            f"{where}: output_parsed is None. output_text={self._output_text_preview(resp)}"
+                        )
+                    return resp
+                except Exception as e:
+                    last_err = e
+            except Exception as e:
+                last_err = e
+
+            if attempt < max_retries:
+                prev_text = self._output_text_preview(prev_resp) if prev_resp is not None else "<no previous output>"
+                logger.warning(
+                    "%s attempt %d failed (%s). Retrying with repair prompt.",
+                    where,
+                    attempt + 1,
+                    str(last_err),
+                )
+                # Append the exception context into the same messages array.
+                input_payload = [
+                    *list(input_payload),
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    f"{repair_user_message}\n\n"
+                                    f"Failure: {last_err}\n"
+                                    f"Previous output_text: {prev_text}\n"
+                                    "Fix your response and return ONLY schema-valid JSON."
+                                ),
+                            }
+                        ],
+                    },
+                ]
+
+        raise RuntimeError(f"{where}: failed after {max_retries + 1} attempts: {last_err}") from last_err
+
     def create(
         self,
         *,
@@ -204,32 +315,26 @@ class LiteLLMChatClient:
 
         if self._use_openai_client(provider):
             client = OpenAI(api_key=key, base_url=base)
-
-            # Prefer Responses API when reasoning is requested (only supported there).
-            if reasoning is not None:
-                resp = client.responses.parse(
-                    model=self._strip_provider_prefix(m),
-                    input=self._messages_to_responses_input(messages),  # type: ignore[arg-type]
-                    text_format=response_model_t,
-                    max_output_tokens=max_tokens,
-                    reasoning=reasoning,
-                    **merged_kwargs,
-                )
-                parsed = getattr(resp, "output_parsed", None)
-                if parsed is None:
-                    raise RuntimeError("Responses parse returned output_parsed=None")
-                return parsed
-
-            # Otherwise use Chat Completions with JSON schema response_format.
-            resp = client.chat.completions.create(
+            input_payload: Any = self._messages_to_responses_input(messages)
+            resp = self._responses_parse_with_retries(
+                where=f"Structured parse {response_model_t.__name__}",
+                client=client,
                 model=self._strip_provider_prefix(m),
-                messages=messages,  # type: ignore[arg-type]
-                max_completion_tokens=max_tokens,
-                response_format=self._response_format_for_model(response_model_t),  # type: ignore[arg-type]
-                **merged_kwargs,
+                input_payload=input_payload,
+                text_format=response_model_t,
+                max_output_tokens=max_tokens,
+                reasoning=reasoning,
+                extra_kwargs=merged_kwargs,
+                repair_user_message=(
+                    f"Your previous {response_model_t.__name__} output did not parse/validate. "
+                    "Re-output ONLY the schema-valid JSON."
+                ),
+                max_retries=retries,
             )
-            content = (resp.choices[0].message.content or "").strip()
-            return self._parse_and_validate(content, response_model_t)
+            parsed = getattr(resp, "output_parsed", None)
+            if parsed is None:
+                raise RuntimeError("Responses parse returned output_parsed=None")
+            return parsed
 
         # Non-openai provider: use LiteLLM directly with JSON schema response_format.
         last_err: Exception | None = None
