@@ -107,25 +107,29 @@ Use Cmd+Shift+G when trying to add the python binary in settings.
 
 *Note: If you see "Terminal" in the list but it still doesn't work, try removing it and re-adding it, or run the script from a dedicated terminal window.*
 
-## Environment keys (.env)
+## Configuration
 
-Create a `.env` file (or export env vars) with:
+### Model/provider config (`user_config.yml`)
+
+Create `user_config.yml` in the repo root. This is the **single place** to choose:
+- provider/model (via LiteLLM `model` string + optional `api_base`)
+- per-provider `extra_kwargs` (e.g. reasoning controls)
+
+Example: see [`user_config.yml`](user_config.yml) in this repo.
+
+### Secrets (`.env`)
+
+Create a `.env` file (or export env vars) with only your API keys:
 
 ```bash
 OPENAI_API_KEY=
-DASHSCOPE_API_KEY=
-GEMINI_API_KEY=
-REPLAY_PROVIDER=
-REPLAY_MODEL=
 LMNR_PROJECT_API_KEY=
 ```
 
 and add it in the repo root
-- `OPENAI_API_KEY`: used for schema compilation (reflect).
-- `DASHSCOPE_API_KEY`: used for replay action grounding via DashScope’s OpenAI-compatible endpoint (default). Get it from here [alibaba cloud](https://modelstudio.console.alibabacloud.com/)
-- `GEMINI_API_KEY`: used for replay grounding when configured to use Gemini’s OpenAI-compatible endpoint (see below). Docs: [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)
-- `REPLAY_PROVIDER`: selects the grounding provider: `openai`, `gemini`, or `qwen`.
-- `REPLAY_MODEL`: grounding model name for the selected provider (e.g. `gpt-4o-mini`, `gemini-3-*`, `qwen3-vl-*`).
+- `OPENAI_API_KEY`: used when `user_config.yml` points to `api_key_env: OPENAI_API_KEY`.
+- `DASHSCOPE_API_KEY`: used when `user_config.yml` points to `api_key_env: DASHSCOPE_API_KEY`. Get it from here [alibaba cloud](https://modelstudio.console.alibabacloud.com/)
+- `GEMINI_API_KEY`: used when `user_config.yml` points to `api_key_env: GEMINI_API_KEY`. Docs: [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)
 - `LMNR_PROJECT_API_KEY`: used for Laminar tracing/telemetry (if enabled in your environment) (Optional) [Link](https://laminar.sh/).
 
 ## Usage

@@ -5,21 +5,34 @@ import json
 import logging
 import os
 import re
+from lmnr import observe
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional
 
-from openai import OpenAI  # type: ignore[import-not-found]
-from pydantic import BaseModel, Field  # type: ignore[import-not-found]
+from pydantic import BaseModel, ConfigDict, Field  # type: ignore[import-not-found]
 from tqdm import tqdm  # type: ignore[import-not-found]
+
+from ai_mime.user_config import ResolvedReflectConfig
+from ai_mime.litellm_client import LiteLLMChatClient
 
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 2  # max retries after the first attempt
 
 
-PassAActionType = Literal["CLICK", "TYPE", "SCROLL", "KEYPRESS", "DRAG", "EXTRACT"]
+PassAActionType = Literal[
+    "CLICK",
+    "DOUBLE_CLICK",
+    "RIGHT_CLICK",
+    "MIDDLE_CLICK",
+    "TYPE",
+    "SCROLL",
+    "KEYPRESS",
+    "DRAG",
+    "EXTRACT",
+]
 
 
 def _png_data_url(path: Path) -> str:
@@ -84,41 +97,66 @@ User task description: {task_description_user}
 Step summaries (ordered JSON array):
 {step_summaries_json}
 
-Rules:
-- detailed_task_description: 3-6 sentences describing the overall workflow (string).
-- Use `details` to better understand step intent, disambiguate what should be parameterized, and to improve the correctness of subtasks and success criteria.
-- Identify reusable workflow parameters from step action_value strings, and parameterize action_value using single-brace templates like "{{song_name}}".
-  Do NOT parameterize which application/site to use (no params like "{{app}}", "{{browser}}", "{{site}}").
-  Only parameterize user-provided content like song names, locations, search terms, etc., something that will change across multiple task runs based on wholistic task intent
-- task_params: Return a JSON array of param objects:
-  {{ "name": "<param_name>", "type": "<string|number|date>", "description": "<clear what this param is>", "example": "...", "sensitive": true|false, "optional": true|false }}
-  Descriptions must be concrete and unambiguous (mention where it is used in the workflow). If optional is false, the workflow should be runnable using the example value.
-- subtasks: Return a list of detailed subtasks. Each subtask string MUST:
-  - include any needed "{{param}}" placeholders
-  - include an explicit expected outcome ("Expected outcome: ...")
-  - represent a higher-level target that groups multiple steps together (rule of thumb: ~4-6 steps)
-  - preferably stay within a single window/app context (e.g., one subtask for Spotlight→open Spotify; another for Spotify→search and play)
-  - avoid being a micro-step (do not create one subtask per step)
-- If an EXTRACT step exists, ensure the relevant subtask(s) explicitly mention what data is being extracted, from where on the screen, and what that extracted data is used for downstream.
-- plan_step_updates: Return updates for EVERY step index, with:
-  {{ "i": <int>, "action_value": <string|null>, "subtask": <string> }}
-  - action_value must be the (possibly parameterized) value for that step (string for TYPE/KEYPRESS/EXTRACT; null otherwise).
-  - for parametrization of action values for EXTRACT actions, use the provided step summary field "variable_name" (e.g., "extract_0", "extract_1", ...), which is based on the order of EXTRACT steps in the workflow (not the overall step index).
-  - subtask must be EXACTLY one of the strings from subtasks, and every step must have a subtask assignment.
-- success_criteria: a SINGLE generalized string describing how to tell the task succeeded (avoid overly specific UI texts).
+### INSTRUCTIONS
+
+**1. General Workflow Definition**
+- **detailed_task_description**: Write 3-6 sentences describing the overall workflow high-level intent.
+- **success_criteria**: Write a SINGLE generalized string describing how to verify the task succeeded (e.g., "Verify the requested song is playing").
+
+**2. Grouping & Subtasks**
+- Group the provided steps into logical **subtasks**.
+- **Standard Granularity**: For standard navigation/typing, group approx. 4-6 steps per subtask.
+- **CRITICAL EXCEPTION - EXTRACT Steps**:
+  - `EXTRACT` steps are high-priority milestones. **Do not** bury an `EXTRACT` step inside a long navigation sequence.
+  - Create a dedicated subtask for the extraction logic (e.g., "Locate the verification code on the screen and extract it").
+  - If multiple extracts happen in sequence (e.g., copying Name, then Email), they can be grouped into one "Data Collection" subtask, provided the description covers all of them.
+- **Format**: Each subtask string must:
+  - Be descriptive and actionable.
+  - Include placeholders for parameters (`{{song_name}}`) or upstream extracts (`{{extract_0}}`).
+  - **Expected Outcome**: Must be explicit. For extraction subtasks, strictly state: "Expected outcome: The value for {{extract_X}} is captured."
+
+**3. Parameterization Logic (Task Params)**
+- Identify values in step `action_value` that should be dynamic (user inputs).
+- **The "Semantic Meaning" Rule**: Only parameterize values that represent **User Intent**—things the user would care to change between runs (e.g., "Song Name", "Price", "City").
+- **What to EXCLUDE (Keep Action Value NULL)**:
+  - **Structural Data**: Do not parameterize values that are just housekeeping or formatting logic.
+    - *Example:* If the workflow adds a row to a sheet and types an index number ("1", "2"...), this is NOT a parameter.
+    - *Example:* If the workflow types a fixed header like "Date" or "Total".
+  - **Infrastructure**: App names, URLs, "Chrome", "Spotify".
+  - **Dependencies**: Values that come from upstream `EXTRACT` steps.
+- **Output**: Define legitimate user parameters in `task_params` with clear types, descriptions, and examples.
+
+**4. Handling Data Dependencies (Extracts)**
+- **Identification**: Use the provided `variable_name` from the step summary (e.g., "extract_0", "extract_1").
+- **Downstream Usage Rules**:
+  - If a downstream `TYPE` or `KEYPRESS` step uses data extracted earlier:
+    1.  **Action Value**: Set the step's `action_value` to `null` in `plan_step_updates`.
+    2.  **Subtask Text**: Ensure the `subtask` string explicitly references the source variable (e.g., "Type the code from {{extract_0}} into the box").
+
+**5. Output Mapping (plan_step_updates)**
+- You must generate an update object for **every** step index provided in the input.
+- **action_value**:
+  - For `EXTRACT` steps: Return the variable name (e.g., "extract_0").
+  - For `TYPE`/`KEYPRESS` steps:
+    - Return `{{param_name}}` if it is a user input.
+    - Return `null` if the value is structural (e.g., an index number) or sourced from an extract.
+  - For others: `null`.
+- **subtask**: Must be an EXACT string match to one of the strings defined in your `subtasks` list.
+  - *Note:* If you set `action_value` to `null` for a structural step (like typing an index), your subtask text MUST describe what to type (e.g., "Enter the next sequential index number").
 """
 
 
 class StepTarget(BaseModel):
     """Coordinate-free selector description for the target UI element."""
-
     primary: str = Field(description="Primary target description using visible text/icons + relative location.")
-    fallback: Optional[str] = Field(description="Fallback target description if primary isn't found, still coordinate-free.")
+    fallback: str | None = Field(
+        default=None,
+        description="Fallback target description if primary isn't found, still coordinate-free.",
+    )
 
 
 class StepCardModel(BaseModel):
     """Reusable per-step instruction derived from PRE/POST screenshots + action."""
-
     i: int = Field(description="0-based step index within the workflow.")
     expected_current_state: str = Field(
         description=(
@@ -169,7 +207,6 @@ class PassBParamSpec(BaseModel):
 
 class PassBStepUpdate(BaseModel):
     """Per-step plan augmentation produced by Pass B."""
-
     i: int = Field(description="0-based step index within the workflow plan.")
     action_value: str | None = Field(
         description="Possibly parameterized action value for this step. Null for non-TYPE/non-KEYPRESS steps."
@@ -179,7 +216,6 @@ class PassBStepUpdate(BaseModel):
 
 class PassBOutput(BaseModel):
     """Task-level compiled schema produced from Pass A steps (summarized) + Pass B augmentation."""
-
     detailed_task_description: str = Field(description="3-6 sentence description of the overall workflow.")
     subtasks: list[str] = Field(
         min_length=1,
@@ -193,110 +229,6 @@ class PassBOutput(BaseModel):
     plan_step_updates: list[PassBStepUpdate] = Field(
         description="Per-step updates including parameterized action_value and subtask assignment for every step index."
     )
-
-
-def _output_text_preview(resp: Any, limit: int = 800) -> str:
-    t = getattr(resp, "output_text", None)
-    if t is None:
-        return "<no output_text available>"
-    s = str(t)
-    return s if len(s) <= limit else (s[:limit] + "…")
-
-
-def _call_parse_with_retries(
-    *,
-    where: str,
-    client: OpenAI,
-    model: str,
-    input_payload: Any,
-    text_format: Any,
-    max_output_tokens: int | None,
-    repair_user_message: str,
-) -> Any:
-    """
-    Execute a Structured Outputs parse call with retries.
-
-    On failure, retries send a follow-up message including:
-    - the failure reason
-    - the previous output_text (if any)
-    - a directive to return only schema-valid JSON
-
-    Best-effort threads retries via previous_response_id (when supported by SDK).
-    """
-    prev_resp: Any | None = None
-    last_err: Exception | None = None
-
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            kwargs: dict[str, Any] = {
-                "model": model,
-                "input": input_payload,
-                "text_format": text_format,
-                "max_output_tokens": max_output_tokens,
-            }
-            if attempt > 0 and prev_resp is not None and getattr(prev_resp, "id", None):
-                kwargs["previous_response_id"] = prev_resp.id
-
-            resp = client.responses.parse(**kwargs)
-            prev_resp = resp
-
-            # Treat "parsed is None" as a retryable failure.
-            event = getattr(resp, "output_parsed", None)
-            if event is None:
-                raise RuntimeError(
-                    f"{where}: output_parsed is None. output_text={_output_text_preview(resp)}"
-                )
-            return resp
-        except TypeError:
-            # Some SDK versions may not accept previous_response_id; retry without it.
-            try:
-                resp = client.responses.parse(
-                    model=model,
-                    input=input_payload,
-                    text_format=text_format,
-                    max_output_tokens=max_output_tokens,
-                )
-                prev_resp = resp
-                event = getattr(resp, "output_parsed", None)
-                if event is None:
-                    raise RuntimeError(
-                        f"{where}: output_parsed is None. output_text={_output_text_preview(resp)}"
-                    )
-                return resp
-            except Exception as e:
-                last_err = e
-        except Exception as e:
-            last_err = e
-
-        # Prepare retry prompt by appending a repair message.
-        if attempt < MAX_RETRIES:
-            prev_text = _output_text_preview(prev_resp) if prev_resp is not None else "<no previous output>"
-            logger.warning(
-                "%s attempt %d failed (%s). Retrying with repair prompt.",
-                where,
-                attempt + 1,
-                str(last_err),
-            )
-            # Append the exception context into the same messages array.
-            input_payload = [
-                *list(input_payload),
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                f"{repair_user_message}\n\n"
-                                f"Failure: {last_err}\n"
-                                f"Previous output_text: {prev_text}\n"
-                                "Fix your response and return ONLY schema-valid JSON."
-                            ),
-                        }
-                    ],
-                },
-            ]
-
-    raise RuntimeError(f"{where}: failed after {MAX_RETRIES + 1} attempts: {last_err}") from last_err
 
 
 @dataclass(frozen=True)
@@ -347,6 +279,12 @@ def _map_action_type(action_type: str | None) -> PassAActionType | None:
     t = str(action_type).lower()
     if t == "click":
         return "CLICK"
+    if t == "double_click":
+        return "DOUBLE_CLICK"
+    if t == "right_click":
+        return "RIGHT_CLICK"
+    if t == "middle_click":
+        return "MIDDLE_CLICK"
     if t == "type":
         return "TYPE"
     if t == "scroll":
@@ -421,12 +359,11 @@ def derive_step_inputs(workflow_dir: str | os.PathLike[str], events: list[dict[s
     return steps
 
 
-
+@observe()
 def run_pass_a_step_cards(
     *,
     workflow_dir: str | os.PathLike[str],
-    model: str = "gpt-5-mini",
-    max_output_tokens: int | None = 2000,
+    llm_cfg: ResolvedReflectConfig,
 ) -> list[dict[str, Any]]:
     """
     Pass A: compile each actionable manifest step into a StepCard.
@@ -436,8 +373,6 @@ def run_pass_a_step_cards(
     task_name, task_description_user = load_task_metadata(workflow_dir_p)
     events = load_events(workflow_dir_p)
     steps = derive_step_inputs(workflow_dir_p, events)
-
-    client = OpenAI()
 
     # Load any existing StepCards so reruns only attempt missing steps.
     step_cards_path = workflow_dir_p / "step_cards.json"
@@ -457,20 +392,24 @@ def run_pass_a_step_cards(
 
     existing_by_i = _load_existing_by_i()
 
+    pass_a_model = llm_cfg.pass_a_model or llm_cfg.model
     logger.info(
         "Pass A: total_steps=%d existing=%d (model=%s) with up to 5 in-flight requests",
         len(steps),
         len(existing_by_i),
-        model,
+        pass_a_model,
+    )
+
+    # Resolve + cache LLM config once; reused across all Pass A steps (thread-safe usage).
+    pass_a_client = LiteLLMChatClient(
+        model=pass_a_model,
+        api_base=llm_cfg.api_base,
+        api_key_env=llm_cfg.api_key_env,
+        extra_kwargs=llm_cfg.extra_kwargs,
+        max_retries=MAX_RETRIES,
     )
 
     def _compile_one(s: StepInput) -> dict[str, Any]:
-        logger.info(
-            "Pass A: step_i=%d event_idx=%d action_type=%s",
-            s.i,
-            s.event_idx,
-            s.action_json.get("action_type"),
-        )
 
         # Ensure screenshots exist if paths are set.
         img_paths: list[Path] = []
@@ -491,31 +430,21 @@ def run_pass_a_step_cards(
             details_text=json.dumps(s.details, ensure_ascii=False),
         )
 
-        input_payload: Any = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": PASS_A_SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": [{"type": "input_text", "text": user}]
-                + [{"type": "input_image", "image_url": _png_data_url(p)} for p in img_paths],
+                "content": [{"type": "text", "text": user}]
+                + [{"type": "image_url", "image_url": {"url": _png_data_url(p)}} for p in img_paths],
             },
         ]
 
-        resp = _call_parse_with_retries(
-            where=f"Pass A step {s.i}",
-            client=client,
-            model=model,
-            input_payload=input_payload,
-            text_format=StepCardModel,
-            max_output_tokens=max_output_tokens,
-            repair_user_message="Your previous StepCard output did not parse/validate. Re-output ONLY the StepCard JSON.",
+        event = pass_a_client.create(
+            response_model=StepCardModel,
+            messages=messages,
+            max_tokens=llm_cfg.pass_a_max_tokens,
         )
-        try:
-            event: StepCardModel | None = resp.output_parsed  # type: ignore[attr-defined]
-            if event is None:
-                raise RuntimeError(f"output_parsed is None. output_text={_output_text_preview(resp)}")
-            card = event.model_dump()
-        except Exception as e:
-            raise RuntimeError(f"Pass A step {s.i}: failed to read output_parsed/model_dump: {e}") from e
+        card = event.model_dump()
         card["i"] = s.i
         # Ensure we always carry forward the input details (null or string) even if the model omits it.
         card["details"] = s.details
@@ -588,22 +517,21 @@ def write_step_cards(workflow_dir: str | os.PathLike[str], step_cards: list[dict
     return path
 
 
-
+@observe()
 def run_pass_b_task_compiler(
     *,
     workflow_dir: str | os.PathLike[str],
     step_cards: list[dict[str, Any]],
-    model: str = "gpt-5-mini",
-    max_output_tokens: int | None = 5000,
+    llm_cfg: ResolvedReflectConfig,
 ) -> dict[str, Any]:
     """
     Pass B: compile task-level schema from step cards.
     """
     workflow_dir_p = Path(workflow_dir)
     task_name, task_description_user = load_task_metadata(workflow_dir_p)
-    client = OpenAI()
 
-    logger.info("Pass B: compiling task schema (model=%s)", model)
+    pass_b_model = llm_cfg.pass_b_model or llm_cfg.model
+    logger.info("Pass B: compiling task schema (model=%s)", pass_b_model)
     # Pass B operates on summarized steps (include details to improve intent + parametrization).
     step_summaries: list[dict[str, Any]] = []
     for s in step_cards:
@@ -624,26 +552,23 @@ def run_pass_b_task_compiler(
         task_description_user=task_description_user,
         step_summaries_json=json.dumps(step_summaries, ensure_ascii=False),
     )
-    input_payload: Any = [
+    messages: list[dict[str, Any]] = [
         {"role": "system", "content": PASS_B_SYSTEM_PROMPT},
-        {"role": "user", "content": [{"type": "input_text", "text": user}]},
+        {"role": "user", "content": user},
     ]
-    resp = _call_parse_with_retries(
-        where="Pass B",
-        client=client,
-        model=model,
-        input_payload=input_payload,
-        text_format=PassBOutput,
-        max_output_tokens=max_output_tokens,
-        repair_user_message="Your previous task compiler output did not parse/validate.",
+    client = LiteLLMChatClient(
+        model=pass_b_model,
+        api_base=llm_cfg.api_base,
+        api_key_env=llm_cfg.api_key_env,
+        extra_kwargs=llm_cfg.extra_kwargs,
+        max_retries=MAX_RETRIES,
     )
-    try:
-        event: PassBOutput | None = resp.output_parsed  # type: ignore[attr-defined]
-        if event is None:
-            raise RuntimeError(f"output_parsed is None. output_text={_output_text_preview(resp)}")
-        return event.model_dump()
-    except Exception as e:
-        raise RuntimeError(f"Pass B: failed to read output_parsed/model_dump: {e}") from e
+    event = client.create(
+        response_model=PassBOutput,
+        messages=messages,
+        max_tokens=llm_cfg.pass_b_max_tokens,
+    )
+    return event.model_dump()
 
 
 def write_plan_creation(workflow_dir: str | os.PathLike[str], plan_creation: dict[str, Any]) -> Path:
@@ -771,10 +696,11 @@ def extract_param_templates(step_cards: Iterable[dict[str, Any]]) -> set[str]:
     return found
 
 
+@observe()
 def compile_workflow_schema(
     *,
     workflow_dir: str | os.PathLike[str],
-    model: str = "gpt-5-mini",
+    llm_cfg: ResolvedReflectConfig,
 ) -> dict[str, Any]:
     """
     End-to-end compile:
@@ -786,7 +712,7 @@ def compile_workflow_schema(
     workflow_dir_p = Path(workflow_dir)
     task_name, task_description_user = load_task_metadata(workflow_dir_p)
 
-    logger.info("Schema compile start: workflow_dir=%s task_name=%s model=%s", workflow_dir_p, task_name, model)
+    logger.info("Schema compile start: workflow_dir=%s task_name=%s model=%s", workflow_dir_p, task_name, llm_cfg.model)
 
     # If final output exists, reuse it and avoid re-running any passes.
     schema_path = workflow_dir_p / "schema.json"
@@ -810,7 +736,7 @@ def compile_workflow_schema(
         step_cards = existing_step_cards
         logger.info("Pass A: found existing step_cards.json; skipping.")
     else:
-        step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p, model=model)
+        step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p, llm_cfg=llm_cfg)
         write_step_cards(workflow_dir_p, step_cards)
         logger.info("Pass A complete: step_cards.json (%d steps)", len(step_cards))
 
@@ -822,11 +748,7 @@ def compile_workflow_schema(
         logger.info("Pass B: found existing plan_creation checkpoint; skipping.")
         plan_creation: dict[str, Any] = dict(existing_plan_creation)
     else:
-        task_compiler_out = run_pass_b_task_compiler(
-            workflow_dir=workflow_dir_p,
-            step_cards=step_cards,
-            model=model,
-        )
+        task_compiler_out = run_pass_b_task_compiler(workflow_dir=workflow_dir_p, step_cards=step_cards, llm_cfg=llm_cfg)
 
         plan_creation = dict(task_compiler_out)
         write_plan_creation(workflow_dir_p, plan_creation)
@@ -896,7 +818,11 @@ def compile_workflow_schema(
         # Safety: enforce action_value nullability by action_type after merge.
         at = s.get("action_type")
         av = s.get("action_value")
-        if at in {"TYPE", "KEYPRESS", "EXTRACT"}:
+        if at in {"TYPE", "KEYPRESS"}:
+            # Allow null when value should be sourced from upstream extracts (Pass B prompt directs this).
+            if av is not None and not isinstance(av, str):
+                raise RuntimeError(f"Step {i}: action_type={at} requires action_value to be a string or null after Pass B merge.")
+        elif at == "EXTRACT":
             if not isinstance(av, str) or not av.strip():
                 raise RuntimeError(f"Step {i}: action_type={at} requires non-empty action_value after Pass B merge.")
         else:

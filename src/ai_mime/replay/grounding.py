@@ -6,10 +6,10 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
 from PIL import Image
 
 from .engine import ReplayConfig, ReplayError
+from ai_mime.litellm_client import LiteLLMChatClient
 
 logger = logging.getLogger(__name__)
 
@@ -239,21 +239,11 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
     Ask Qwen3-VL to output exactly one <tool_call> for the next GUI action.
     Returns the parsed tool call object: {"name": "...", "arguments": {...}}.
     """
-    if not cfg.api_key:
-        raise ReplayError(
-            "Missing replay API key for grounding.\n"
-            "Set the provider key env var:\n"
-            "- OPENAI_API_KEY (OpenAI)\n"
-            "- GEMINI_API_KEY (Gemini OpenAI compatibility)\n"
-            "- DASHSCOPE_API_KEY (Qwen via DashScope OpenAI compatibility)\n"
-        )
-
     img_path = Path(image_path)
     if not img_path.exists():
         raise ReplayError(f"Screenshot not found: {img_path}")
 
     data_url = _encode_image_data_url(img_path)
-    client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
 
     # openai-python has strict typing for messages; keep runtime structure but cast for type checkers.
     messages: Any = [
@@ -276,6 +266,14 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
     max_attempts = 5
     last_err: Exception | None = None
     last_text: str = ""
+
+    # Resolve + cache LLM config once (used across retries).
+    llm = LiteLLMChatClient(
+        model=cfg.model,
+        api_base=cfg.base_url,
+        api_key_env=cfg.api_key_env,
+        extra_kwargs=cfg.llm_extra_kwargs,
+    )
 
     for attempt in range(max_attempts):
         if attempt > 0:
@@ -321,11 +319,9 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
             ]
 
         try:
-            completion = client.chat.completions.create(
-                model=cfg.model,
+            content = llm.create(
                 messages=messages,
-            )
-            content = (completion.choices[0].message.content or "").strip()
+            ).strip()
             last_text = content
 
             tool_call = _extract_json_payload(content)
