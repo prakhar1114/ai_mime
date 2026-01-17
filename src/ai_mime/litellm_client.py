@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, cast
 
 from openai import OpenAI  # type: ignore[import-not-found]
 from litellm import completion  # type: ignore[import-not-found]
+from lmnr import observe
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -25,45 +27,33 @@ class LiteLLMChatClient:
     def __init__(
         self,
         *,
-        model: str | None = None,
-        api_base: str | None = None,
-        api_key: str | None = None,
+        model: str,
+        api_base: str | None,
+        api_key_env: str | None,
         extra_kwargs: dict[str, Any] | None = None,
         max_retries: int = 2,
     ) -> None:
-        self._model = model
-        self._provider = (model.split("/", 1)[0] if isinstance(model, str) and "/" in model else "openai") if model else None
-        self._api_base_raw = api_base
+        if not isinstance(model, str) or not model.strip():
+            raise TypeError("LiteLLMChatClient requires a non-empty model at initialization.")
+        self._model = model.strip()
+        self._provider = self._model.split("/", 1)[0] if "/" in self._model else "openai"
+
         self._api_base = self._normalize_api_base(api_base)
-        self._api_key = api_key
+
+        self._api_key_env = api_key_env.strip() if isinstance(api_key_env, str) and api_key_env.strip() else None
+        self._api_key: str | None = None
+        if self._api_key_env is not None:
+            v = os.getenv(self._api_key_env)
+            if v is None or not str(v).strip():
+                raise RuntimeError(f"Missing API key env var {self._api_key_env!r} for model={self._model!r}.")
+            self._api_key = str(v).strip()
+
         self._extra_kwargs = dict(extra_kwargs or {})
         self._max_retries = int(max_retries)
 
         # OpenAI reasoning controls are a Responses API feature (not Chat Completions).
         # Never forward these into chat.completions.create().
         self._reasoning: Any | None = self._extra_kwargs.pop("reasoning", None)
-
-    def _resolve(
-        self,
-        *,
-        model: str | None = None,
-        api_base: str | None = None,
-        api_key: str | None = None,
-        extra_kwargs: dict[str, Any] | None = None,
-    ) -> tuple[str, str, str | None, str | None, dict[str, Any], Any | None]:
-        m = model or self._model
-        if not isinstance(m, str) or not m.strip():
-            raise TypeError("LiteLLMChatClient requires model (either at __init__ or per-call).")
-        m = m.strip()
-        provider = m.split("/", 1)[0] if "/" in m else "openai"
-        base = self._normalize_api_base(api_base if api_base is not None else self._api_base_raw)
-        key = api_key if api_key is not None else self._api_key
-
-        merged: dict[str, Any] = dict(self._extra_kwargs)
-        if extra_kwargs:
-            merged.update(extra_kwargs)
-        reasoning = merged.pop("reasoning", None) if "reasoning" in merged else self._reasoning
-        return m, provider, base, key, merged, reasoning
 
     @staticmethod
     def _normalize_api_base(api_base: str | None) -> str | None:
@@ -255,31 +245,27 @@ class LiteLLMChatClient:
 
         raise RuntimeError(f"{where}: failed after {max_retries + 1} attempts: {last_err}") from last_err
 
+    @observe(name="llm")
     def create(
         self,
         *,
-        # If response_model is provided -> structured output (validated BaseModel).
-        # If response_model is None -> plain text completion (str).
         response_model: type[BaseModel] | None = None,
         messages: list[dict[str, Any]],
-        # Optional per-call overrides (backward compatible with older replay code)
-        model: str | None = None,
-        api_base: str | None = None,
-        api_key: str | None = None,
-        extra_kwargs: dict[str, Any] | None = None,
         max_tokens: int | None = None,
-        max_retries: int | None = None,
     ) -> Any:
-        retries = self._max_retries if max_retries is None else int(max_retries)
+        retries = self._max_retries
 
-        m, provider, base, key, merged_kwargs, reasoning = self._resolve(
-            model=model, api_base=api_base, api_key=api_key, extra_kwargs=extra_kwargs
-        )
+        m = self._model
+        provider = self._provider
+        base = self._api_base
+        key = self._api_key
+        merged_kwargs: dict[str, Any] = dict(self._extra_kwargs)
+        reasoning = self._reasoning
 
         # Plain-text completion path (used by replay grounding/extract).
         if response_model is None:
             if self._use_openai_client(provider):
-                client = OpenAI(api_key=key, base_url=base)
+                client = OpenAI(base_url=base) if key is None else OpenAI(api_key=key, base_url=base)
                 # Reasoning is only supported on Responses API; if configured, use responses.create.
                 if reasoning is not None:
                     resp = client.responses.create(
@@ -314,7 +300,7 @@ class LiteLLMChatClient:
         response_model_t = cast(type[BaseModel], response_model)
 
         if self._use_openai_client(provider):
-            client = OpenAI(api_key=key, base_url=base)
+            client = OpenAI(base_url=base) if key is None else OpenAI(api_key=key, base_url=base)
             input_payload: Any = self._messages_to_responses_input(messages)
             resp = self._responses_parse_with_retries(
                 where=f"Structured parse {response_model_t.__name__}",

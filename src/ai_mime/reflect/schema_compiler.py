@@ -359,7 +359,7 @@ def derive_step_inputs(workflow_dir: str | os.PathLike[str], events: list[dict[s
     return steps
 
 
-
+@observe()
 def run_pass_a_step_cards(
     *,
     workflow_dir: str | os.PathLike[str],
@@ -400,6 +400,15 @@ def run_pass_a_step_cards(
         pass_a_model,
     )
 
+    # Resolve + cache LLM config once; reused across all Pass A steps (thread-safe usage).
+    pass_a_client = LiteLLMChatClient(
+        model=pass_a_model,
+        api_base=llm_cfg.api_base,
+        api_key_env=llm_cfg.api_key_env,
+        extra_kwargs=llm_cfg.extra_kwargs,
+        max_retries=MAX_RETRIES,
+    )
+
     def _compile_one(s: StepInput) -> dict[str, Any]:
 
         # Ensure screenshots exist if paths are set.
@@ -430,18 +439,10 @@ def run_pass_a_step_cards(
             },
         ]
 
-        client = LiteLLMChatClient(
-            model=pass_a_model,
-            api_base=llm_cfg.api_base,
-            api_key=llm_cfg.api_key,
-            extra_kwargs=llm_cfg.extra_kwargs,
-            max_retries=MAX_RETRIES,
-        )
-        event = client.create(
+        event = pass_a_client.create(
             response_model=StepCardModel,
             messages=messages,
             max_tokens=llm_cfg.pass_a_max_tokens,
-            max_retries=MAX_RETRIES,
         )
         card = event.model_dump()
         card["i"] = s.i
@@ -516,7 +517,7 @@ def write_step_cards(workflow_dir: str | os.PathLike[str], step_cards: list[dict
     return path
 
 
-
+@observe()
 def run_pass_b_task_compiler(
     *,
     workflow_dir: str | os.PathLike[str],
@@ -558,7 +559,7 @@ def run_pass_b_task_compiler(
     client = LiteLLMChatClient(
         model=pass_b_model,
         api_base=llm_cfg.api_base,
-        api_key=llm_cfg.api_key,
+        api_key_env=llm_cfg.api_key_env,
         extra_kwargs=llm_cfg.extra_kwargs,
         max_retries=MAX_RETRIES,
     )
@@ -566,7 +567,6 @@ def run_pass_b_task_compiler(
         response_model=PassBOutput,
         messages=messages,
         max_tokens=llm_cfg.pass_b_max_tokens,
-        max_retries=MAX_RETRIES,
     )
     return event.model_dump()
 
@@ -696,6 +696,7 @@ def extract_param_templates(step_cards: Iterable[dict[str, Any]]) -> set[str]:
     return found
 
 
+@observe()
 def compile_workflow_schema(
     *,
     workflow_dir: str | os.PathLike[str],

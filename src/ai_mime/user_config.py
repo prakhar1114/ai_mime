@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,27 +27,11 @@ class LLMSectionConfig(BaseModel):
         default=None,
         description="Optional env var name that contains the API key to use for this section.",
     )
-    api_key: str | None = Field(
-        default=None,
-        description="Optional literal API key (discouraged). If set, overrides api_key_env.",
-    )
     extra_kwargs: dict[str, Any] = Field(
         default_factory=dict,
         description="Provider/model specific kwargs forwarded to LiteLLM completion call.",
     )
 
-    def resolve_api_key(self) -> str | None:
-        if isinstance(self.api_key, str) and self.api_key.strip():
-            return self.api_key.strip()
-        if isinstance(self.api_key_env, str) and self.api_key_env.strip():
-            v = os.getenv(self.api_key_env.strip())
-            if v is None or not str(v).strip():
-                raise RuntimeError(
-                    f"Missing API key env var {self.api_key_env!r} for model={self.model!r}. "
-                    "Set it in your environment or remove api_key_env for local providers."
-                )
-            return str(v).strip()
-        return None
 
 
 class ReflectSectionConfig(LLMSectionConfig):
@@ -65,7 +48,7 @@ class UserConfigFile(BaseModel):
 class ResolvedLLMConfig:
     model: str
     api_base: str | None
-    api_key: str | None
+    api_key_env: str | None
     extra_kwargs: dict[str, Any]
 
 
@@ -110,10 +93,7 @@ def load_user_config(*, repo_root: Path | None = None) -> ResolvedUserConfig:
 
     cfg_file = UserConfigFile.model_validate(raw)
 
-    reflect_api_key = cfg_file.reflect.resolve_api_key()
-    replay_api_key = cfg_file.replay.resolve_api_key()
-
-    def _norm_base(s: str | None) -> str | None:
+    def _norm_opt_str(s: str | None) -> str | None:
         if s is None:
             return None
         ss = str(s).strip()
@@ -121,8 +101,8 @@ def load_user_config(*, repo_root: Path | None = None) -> ResolvedUserConfig:
 
     reflect = ResolvedReflectConfig(
         model=cfg_file.reflect.model,
-        api_base=_norm_base(cfg_file.reflect.api_base),
-        api_key=reflect_api_key,
+        api_base=_norm_opt_str(cfg_file.reflect.api_base),
+        api_key_env=_norm_opt_str(cfg_file.reflect.api_key_env),
         extra_kwargs=dict(cfg_file.reflect.extra_kwargs or {}),
         pass_a_model=cfg_file.reflect.pass_a.model,
         pass_b_model=cfg_file.reflect.pass_b.model,
@@ -131,8 +111,8 @@ def load_user_config(*, repo_root: Path | None = None) -> ResolvedUserConfig:
     )
     replay = ResolvedLLMConfig(
         model=cfg_file.replay.model,
-        api_base=_norm_base(cfg_file.replay.api_base),
-        api_key=replay_api_key,
+        api_base=_norm_opt_str(cfg_file.replay.api_base),
+        api_key_env=_norm_opt_str(cfg_file.replay.api_key_env),
         extra_kwargs=dict(cfg_file.replay.extra_kwargs or {}),
     )
     return ResolvedUserConfig(reflect=reflect, replay=replay)

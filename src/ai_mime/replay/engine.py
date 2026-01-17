@@ -29,7 +29,7 @@ class ReplayStopped(RuntimeError):
 class ReplayConfig:
     model: str
     base_url: str | None
-    api_key: str | None
+    api_key_env: str | None
     llm_extra_kwargs: dict[str, Any] = field(default_factory=dict)
     delay_s: float = 0.35
     click_delay_s: float = 0.2
@@ -177,13 +177,14 @@ def _run_vision_extract(*, image_path: Path, query: str, cfg: ReplayConfig) -> s
         },
     ]
     try:
-        llm = LiteLLMChatClient()
-        out = llm.create(
-            messages=messages,
+        llm = LiteLLMChatClient(
             model=cfg.model,
             api_base=cfg.base_url,
-            api_key=cfg.api_key,
+            api_key_env=cfg.api_key_env,
             extra_kwargs=cfg.llm_extra_kwargs,
+        )
+        out = llm.create(
+            messages=messages,
         )
         return ("" if out is None else str(out)).strip()
     except Exception as e:

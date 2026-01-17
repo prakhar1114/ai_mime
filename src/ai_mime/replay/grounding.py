@@ -267,6 +267,14 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
     last_err: Exception | None = None
     last_text: str = ""
 
+    # Resolve + cache LLM config once (used across retries).
+    llm = LiteLLMChatClient(
+        model=cfg.model,
+        api_base=cfg.base_url,
+        api_key_env=cfg.api_key_env,
+        extra_kwargs=cfg.llm_extra_kwargs,
+    )
+
     for attempt in range(max_attempts):
         if attempt > 0:
             # Make retries visible in logs/stdout (so failures don't look like hangs).
@@ -311,13 +319,8 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
             ]
 
         try:
-            llm = LiteLLMChatClient()
             content = llm.create(
                 messages=messages,
-                model=cfg.model,
-                api_base=cfg.base_url,
-                api_key=cfg.api_key,
-                extra_kwargs=cfg.llm_extra_kwargs,
             ).strip()
             last_text = content
 

@@ -116,7 +116,7 @@ def _run_replay_workflow_schema(
         cfg = ReplayConfig(
             model=replay_llm_cfg.model,
             base_url=replay_llm_cfg.api_base,
-            api_key=replay_llm_cfg.api_key,
+            api_key_env=replay_llm_cfg.api_key_env,
             llm_extra_kwargs=dict(replay_llm_cfg.extra_kwargs or {}),
         )
         screenshotter = ScreenshotRecorder()
