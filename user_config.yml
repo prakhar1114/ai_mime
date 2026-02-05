@@ -1,12 +1,16 @@
 reflect:
   model: "gemini/gemini-3-pro-preview"
-  api_base: "https://generativelanguage.googleapis.com/v1beta/openai/"
+  # api_base: "https://generativelanguage.googleapis.com/"
   api_key_env: "GEMINI_API_KEY"
+  # model: "openai/gpt-5.2"
+  # api_key_env: "OPENAI_API_KEY"
   extra_kwargs: {}
   pass_a:
-    model: "gemini/gemini-3-pro-preview"
+    # model: "openai/gpt-5-mini"
+    model: "gemini/gemini-3-flash-preview"
     max_tokens: 2000
   pass_b:
+    # model: "openai/gpt-5.2"
     model: "gemini/gemini-3-pro-preview"
     max_tokens: 7000
 

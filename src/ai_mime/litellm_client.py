@@ -79,7 +79,8 @@ class LiteLLMChatClient:
     def _use_openai_client(provider: str) -> bool:
         # Do it purely based on provider prefix. If you point api_base at an OpenAI-compatible
         # endpoint (vLLM/Ollama/etc) but still use the openai/ prefix, we will use OpenAI SDK.
-        return provider in {"openai", "gemini", "qwen"}
+        # return provider in {"openai", "gemini", "qwen"}
+        return provider == "openai"
 
     @staticmethod
     def _messages_to_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
