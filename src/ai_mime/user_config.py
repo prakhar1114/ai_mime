@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+from .app_data import get_user_config_path
 
 
 class PassTokenConfig(BaseModel):
@@ -66,19 +67,16 @@ class ResolvedUserConfig:
     replay: ResolvedLLMConfig
 
 
-def _repo_root_from_this_file() -> Path:
-    # user_config.py: <repo>/src/ai_mime/user_config.py -> parents[2] == <repo>
-    return Path(__file__).resolve().parents[2]
-
-
 def load_user_config(*, repo_root: Path | None = None) -> ResolvedUserConfig:
     """
-    Load and validate repo-root user_config.yml.
+    Load and validate user_config.yml.
 
-    Location policy: repo root only.
+    When *repo_root* is supplied (CLI compat), reads from there.
+    Otherwise delegates to app_data.get_user_config_path() which
+    returns the correct location whether frozen or in dev.
     """
-    root = repo_root or _repo_root_from_this_file()
-    path = root / "user_config.yml"
+
+    path = repo_root / "user_config.yml" if repo_root else get_user_config_path()
     if not path.exists():
         raise RuntimeError(
             f"user_config.yml not found at repo root: {path}\n"

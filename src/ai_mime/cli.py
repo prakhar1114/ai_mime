@@ -1,19 +1,29 @@
 import click
 from pathlib import Path
 import logging
+from dotenv import load_dotenv
 from lmnr import observe
+from ai_mime.app_data import bootstrap_data_dir, get_env_path, get_onboarding_done_path, is_frozen
 from ai_mime.permissions import check_permissions
 from ai_mime.user_config import load_user_config
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
 from ai_mime.app import run_app
+from ai_mime.onboarding import run_onboarding
 
 
 
 @click.command()
 def start_app():
     """Start the menubar app."""
-    # We will import the app here to avoid importing dependencies (like rumps)
-    # at the top level, which might fail if permissions aren't checked yet.
+    bootstrap_data_dir()
+
+    # First-run onboarding — frozen builds only.
+    # if is_frozen() and not get_onboarding_done_path().exists():
+    if not get_onboarding_done_path().exists():
+        run_onboarding()
+
+    # Reload .env so that any key written by onboarding is live.
+    load_dotenv(get_env_path(), override=True)
 
     if check_permissions():
         run_app()
@@ -67,3 +77,7 @@ def reflect(session, recordings_dir):
         click.echo(f"Schema compiled: {out_dir / 'schema.json'}")
     except Exception as e:
         raise click.ClickException(f"Schema compilation failed: {e}")
+
+
+if __name__ == "__main__":
+    start_app()

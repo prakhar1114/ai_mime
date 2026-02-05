@@ -2,6 +2,7 @@ import time
 import multiprocessing
 from .storage import SessionStorage
 from .capture import EventRecorder
+from ..app_data import get_recordings_dir
 
 def run_recorder_process(
     name,
@@ -11,14 +12,16 @@ def run_recorder_process(
     refine_cmd_q=None,
     refine_resp_q=None,
     exclude_window_id=None,
+    base_dir=None,
 ):
     """
     Entry point for the recording child process.
     """
+
     print(f"Recorder process started for session: {name}")
 
     # Initialize storage and recorder in this process
-    storage = SessionStorage()
+    storage = SessionStorage(base_dir=base_dir or str(get_recordings_dir()))
     try:
         storage.start_session(name, description=description)
     except Exception as e:

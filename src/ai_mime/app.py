@@ -15,6 +15,7 @@ from typing import Any
 from ai_mime.record.storage import SessionStorage
 # We don't import EventRecorder here anymore to avoid loading pynput in the UI process
 from ai_mime.record.recorder_process import run_recorder_process
+from ai_mime.app_data import get_bundled_resource, get_recordings_dir
 
 from ai_mime.replay.catalog import list_replayable_workflows
 from ai_mime.user_config import ResolvedLLMConfig, ResolvedReflectConfig, ResolvedUserConfig, load_user_config
@@ -74,25 +75,10 @@ def _run_reflect_and_compile_schema(
 
 
 def _resolve_menubar_icon_path() -> str | None:
-    """
-    Best-effort menubar icon resolution.
-
-    Priority:
-    1) AI_MIME_MENUBAR_ICON env var (absolute or relative path)
-    2) repo docs/logo/icon60.png (best size for macOS menubar)
-    """
-    # When running from the repo, app.py lives at src/ai_mime/app.py.
-    # Try to locate the repo root and use docs/logo assets.
-    try:
-        # app.py: <repo>/src/ai_mime/app.py -> parents[2] == <repo>
-        repo_root = Path(__file__).resolve().parents[2]
-    except Exception:
-        repo_root = None
-    if repo_root:
-        candidate = repo_root / "docs" / "logo" / "icon60.png"
-        if candidate.exists():
-            return str(candidate)
-
+    """Best-effort menubar icon resolution (works frozen and in dev)."""
+    candidate = get_bundled_resource("docs/logo/icon60.png")
+    if candidate.exists():
+        return str(candidate)
     return None
 
 
@@ -194,7 +180,7 @@ class RecorderApp(rumps.App):
         self._user_cfg = user_cfg
         # We only need storage here to read last session or show info,
         # but the active storage instance will live in the subprocess.
-        self.storage = SessionStorage()
+        self.storage = SessionStorage(base_dir=str(get_recordings_dir()))
 
         self.recorder_process = None
         self.stop_event = None
@@ -749,6 +735,7 @@ class RecorderApp(rumps.App):
                     self.refine_resp_q,
                     overlay_id,
                 ),
+                kwargs={"base_dir": str(get_recordings_dir())},
             )
             self.recorder_process.start()
 
