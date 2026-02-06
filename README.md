@@ -15,7 +15,11 @@ AI Mime is a native macOS RPA tool designed to empower computer use agents with 
 
 - Replay: Dispatch computer use agents to execute complex, multi-step processes across native apps and the web on demand, ensuring high fidelity and repeatability.
 
+<div align="center">
 
+[![Download AI Mime](https://img.shields.io/badge/Download-AI%20Mime%20v1.0.0-blue?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/prakhar1114/ai_mime/releases/download/v1.0.0/AI.Mime.dmg)
+
+</div>
 
 ## Demo
 
@@ -79,7 +83,21 @@ To run a saved workflow, open AI Mime → Replay, choose a workflow from the dro
 
 ![Replay Task](docs/images/replay.png)
 
-## Installation
+## Download
+
+**Get the latest version for macOS:**
+
+📦 [Download AI Mime.dmg (v1.0.0)](https://github.com/prakhar1114/ai_mime/releases/download/v1.0.0/AI.Mime.dmg)
+
+Or view all releases: [GitHub Releases](https://github.com/prakhar1114/ai_mime/releases/tag/v1.0.0)
+
+After downloading:
+1. Open the DMG file
+2. Drag AI Mime.app to your Applications folder
+3. Launch AI Mime from Applications
+4. Grant required permissions when prompted (Accessibility, Screen Recording, Input Monitoring)
+
+## Installation (Development)
 
 1.  Clone the repository.
 2.  Create and activate a virtual environment:
