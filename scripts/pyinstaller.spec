@@ -32,7 +32,8 @@ a = Analysis(
         (os.path.join(_repo, "user_config.yml"), "."),
         # Workflow-editor web assets
         (os.path.join(_src, "ai_mime", "editor", "web"), os.path.join("ai_mime", "editor", "web")),
-        # Menubar icon (resolved at runtime via get_bundled_resource)
+        # Menubar icons (resolved at runtime via get_bundled_resource)
+        (os.path.join(_repo, "docs", "logo", "icon32.png"), os.path.join("docs", "logo")),
         (os.path.join(_repo, "docs", "logo", "icon60.png"), os.path.join("docs", "logo")),
     ],
     hiddenimports=[

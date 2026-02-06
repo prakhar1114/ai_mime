@@ -122,9 +122,14 @@ def _run_reflect_and_compile_schema(
 
 def _resolve_menubar_icon_path() -> str | None:
     """Best-effort menubar icon resolution (works frozen and in dev)."""
-    candidate = get_bundled_resource("docs/logo/icon60.png")
+    # Use icon32.png for proper menubar sizing (macOS recommends 22-32px for menubar icons)
+    candidate = get_bundled_resource("docs/logo/icon32.png")
     if candidate.exists():
         return str(candidate)
+    # Fallback to icon60 if icon32 doesn't exist
+    fallback = get_bundled_resource("docs/logo/icon60.png")
+    if fallback.exists():
+        return str(fallback)
     return None
 
 

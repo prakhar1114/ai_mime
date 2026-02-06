@@ -110,6 +110,7 @@ rm -f "$DMG_PATH"
 
 create-dmg \
   --volname   "$APP_NAME" \
+  --volicon   "$REPO_ROOT/AppIcon.icns" \
   --window-pos 200 120 \
   --window-size 600 400 \
   --icon-size  100 \
