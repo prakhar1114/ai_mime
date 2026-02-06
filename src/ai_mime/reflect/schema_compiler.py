@@ -16,6 +16,7 @@ from tqdm import tqdm  # type: ignore[import-not-found]
 
 from ai_mime.user_config import ResolvedReflectConfig
 from ai_mime.litellm_client import LiteLLMChatClient
+from ai_mime.debug_log import log as debug_log
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +307,7 @@ def derive_step_inputs(workflow_dir: str | os.PathLike[str], events: list[dict[s
 
     PRE screenshot is the event's screenshot, POST screenshot is the next event's screenshot (if any).
     """
+    debug_log(f"derive_step_inputs: processing {len(events)} events")
     workflow_dir_p = Path(workflow_dir)
     steps: list[StepInput] = []
 
@@ -356,6 +358,10 @@ def derive_step_inputs(workflow_dir: str | os.PathLike[str], events: list[dict[s
         )
         step_i += 1
 
+    debug_log(f"derive_step_inputs: found {len(steps)} actionable steps")
+    if not steps:
+        debug_log("WARNING: No actionable steps found in manifest! Schema will be empty.")
+
     return steps
 
 
@@ -393,6 +399,7 @@ def run_pass_a_step_cards(
     existing_by_i = _load_existing_by_i()
 
     pass_a_model = llm_cfg.pass_a_model or llm_cfg.model
+    debug_log(f"Pass A: total_steps={len(steps)} existing={len(existing_by_i)} model={pass_a_model}")
     logger.info(
         "Pass A: total_steps=%d existing=%d (model=%s) with up to 5 in-flight requests",
         len(steps),
@@ -459,9 +466,11 @@ def run_pass_a_step_cards(
     # Determine which step indices are missing.
     missing = [s for s in steps if s.i not in existing_by_i]
     if not missing:
+        debug_log("Pass A: all steps already present; skipping.")
         logger.info("Pass A: all steps already present; skipping.")
         return [existing_by_i[i] for i in range(len(steps))]
 
+    debug_log(f"Pass A: compiling {len(missing)} missing steps (will make LLM calls)")
     logger.info("Pass A: compiling missing_steps=%d", len(missing))
 
     # Start from existing; add new results as they complete.
@@ -712,6 +721,7 @@ def compile_workflow_schema(
     workflow_dir_p = Path(workflow_dir)
     task_name, task_description_user = load_task_metadata(workflow_dir_p)
 
+    debug_log(f"Schema compile start: workflow_dir={workflow_dir_p} task={task_name} model={llm_cfg.model}")
     logger.info("Schema compile start: workflow_dir=%s task_name=%s model=%s", workflow_dir_p, task_name, llm_cfg.model)
 
     # If final output exists, reuse it and avoid re-running any passes.
@@ -734,24 +744,40 @@ def compile_workflow_schema(
     existing_step_cards = _read_json_if_exists(step_cards_path)
     if isinstance(existing_step_cards, list) and existing_step_cards:
         step_cards = existing_step_cards
+        debug_log(f"Pass A: found existing step_cards.json with {len(step_cards)} steps; skipping.")
         logger.info("Pass A: found existing step_cards.json; skipping.")
     else:
+        debug_log("Pass A: starting step card generation...")
         step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p, llm_cfg=llm_cfg)
         write_step_cards(workflow_dir_p, step_cards)
+        debug_log(f"Pass A complete: {len(step_cards)} steps")
         logger.info("Pass A complete: step_cards.json (%d steps)", len(step_cards))
+
+    # Validate that we have actionable steps before proceeding
+    if not step_cards:
+        error_msg = (
+            f"No actionable steps found in {workflow_dir_p.name}. "
+            "The recording may have no meaningful actions (clicks, typing, etc.). "
+            "Please record a new session with actual UI interactions."
+        )
+        debug_log(f"ERROR: {error_msg}")
+        raise RuntimeError(error_msg)
 
     # Pass B checkpoint: plan_creation.json contains RAW Pass B output (incl. plan_step_updates).
     plan_creation_path = workflow_dir_p / "plan_creation.json"
     existing_plan_creation = _read_json_if_exists(plan_creation_path)
 
     if isinstance(existing_plan_creation, dict) and isinstance(existing_plan_creation.get("plan_step_updates"), list):
+        debug_log("Pass B: found existing plan_creation; skipping.")
         logger.info("Pass B: found existing plan_creation checkpoint; skipping.")
         plan_creation: dict[str, Any] = dict(existing_plan_creation)
     else:
+        debug_log("Pass B: starting task compilation...")
         task_compiler_out = run_pass_b_task_compiler(workflow_dir=workflow_dir_p, step_cards=step_cards, llm_cfg=llm_cfg)
 
         plan_creation = dict(task_compiler_out)
         write_plan_creation(workflow_dir_p, plan_creation)
+        debug_log("Pass B complete")
         logger.info("Pass B complete: wrote plan_creation.json")
 
     # Build final schema by merging plan_creation + step_cards into a v2 plan.subtasks format.
@@ -885,5 +911,6 @@ def compile_workflow_schema(
     update_dependencies(final_schema)
 
     write_schema(workflow_dir_p, final_schema)
+    debug_log(f"Schema compilation complete: {workflow_dir_p / 'schema.json'}")
     logger.info("Wrote schema.json")
     return final_schema

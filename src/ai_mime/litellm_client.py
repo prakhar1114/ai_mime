@@ -10,6 +10,7 @@ from litellm import completion  # type: ignore[import-not-found]
 from lmnr import observe
 from pydantic import BaseModel
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,12 +76,6 @@ class LiteLLMChatClient:
         # Keep other provider strings best-effort: take the last segment.
         return model.split("/")[-1] if "/" in model else model
 
-    @staticmethod
-    def _use_openai_client(provider: str) -> bool:
-        # Do it purely based on provider prefix. If you point api_base at an OpenAI-compatible
-        # endpoint (vLLM/Ollama/etc) but still use the openai/ prefix, we will use OpenAI SDK.
-        # return provider in {"openai", "gemini", "qwen"}
-        return provider == "openai"
 
     @staticmethod
     def _messages_to_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -265,7 +260,7 @@ class LiteLLMChatClient:
 
         # Plain-text completion path (used by replay grounding/extract).
         if response_model is None:
-            if self._use_openai_client(provider):
+            if provider in {"openai", "gemini"}:
                 client = OpenAI(base_url=base) if key is None else OpenAI(api_key=key, base_url=base)
                 # Reasoning is only supported on Responses API; if configured, use responses.create.
                 if reasoning is not None:
@@ -293,6 +288,7 @@ class LiteLLMChatClient:
                 max_completion_tokens=max_tokens,
                 api_base=base,
                 api_key=key,
+                drop_params=True,  # Skip unsupported params like token counting
                 **merged_kwargs,
             )
             return self._extract_text_from_litellm_response(resp)
@@ -300,7 +296,7 @@ class LiteLLMChatClient:
         # Structured output path (used by reflect Pass A/B).
         response_model_t = cast(type[BaseModel], response_model)
 
-        if self._use_openai_client(provider):
+        if provider == "openai":
             client = OpenAI(base_url=base) if key is None else OpenAI(api_key=key, base_url=base)
             input_payload: Any = self._messages_to_responses_input(messages)
             resp = self._responses_parse_with_retries(
@@ -325,8 +321,9 @@ class LiteLLMChatClient:
 
         # Non-openai provider: use LiteLLM directly with JSON schema response_format.
         last_err: Exception | None = None
-        for _ in range(max(1, retries + 1)):
+        for attempt in range(max(1, retries + 1)):
             try:
+                # Disable litellm's token counting to avoid tiktoken encoding errors
                 resp = completion(
                     model=m,
                     messages=messages,
@@ -334,10 +331,13 @@ class LiteLLMChatClient:
                     response_format=self._response_format_for_model(response_model_t),
                     api_base=base,
                     api_key=key,
+                    drop_params=True,  # Skip unsupported params like token counting
                     **merged_kwargs,
                 )
                 text = self._extract_text_from_litellm_response(resp)
                 return self._parse_and_validate(text, response_model_t)
             except Exception as e:
                 last_err = e
-        raise RuntimeError(f"LiteLLM structured call failed after retries: {last_err}") from last_err
+                logger.warning(f"LiteLLM structured call attempt {attempt + 1}/{retries + 1} failed: {e}")
+
+        raise RuntimeError(f"LiteLLM structured call failed after {retries + 1} retries: {last_err}") from last_err

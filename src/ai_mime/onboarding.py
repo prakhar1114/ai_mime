@@ -48,8 +48,18 @@ _CENTER = 1       # NSTextAlignmentCenter
 # Permission definitions
 # ---------------------------------------------------------------------------
 _PERMS = [
-    {"key": "accessibility",    "title": "Accessibility",    "path": "Privacy & Security → Accessibility"},
-    {"key": "screen_recording", "title": "Screen Recording", "path": "Privacy & Security → Screen & System Recording"},
+    {
+        "key": "accessibility",
+        "title": "Accessibility",
+        "path": "Privacy & Security → Accessibility",
+        "pane": "Privacy_Accessibility",
+    },
+    {
+        "key": "screen_recording",
+        "title": "Screen Recording",
+        "path": "Privacy & Security → Screen & System Recording",
+        "pane": "Privacy_ScreenCapture",
+    },
 ]
 
 
@@ -187,30 +197,16 @@ class _OnboardingWizard(NSObject):
                         size=24, bold=True, align=_CENTER)
         self._add_label(
             "AI Mime needs two permissions to function.\n"
-            "Open Privacy Settings and enable them for AI Mime.",
+            "Click buttons below to open settings, then enable AI Mime.",
             x=0, y=_H - 155, w=_W, h=50,
             size=14, align=_CENTER, color=NSColor.secondaryLabelColor(),
         )
 
-        # "Open Privacy Settings" button
-        btn_w, btn_h = 230, 38
-        btn = NSButton.alloc().initWithFrame_(NSMakeRect((_W - btn_w) / 2, _H - 220, btn_w, btn_h))
-        btn.setTitle_("Open Privacy Settings")
-        btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        btn.setTarget_(self)
-        btn.setAction_("openSettings:")
-        btn.setEnabled_(True)
-        try:
-            btn.setContentTintColor_(NSColor.systemBlueColor())
-        except Exception:
-            pass
-        self._content.addSubview_(btn)
-
-        # Per-permission rows with individual status indicators
-        row_h = 44
-        gap   = 10
-        # stack from top: first perm at _H-295, second below
-        y = _H - 295
+        # Per-permission rows with individual status indicators and buttons
+        row_h = 70  # Increased height to fit buttons
+        gap   = 16
+        # stack from top: first perm at _H-250, second below
+        y = _H - 250
         for perm in _PERMS:
             self._add_perm_row(perm, y, row_h)
             y -= (row_h + gap)
@@ -223,11 +219,11 @@ class _OnboardingWizard(NSObject):
         )
 
     def _add_perm_row(self, perm, y, h):
-        key, title, path = perm["key"], perm["title"], perm["path"]
+        key, title, path, pane = perm["key"], perm["title"], perm["path"], perm["pane"]
 
         # ── status indicator circle (left) ──
         ind_d  = 24
-        ind_y  = y + (h - ind_d) / 2
+        ind_y  = y + h - 30  # Position near top of row
 
         indicator = NSView.alloc().initWithFrame_(NSMakeRect(_M, ind_y, ind_d, ind_d))
         indicator.setWantsLayer_(True)
@@ -252,7 +248,7 @@ class _OnboardingWizard(NSObject):
         text_x = _M + ind_d + 12
         text_w = _CW - ind_d - 12
 
-        title_lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(text_x, y + h / 2 + 1, text_w, 20))
+        title_lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(text_x, y + h - 24, text_w, 20))
         title_lbl.setStringValue_(title)
         title_lbl.setBezeled_(False)
         title_lbl.setDrawsBackground_(False)
@@ -262,22 +258,65 @@ class _OnboardingWizard(NSObject):
         self._content.addSubview_(title_lbl)
 
         # ── path hint ──
-        path_lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(text_x, y + h / 2 - 19, text_w, 18))
+        path_lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(text_x, y + h - 42, text_w, 16))
         path_lbl.setStringValue_(path)
         path_lbl.setBezeled_(False)
         path_lbl.setDrawsBackground_(False)
         path_lbl.setEditable_(False)
         path_lbl.setSelectable_(False)
-        path_lbl.setFont_(NSFont.systemFontOfSize_(12))
+        path_lbl.setFont_(NSFont.systemFontOfSize_(11))
         path_lbl.setTextColor_(NSColor.secondaryLabelColor())
         self._content.addSubview_(path_lbl)
 
-        self._perm_rows[key] = {"indicator": indicator, "check": check, "granted": False}
+        # ── "Open Settings" button ──
+        open_btn_w, open_btn_h = 120, 28
+        open_btn = NSButton.alloc().initWithFrame_(NSMakeRect(text_x, y + 6, open_btn_w, open_btn_h))
+        open_btn.setTitle_("Open Settings")
+        open_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        open_btn.setTarget_(self)
+        open_btn.setAction_("openSpecificSettings:")
+        open_btn.setTag_(hash(pane))  # Store pane identifier in tag
+        open_btn.setBezelStyle_(1)  # Rounded bezel
+        open_btn.setFont_(NSFont.systemFontOfSize_(12))
+        self._content.addSubview_(open_btn)
+
+        # ── "Refresh" button ──
+        refresh_btn_w, refresh_btn_h = 80, 28
+        refresh_btn = NSButton.alloc().initWithFrame_(NSMakeRect(text_x + open_btn_w + 8, y + 6, refresh_btn_w, refresh_btn_h))
+        refresh_btn.setTitle_("Refresh")
+        refresh_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        refresh_btn.setTarget_(self)
+        refresh_btn.setAction_("pollPerms:")
+        refresh_btn.setBezelStyle_(1)
+        refresh_btn.setFont_(NSFont.systemFontOfSize_(12))
+        self._content.addSubview_(refresh_btn)
+
+        self._perm_rows[key] = {
+            "indicator": indicator,
+            "check": check,
+            "granted": False,
+            "pane": pane,
+        }
 
     # Cocoa selector  openSettings:
     def openSettings_(self, sender):
+        """Open the main Privacy & Security settings."""
         import subprocess
-        subprocess.Popen(["open", "-a", "System Settings"])
+        subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security"])
+
+    # Cocoa selector  openSpecificSettings:
+    def openSpecificSettings_(self, sender):
+        """Open a specific privacy settings pane based on the button's tag."""
+        import subprocess
+        # Find which pane to open based on tag
+        tag = sender.tag()
+        for row in self._perm_rows.values():
+            if hash(row["pane"]) == tag:
+                pane = row["pane"]
+                # Try modern macOS URL first (macOS 13+)
+                url = f"x-apple.systempreferences:com.apple.preference.security?{pane}"
+                subprocess.Popen(["open", url])
+                break
 
     # Cocoa selector  pollPerms:
     def pollPerms_(self, timer):

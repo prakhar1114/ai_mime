@@ -1,6 +1,7 @@
 import click
 from pathlib import Path
 import logging
+import multiprocessing
 from dotenv import load_dotenv
 from lmnr import observe
 from ai_mime.app_data import bootstrap_data_dir, get_env_path, get_onboarding_done_path, is_frozen
@@ -80,4 +81,6 @@ def reflect(session, recordings_dir):
 
 
 if __name__ == "__main__":
+    # CRITICAL: freeze_support() must be called early for PyInstaller + multiprocessing
+    multiprocessing.freeze_support()
     start_app()
