@@ -13,6 +13,7 @@ from lmnr import observe
 from ai_mime.reflect.schema_utils import validate_schema
 # Use the shared LLM client (supports both structured + plain text calls).
 from ai_mime.litellm_client import LiteLLMChatClient
+from ai_mime.debug_log import log as debug_log
 
 
 class ReplayError(RuntimeError):
@@ -206,6 +207,7 @@ def run_plan(
     pause_event: Any | None = None,
     stop_event: Any | None = None,
 ) -> None:
+    debug_log(f"run_plan started: {workflow_dir}")
     workflow_dir_p = Path(workflow_dir)
     run_dir = _ensure_run_dir(workflow_dir_p)
 
@@ -222,10 +224,14 @@ def run_plan(
             pass
 
     # Load schema and materialize any {param} templates for this run (no LLM).
+    debug_log("Loading schema...")
     schema = load_schema(workflow_dir)
+    debug_log(f"Schema loaded, validating...")
     try:
         validate_schema(schema)
+        debug_log("Schema validation passed")
     except Exception as e:
+        debug_log(f"Schema validation FAILED: {e}", exc_info=True)
         # Normalize to a replay error so users know to fix the workflow schema.
         raise ReplayError(str(e)) from e
     schema_rendered = materialize_schema(schema, params)
@@ -243,6 +249,10 @@ def run_plan(
     subtasks_any = plan.get("subtasks") or []
     subtasks: list[dict[str, Any]] = subtasks_any
 
+    debug_log(f"Plan has {len(subtasks)} subtasks")
+    if not subtasks:
+        debug_log("WARNING: No subtasks in plan! Replay will do nothing.")
+
     _emit(
         {
             "type": "replay_started",
@@ -251,6 +261,7 @@ def run_plan(
             "subtask_total": len(subtasks),
         }
     )
+    debug_log("Emitted replay_started event")
 
     def _sleep(dt: float) -> None:
         if dt and dt > 0:

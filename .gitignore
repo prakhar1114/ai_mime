@@ -13,3 +13,7 @@ workflows/
 .vscode/
 
 .DS_Store
+
+dist/
+build/
+.onboarding_done

@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 
 from ai_mime.user_config import ResolvedReflectConfig
 from ai_mime.reflect.schema_compiler import compile_workflow_schema
+from ai_mime.debug_log import log
 
 
 @dataclass(frozen=True)
@@ -186,11 +187,17 @@ def reflect_session(
     workflows_root_p.mkdir(parents=True, exist_ok=True)
     workflow_dir = workflows_root_p / session_dir_p.name
 
-    # Refresh reflect outputs for this session without deleting compiled artifacts
-    # like step_cards.json / schema*.json that enable resumable compilation.
-    if workflow_dir.exists():
+    # Check if workflow outputs are complete before skipping processing.
+    # We only skip if manifest.jsonl and metadata.json already exist (compiled artifacts
+    # like step_cards.json / schema.json are handled by compile_schema_for_workflow_dir).
+    manifest_dst = workflow_dir / "manifest.jsonl"
+    metadata_dst = workflow_dir / "metadata.json"
+
+    if workflow_dir.exists() and manifest_dst.exists() and metadata_dst.exists():
+        log(f"Workflow already reflected: {workflow_dir} (skipping reflect_session)")
         return workflow_dir
 
+    log(f"Reflecting session: {session_dir_p.name} -> {workflow_dir}")
     workflow_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy metadata.json verbatim
