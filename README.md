@@ -104,21 +104,21 @@ graph TD
         direction TB
 
         %% 1. OBSERVE
-        GetSubtask --> Capture["👁️ Capture State<br/>(Screenshot + DOM)"]
+        GetSubtask --> Capture["👁️ Capture Screenshot"]
+
+        %% LOOP BACK (Left Side)
+        Execute -.-> Capture
 
         %% 2. REASONING
-        Capture --> VLM["🧠 VLM Reasoning<br/>(Input: Screen + Subtask + History)"]
+        Capture -- "Input:<br/>- Screenshot<br/>- Subtask<br/>- Memory" --> VLM{"🧠 VLM Brain<br/>(Compare: Current vs Expected)<br/>Predict: Action or Done?"}
 
-        %% 3. DECISION POINT
-        VLM --> Decision{❓ Prediction Result}
+        %% PATH A: ACTION NEEDED (Main Vertical Flow)
+        VLM -- "No Match -> Next Action" --> UpdateMem["💾 Update Memory<br/>(Store Observation & Planned Action)"]
+        UpdateMem --> Execute["🦾 Execute Action<br/>(Click / Type / Scroll)"]
 
-        %% PATH A: DO WORK (Not Done Yet)
-        Decision -- "Next Action (x,y)" --> Execute["🦾 Execute Action<br/>(Click / Type / Scroll)"]
-        Execute --> UpdateMem["💾 Update Memory<br/>(Store Action & Consequence)"]
-        UpdateMem --> Capture
 
-        %% PATH B: SUBTASK COMPLETE
-        Decision -- "✅ Subtask Done" --> CheckFlow{🏁 More Subtasks?}
+        %% PATH B: SUBTASK COMPLETE (Exit Right)
+        VLM -- "Match -> ✅ Subtask Done" --> CheckFlow{"🏁 More Subtasks?"}
     end
 
     %% FLOW CONTROL
@@ -129,10 +129,12 @@ graph TD
     classDef brain fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
     classDef sensor fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
     classDef memory fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+    classDef control fill:#eceff1,stroke:#455a64,stroke-width:1px,stroke-dasharray: 5 5;
 
     class VLM brain;
     class Capture,Execute sensor;
-    class UpdateMem,LoadJSON memory;
+    class UpdateMem,LoadJSON,InitMem memory;
+    class CheckFlow control;
 ```
 
 ## Why AI Mime?
