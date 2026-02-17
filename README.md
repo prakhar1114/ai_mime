@@ -50,6 +50,91 @@ AI Mime is a native macOS RPA tool designed to empower computer use agents with 
   </tr>
 </table>
 
+## Part 1: The Teaching Flow (Record & Refine)
+How to Record a task
+```mermaid
+graph LR
+    %% CAPTURE PHASE
+    subgraph Capture [" 🔴 Phase 1: RECORD"]
+        direction TB
+        User["👤 User Action / Task"]
+
+        subgraph Inputs ["Data Captured"]
+            Mouse["🖱️ Coordinates (x,y)<br/>+ Click Events"]
+            Keys["⌨️ Keystrokes<br/>(Text Input)"]
+            Video["📷 Screenshot<br/>(Visual Context)"]
+        end
+
+        User --> Mouse & Keys
+        User --> Video
+    end
+
+    %% TRANSFORMATION
+    subgraph Refine [" 🟡 Phase 2: REFINE (Generalize) "]
+        direction TB
+        RawData[("📼 Raw Log")]
+        LLM["🧠 AI Refiner<br/>(VLM)"]
+        Schema[("📜 Parameterized<br/>Workflow JSON")]
+
+        Mouse & Keys & Video --> RawData
+        RawData -->|"1. Analyze Intent"| LLM
+        LLM -->|"- Subtasks <br/>  - Task Parameters <br> - Task Dependencies"| Schema
+    end
+
+    %% STYLING
+    style Inputs fill:#e3f2fd,stroke:#1565c0,stroke-dasharray: 5 5
+    style Schema fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+```
+
+## Detailed Replay Flowchart (The Agentic Loop)
+
+```mermaid
+graph TD
+    %% SETUP
+    Start([🚀 Start Replay]) --> LoadJSON["📂 Load workflow.json"]
+    LoadJSON --> InitMem["🧠 Initialize Context"]
+
+    %% OUTER LOOP: ORCHESTRATOR
+    subgraph FlowControl [" 📋 Workflow Orchestrator "]
+        InitMem --> GetSubtask["📍 Get Next Subtask<br/>(e.g., 'Clear Search Field')"]
+    end
+
+    %% INNER LOOP: AGENTIC EXECUTION
+    subgraph AgentLoop [" 🔁 The Agentic Action Loop "]
+        direction TB
+
+        %% 1. OBSERVE
+        GetSubtask --> Capture["👁️ Capture State<br/>(Screenshot + DOM)"]
+
+        %% 2. REASONING
+        Capture --> VLM["🧠 VLM Reasoning<br/>(Input: Screen + Subtask + History)"]
+
+        %% 3. DECISION POINT
+        VLM --> Decision{❓ Prediction Result}
+
+        %% PATH A: DO WORK (Not Done Yet)
+        Decision -- "Next Action (x,y)" --> Execute["🦾 Execute Action<br/>(Click / Type / Scroll)"]
+        Execute --> UpdateMem["💾 Update Memory<br/>(Store Action & Consequence)"]
+        UpdateMem --> Capture
+
+        %% PATH B: SUBTASK COMPLETE
+        Decision -- "✅ Subtask Done" --> CheckFlow{🏁 More Subtasks?}
+    end
+
+    %% FLOW CONTROL
+    CheckFlow -- Yes --> GetSubtask
+    CheckFlow -- No --> Finish([✅ Workflow Complete])
+
+    %% STYLING
+    classDef brain fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
+    classDef sensor fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    classDef memory fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+
+    class VLM brain;
+    class Capture,Execute sensor;
+    class UpdateMem,LoadJSON memory;
+```
+
 ## Why AI Mime?
 
 ### The Adoption Gap in Computer Use Models
