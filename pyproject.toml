@@ -41,3 +41,6 @@ reflect = "ai_mime.cli:reflect"
 
 [tool.setuptools.package-data]
 "ai_mime.editor.web" = ["*.html", "*.js", "*.css"]
+
+[tool.uv.sources]
+browser-harness = { path = "harness/browser-harness", editable = true }
