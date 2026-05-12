@@ -11,6 +11,7 @@ from typing import Any, Callable
 from lmnr import observe
 
 from ai_mime.reflect.schema_utils import validate_schema
+
 # Use the shared LLM client (supports both structured + plain text calls).
 from ai_mime.litellm_client import LiteLLMChatClient
 from ai_mime.debug_log import log as debug_log
@@ -54,7 +55,9 @@ def load_schema(workflow_dir: str | os.PathLike[str]) -> dict[str, Any]:
         raise ReplayError(f"Failed to read schema.json: {e}") from e
 
 
-def resolve_params(schema: dict[str, Any], overrides: dict[str, str] | None = None) -> dict[str, str]:
+def resolve_params(
+    schema: dict[str, Any], overrides: dict[str, str] | None = None
+) -> dict[str, str]:
     overrides = overrides or {}
     params: dict[str, str] = {}
 
@@ -69,7 +72,9 @@ def resolve_params(schema: dict[str, Any], overrides: dict[str, str] | None = No
             continue
         example = p.get("example")
         if example is None:
-            raise ReplayError(f"Missing required param '{name}' and no example provided in schema.json")
+            raise ReplayError(
+                f"Missing required param '{name}' and no example provided in schema.json"
+            )
         params[name] = str(example)
 
     # Include any extra overrides not declared in task_params (best-effort).
@@ -117,7 +122,9 @@ def _ensure_run_dir(workflow_dir: Path) -> Path:
     return base
 
 
-def materialize_schema(schema: dict[str, Any], params: dict[str, str]) -> dict[str, Any]:
+def materialize_schema(
+    schema: dict[str, Any], params: dict[str, str]
+) -> dict[str, Any]:
     """
     Render (materialize) any templated strings in schema.json using provided params.
     No LLM is used here.
@@ -166,14 +173,33 @@ def _run_vision_extract(*, image_path: Path, query: str, cfg: ReplayConfig) -> s
     """
     if not query.strip():
         return ""
+    model_lower = cfg.model.lower() if cfg.model else ""
+    is_openai = (
+        "gpt" in model_lower
+        or "o1" in model_lower
+        or "o3" in model_lower
+        or "openai" in model_lower
+    )
+
     data_url = _encode_image_data_url(image_path)
+
+    image_payload: dict[str, Any] = {"url": data_url}
+    if is_openai:
+        image_payload["detail"] = "high"
+
     messages: Any = [
-        {"role": "system", "content": "You extract requested information from screenshots. Be concise and do not hallucinate."},
+        {
+            "role": "system",
+            "content": "You extract requested information from screenshots. Be concise and do not hallucinate.",
+        },
         {
             "role": "user",
             "content": [
-                {"type": "image_url", "image_url": {"url": data_url}},
-                {"type": "text", "text": f"Extraction query: {query}\n\nReturn ONLY the extracted value as plain text. If not present, return an empty string."},
+                {"type": "image_url", "image_url": image_payload},
+                {
+                    "type": "text",
+                    "text": f"Extraction query: {query}\n\nReturn ONLY the extracted value as plain text. If not present, return an empty string.",
+                },
             ],
         },
     ]
@@ -235,7 +261,9 @@ def run_plan(
         # Normalize to a replay error so users know to fix the workflow schema.
         raise ReplayError(str(e)) from e
     schema_rendered = materialize_schema(schema, params)
-    (run_dir / "schema.rendered.json").write_text(json.dumps(schema_rendered, indent=2), encoding="utf-8")
+    (run_dir / "schema.rendered.json").write_text(
+        json.dumps(schema_rendered, indent=2), encoding="utf-8"
+    )
 
     # Top-level task metadata (kept mostly for logging / prompt context).
     task_name = schema.get("task_name") or ""
@@ -313,10 +341,14 @@ def run_plan(
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
     def _persist_task_memory(mem: str) -> None:
-        task_memory_path.write_text(json.dumps({"task_memory": mem}, indent=2), encoding="utf-8")
+        task_memory_path.write_text(
+            json.dumps({"task_memory": mem}, indent=2), encoding="utf-8"
+        )
 
     def _persist_extracts() -> None:
-        (run_dir / "extracts.json").write_text(json.dumps({"extracts": extracts}, indent=2), encoding="utf-8")
+        (run_dir / "extracts.json").write_text(
+            json.dumps({"extracts": extracts}, indent=2), encoding="utf-8"
+        )
 
     # Cross-subtask memory carried forward (updated by model each iteration).
     task_memory = ""
@@ -326,7 +358,10 @@ def run_plan(
 
     # Map extract variable_name -> {query, subtask_i}.
     extract_meta: dict[str, dict[str, Any]] = {
-        s["variable_name"]: {"query": s["additional_args"]["extract_query"], "subtask_i": st.get("subtask_i")}
+        s["variable_name"]: {
+            "query": s["additional_args"]["extract_query"],
+            "subtask_i": st.get("subtask_i"),
+        }
         for st in subtasks
         for s in (st.get("steps") or [])
         if s.get("action_type") == "EXTRACT"
@@ -336,7 +371,10 @@ def run_plan(
     for subtask_idx, st in enumerate(subtasks):
         _check_control()
         # Render any remaining templates using params + known extracts.
-        render_ctx: dict[str, str] = {**params, **{k: str(v) for k, v in extracts.items() if v is not None}}
+        render_ctx: dict[str, str] = {
+            **params,
+            **{k: str(v) for k, v in extracts.items() if v is not None},
+        }
         subtask_text = _render_template(st.get("text") or "", render_ctx) or ""
         deps = st.get("dependencies") or []
 
@@ -351,7 +389,9 @@ def run_plan(
                 "intent": s.get("intent"),
                 "action_type": s.get("action_type"),
                 "action_value": _render_template(s.get("action_value"), render_ctx),
-                "extract_query": _render_template((s.get("additional_args") or {}).get("extract_query"), render_ctx),
+                "extract_query": _render_template(
+                    (s.get("additional_args") or {}).get("extract_query"), render_ctx
+                ),
                 "target_primary": (s.get("target") or {}).get("primary"),
                 "expected_current_state": s.get("expected_current_state"),
                 "post_action": s.get("post_action"),
@@ -410,7 +450,19 @@ def run_plan(
                 args_slim: dict[str, Any] = {}
                 if isinstance(args, dict):
                     # Keep only commonly useful keys; avoid huge payloads.
-                    for k in ("action", "coordinate", "keys", "text", "query", "variable_name", "result", "observation", "task_memory", "pixels", "time"):
+                    for k in (
+                        "action",
+                        "coordinate",
+                        "keys",
+                        "text",
+                        "query",
+                        "variable_name",
+                        "result",
+                        "observation",
+                        "task_memory",
+                        "pixels",
+                        "time",
+                    ):
                         if k in args:
                             args_slim[k] = args.get(k)
                 _emit(
@@ -503,7 +555,9 @@ def run_plan(
             observation = pixel_action.get("observation")
             task_memory = str(pixel_action.get("task_memory") or "")
 
-            history.append({"action": pixel_action.get("action"), "observation": observation})
+            history.append(
+                {"action": pixel_action.get("action"), "observation": observation}
+            )
             _append_event(
                 {
                     "type": "computer_use",
@@ -558,7 +612,9 @@ def run_plan(
                 continue
             _sleep(cfg.after_step_delay_s)
         else:
-            raise ReplayError(f"Subtask {subtask_idx} exceeded max iterations ({max_iters_per_subtask})")
+            raise ReplayError(
+                f"Subtask {subtask_idx} exceeded max iterations ({max_iters_per_subtask})"
+            )
 
     log("Task Complete")
     _emit({"type": "replay_finished"})

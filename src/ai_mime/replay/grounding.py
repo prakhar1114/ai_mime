@@ -16,161 +16,175 @@ logger = logging.getLogger(__name__)
 
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
 
+
 # A lightweight, OpenAI-compatible tool-instruction prompt inspired by the Qwen
 # computer use cookbook: https://github.com/QwenLM/Qwen3-VL/blob/main/cookbooks/computer_use.ipynb
 #
 # We don't depend on qwen-agent's NousFnCallPrompt; instead we embed the tool schema text directly.
-COMPUTER_USE_SYSTEM_PROMPT = textwrap.dedent(
-    """
-    # Tools
+def get_computer_use_system_prompt(width: int, height: int, is_openai: bool) -> str:
+    if not is_openai:
+        w_str = "1000"
+        h_str = "1000"
+        ref_frame = "0..1000 reference frame"
+    else:
+        w_str = str(width)
+        h_str = str(height)
+        ref_frame = f"(x, y) in 0..{width} and 0..{height} reference frame"
 
-    You may call one function per turn to assist with the user query.
+    return textwrap.dedent(
+        f"""
+        # Tools
 
-    You are provided with function signatures within <tools></tools> XML tags:
-    <tools>
-    [
-      {
-        "type": "function",
-        "function": {
-          "name": "computer_use",
-          "description": "Use a mouse and keyboard to interact with a computer.\\n* The screen's resolution is 1000x1000.\\n* Whenever you intend to click, consult the screenshot to determine coordinates.\\n* Click with the cursor tip in the center of the element.",
-          "parameters": {
-            "type": "object",
-            "required": ["action", "observation", "task_memory"],
-            "properties": {
-              "action": {
-                "type": "string",
-                "enum": [
-                  "key",
-                  "type",
-                  "mouse_move",
-                  "left_click",
-                  "left_click_drag",
-                  "right_click",
-                  "middle_click",
-                  "double_click",
-                  "triple_click",
-                  "scroll",
-                  "hscroll",
-                  "wait"
-                ],
-                "description": "The action to perform."
-              },
-              "observation": {
-                "type": "string",
-                "description": "Required. Current UI specific observationrequired to complete the current subtask."
-              },
-              "task_memory": {
-                "type": "string",
-                "description": "Required. A concise memory string to carry across subtasks. Update sparingly with important results."
-              },
-              "keys": {
-                "type": "array",
-                "description": "Required only by action=key. Example: [\\"cmd\\", \\"space\\"] or [\\"enter\\"]."
-              },
-              "text": {
-                "type": "string",
-                "description": "Required only by action=type."
-              },
-              "coordinate": {
-                "type": "array",
-                "description": "(x, y) in 0..1000 reference frame for mouse actions."
-              },
-              "pixels": {
-                "type": "number",
-                "description": "Scroll amount for action=scroll/hscroll."
-              },
-              "time": {
-                "type": "number",
-                "description": "Seconds to wait for action=wait."
-              }
-            }
-          }
-        }
-      },
-      {
-        "type": "function",
-        "function": {
-          "name": "extract",
-          "description": "Extract information from the CURRENT screenshot without performing any UI action. Use this when the reference steps indicate an EXTRACT step is required at this point.",
-          "parameters": {
-            "type": "object",
-            "required": ["variable_name", "query", "observation", "task_memory"],
-            "properties": {
-              "variable_name": {
-                "type": "string",
-                "description": "Required. The name to store this extraction under (e.g. 'extract_0')."
-              },
-              "query": {
-                "type": "string",
-                "description": "Required. The refined extraction query (what to extract from the screenshot)."
-              },
-              "observation": {
-                "type": "string",
-                "description": "Required. Current UI-specific observation relevant to this extraction."
-              },
-              "task_memory": {
-                "type": "string",
-                "description": "Required. Updated memory string to carry across subtasks. Use sparingly for important results."
-              }
-            }
-          }
-        }
-      },
-      {
-        "type": "function",
-        "function": {
-          "name": "done",
-          "description": "Signal that the current subtask is complete and provide the result to carry forward.",
-          "parameters": {
-            "type": "object",
-            "required": ["result", "task_memory"],
-            "properties": {
-              "result": {
-                "type": "string",
-                "description": "Required. The final result of this subtask (e.g., 'Spotify is open', 'Song is playing', or info to pass to later subtasks)."
-              },
-              "task_memory": {
-                "type": "string",
-                "description": "Required. Updated memory string to carry across subtasks. Use sparingly for important results."
-              }
-            }
-          }
-        }
-      }
-    ]
-    </tools>
+        You may call one function per turn to assist with the user query.
 
-    IMPORTANT:
-    - If you call computer_use, you MUST include BOTH "observation" and "task_memory" in arguments.
-    - "observation" must be current-step specific (what you see/what changed that is relevant right now).
-    - "task_memory" must be a concise carried-forward memory; update sparingly with important results.
-    - If you call extract, you MUST include variable_name, query, observation, and task_memory.
-    - If you call done, you MUST include "result" and "task_memory".
+        You are provided with function signatures within <tools></tools> XML tags:
+        <tools>
+        [
+          {{
+            "type": "function",
+            "function": {{
+              "name": "computer_use",
+              "description": "Use a mouse and keyboard to interact with a computer.\\n* The screen's resolution is {w_str}x{h_str}.\\n* Whenever you intend to click, consult the screenshot to determine coordinates.\\n* Click with the cursor tip in the center of the element.",
+              "parameters": {{
+                "type": "object",
+                "required": ["action", "observation", "task_memory"],
+                "properties": {{
+                  "action": {{
+                    "type": "string",
+                    "enum": [
+                      "key",
+                      "type",
+                      "mouse_move",
+                      "left_click",
+                      "left_click_drag",
+                      "right_click",
+                      "middle_click",
+                      "double_click",
+                      "triple_click",
+                      "scroll",
+                      "hscroll",
+                      "wait"
+                    ],
+                    "description": "The action to perform."
+                  }},
+                  "observation": {{
+                    "type": "string",
+                    "description": "Required. Current UI specific observationrequired to complete the current subtask."
+                  }},
+                  "task_memory": {{
+                    "type": "string",
+                    "description": "Required. A concise memory string to carry across subtasks. Update sparingly with important results."
+                  }},
+                  "keys": {{
+                    "type": "array",
+                    "description": "Required only by action=key. Example: [\\"cmd\\", \\"space\\"] or [\\"enter\\"]."
+                  }},
+                  "text": {{
+                    "type": "string",
+                    "description": "Required only by action=type."
+                  }},
+                  "coordinate": {{
+                    "type": "array",
+                    "description": "{ref_frame} for mouse actions."
+                  }},
+                  "pixels": {{
+                    "type": "number",
+                    "description": "Scroll amount for action=scroll/hscroll."
+                  }},
+                  "time": {{
+                    "type": "number",
+                    "description": "Seconds to wait for action=wait."
+                  }}
+                }}
+              }}
+            }}
+          }},
+          {{
+            "type": "function",
+            "function": {{
+              "name": "extract",
+              "description": "Extract information from the CURRENT screenshot without performing any UI action. Use this when the reference steps indicate an EXTRACT step is required at this point.",
+              "parameters": {{
+                "type": "object",
+                "required": ["variable_name", "query", "observation", "task_memory"],
+                "properties": {{
+                  "variable_name": {{
+                    "type": "string",
+                    "description": "Required. The name to store this extraction under (e.g. 'extract_0')."
+                  }},
+                  "query": {{
+                    "type": "string",
+                    "description": "Required. The refined extraction query (what to extract from the screenshot)."
+                  }},
+                  "observation": {{
+                    "type": "string",
+                    "description": "Required. Current UI-specific observation relevant to this extraction."
+                  }},
+                  "task_memory": {{
+                    "type": "string",
+                    "description": "Required. Updated memory string to carry across subtasks. Use sparingly for important results."
+                  }}
+                }}
+              }}
+            }}
+          }},
+          {{
+            "type": "function",
+            "function": {{
+              "name": "done",
+              "description": "Signal that the current subtask is complete and provide the result to carry forward.",
+              "parameters": {{
+                "type": "object",
+                "required": ["result", "task_memory"],
+                "properties": {{
+                  "result": {{
+                    "type": "string",
+                    "description": "Required. The final result of this subtask (e.g., 'Spotify is open', 'Song is playing', or info to pass to later subtasks)."
+                  }},
+                  "task_memory": {{
+                    "type": "string",
+                    "description": "Required. Updated memory string to carry across subtasks. Use sparingly for important results."
+                  }}
+                }}
+              }}
+            }}
+          }}
+        ]
+        </tools>
 
-    Behavior rules:
-    - Decide ONE next action to progress the current subtask, or call done if the expected outcome is met.
-    - Extraction: If the reference steps include an EXTRACT step and you are at the corresponding screen/state, you MUST call extract with that step's variable_name and extract_query. Do not use computer_use for extraction.
-    - If you call computer_use, include a current-step specific observation and an updated task_memory.
-    - If you call done, include result (what was achieved / info to pass) and updated task_memory.
-    - If you seem stuck (observations repeating / screen not changing), try an alternate strategy (e.g., back, close popups, refocus, scroll, open the right app/tab, or retry the entry path).
+        IMPORTANT:
+        - If you call computer_use, you MUST include BOTH "observation" and "task_memory" in arguments.
+        - "observation" must be current-step specific (what you see/what changed that is relevant right now).
+        - "task_memory" must be a concise carried-forward memory; update sparingly with important results.
+        - If you call extract, you MUST include variable_name, query, observation, and task_memory.
+        - If you call done, you MUST include "result" and "task_memory".
 
-    For each function call, return a JSON object with function name and arguments within <tool_call></tool_call> XML tags:
-    <tool_call>
-    {"name":"computer_use","arguments":{"action":"left_click","coordinate":[500,500],"observation":"...","task_memory":"..."}}
-    </tool_call>
+        Behavior rules:
+        - Decide ONE next action to progress the current subtask, or call done if the expected outcome is met.
+        - Extraction: If the reference steps include an EXTRACT step and you are at the corresponding screen/state, you MUST call extract with that step's variable_name and extract_query. Do not use computer_use for extraction.
+        - If you call computer_use, include a current-step specific observation and an updated task_memory.
+        - If you call done, include result (what was achieved / info to pass) and updated task_memory.
+        - If you seem stuck (observations repeating / screen not changing), try an alternate strategy (e.g., back, close popups, refocus, scroll, open the right app/tab, or retry the entry path).
 
-    Or, to extract from the current screenshot:
-    <tool_call>
-    {"name":"extract","arguments":{"variable_name":"extract_0","query":"...","observation":"...","task_memory":"..."}}
-    </tool_call>
+        For each function call, return a JSON object with function name and arguments within <tool_call></tool_call> XML tags:
+        <tool_call>
+        {{"name":"computer_use","arguments":{{"action":"left_click","coordinate":[500,500],"observation":"...","task_memory":"..."}}}}
+        </tool_call>
 
-    Or, to finish the current subtask:
-    <tool_call>
-    {"name":"done","arguments":{"result":"...","task_memory":"..."}}
-    </tool_call>
-    """
-).strip()
+        Or, to extract from the current screenshot:
+        <tool_call>
+        {{"name":"extract","arguments":{{"variable_name":"extract_0","query":"...","observation":"...","task_memory":"..."}}}}
+        </tool_call>
+
+        Or, to finish the current subtask:
+        <tool_call>
+        {{"name":"done","arguments":{{"result":"...","task_memory":"..."}}}}
+        </tool_call>
+        """
+    ).strip()
+
+
+COMPUTER_USE_SYSTEM_PROMPT = get_computer_use_system_prompt(1000, 1000, False)
 
 
 def _encode_image_data_url(image_path: Path) -> str:
@@ -234,7 +248,58 @@ def _validate_relative_coordinate(payload: dict[str, Any]) -> tuple[float, float
     return x, y
 
 
-def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: ReplayConfig) -> dict[str, Any]:
+def _model_provider(model: str) -> str:
+    m = str(model or "").strip().lower()
+    if not m:
+        return ""
+    if "/" in m:
+        return m.split("/", 1)[0]
+    return "openai"
+
+
+def _map_coordinate_to_pixels(
+    *,
+    x: float,
+    y: float,
+    width: int,
+    height: int,
+    provider: str,
+) -> tuple[int, int]:
+    """
+    Convert model coordinates to screenshot pixels.
+
+    Default/legacy frame is 0..1000. For OpenAI models, support two additional
+    coordinate styles seen in practice:
+    - normalized unit interval (0..1)
+    - absolute screenshot pixels (values beyond 1000)
+    """
+    w = int(width)
+    h = int(height)
+
+    x_px: int
+    y_px: int
+
+    if provider == "openai":
+        if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+            x_px = int(round(x * w))
+            y_px = int(round(y * h))
+        else:
+            # We are providing the actual dimensions in the prompt for OpenAI.
+            # So the coordinate should be treated as absolute pixel coordinate directly.
+            x_px = int(round(x))
+            y_px = int(round(y))
+    else:
+        x_px = int(round((x / 1000.0) * w))
+        y_px = int(round((y / 1000.0) * h))
+
+    x_px = max(0, min(w - 1, x_px))
+    y_px = max(0, min(h - 1, y_px))
+    return x_px, y_px
+
+
+def predict_computer_use_tool_call(
+    image_path: Path, user_query: str, cfg: ReplayConfig
+) -> dict[str, Any]:
     """
     Ask Qwen3-VL to output exactly one <tool_call> for the next GUI action.
     Returns the parsed tool call object: {"name": "...", "arguments": {...}}.
@@ -243,7 +308,24 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
     if not img_path.exists():
         raise ReplayError(f"Screenshot not found: {img_path}")
 
+    model_lower = cfg.model.lower() if cfg.model else ""
+    is_openai = (
+        "gpt" in model_lower
+        or "o1" in model_lower
+        or "o3" in model_lower
+        or "openai" in model_lower
+    )
+
     data_url = _encode_image_data_url(img_path)
+
+    with Image.open(img_path) as im:
+        img_w, img_h = im.size
+
+    sys_prompt = get_computer_use_system_prompt(img_w, img_h, is_openai)
+
+    image_payload: dict[str, Any] = {"url": data_url}
+    if is_openai:
+        image_payload["detail"] = "high"
 
     # openai-python has strict typing for messages; keep runtime structure but cast for type checkers.
     messages: Any = [
@@ -251,13 +333,13 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
             "role": "system",
             "content": [
                 {"type": "text", "text": "You are a helpful assistant."},
-                {"type": "text", "text": COMPUTER_USE_SYSTEM_PROMPT},
+                {"type": "text", "text": sys_prompt},
             ],
         },
         {
             "role": "user",
             "content": [
-                {"type": "image_url", "image_url": {"url": data_url}},
+                {"type": "image_url", "image_url": image_payload},
                 {"type": "text", "text": user_query},
             ],
         },
@@ -303,13 +385,13 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
                                 "- If name=done: arguments MUST include result (non-empty), task_memory (string).\n"
                                 "Do not omit required fields."
                                 "\n\nExamples:\n"
-                                '<tool_call>\n'
+                                "<tool_call>\n"
                                 '{"name":"computer_use","arguments":{"action":"left_click","coordinate":[500,500],"observation":"Clicked the Search box; it is visible and clickable.","task_memory":"..."}}\n'
                                 "</tool_call>\n"
-                                '<tool_call>\n'
+                                "<tool_call>\n"
                                 '{"name":"extract","arguments":{"variable_name":"extract_0","query":"Extract the top 3 restaurant names and addresses from the left results list.","observation":"...","task_memory":"..."}}\n'
                                 "</tool_call>\n"
-                                '<tool_call>\n'
+                                "<tool_call>\n"
                                 '{"name":"done","arguments":{"result":"Spotify is open in the foreground.","task_memory":"Spotify is open."}}\n'
                                 "</tool_call>\n"
                             ),
@@ -325,8 +407,14 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
             last_text = content
 
             tool_call = _extract_json_payload(content)
-            if not isinstance(tool_call, dict) or tool_call.get("name") not in {"computer_use", "extract", "done"}:
-                raise ReplayError(f"Expected tool call with name=computer_use|extract|done, got: {tool_call}")
+            if not isinstance(tool_call, dict) or tool_call.get("name") not in {
+                "computer_use",
+                "extract",
+                "done",
+            }:
+                raise ReplayError(
+                    f"Expected tool call with name=computer_use|extract|done, got: {tool_call}"
+                )
             args = tool_call.get("arguments")
             if not isinstance(args, dict):
                 raise ReplayError(f"Tool call missing arguments: {tool_call}")
@@ -335,21 +423,44 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
             if name == "computer_use":
                 action = args.get("action")
                 if not isinstance(action, str) or not action:
-                    raise ReplayError(f"computer_use missing arguments.action: {tool_call}")
-                if not isinstance(args.get("observation"), str) or not args.get("observation", "").strip():
-                    raise ReplayError(f"computer_use missing required arguments.observation: {tool_call}")
+                    raise ReplayError(
+                        f"computer_use missing arguments.action: {tool_call}"
+                    )
+                if (
+                    not isinstance(args.get("observation"), str)
+                    or not args.get("observation", "").strip()
+                ):
+                    raise ReplayError(
+                        f"computer_use missing required arguments.observation: {tool_call}"
+                    )
                 if not isinstance(args.get("task_memory"), str):
-                    raise ReplayError(f"computer_use missing required arguments.task_memory: {tool_call}")
+                    raise ReplayError(
+                        f"computer_use missing required arguments.task_memory: {tool_call}"
+                    )
 
                 # Action-specific required fields (so we retry here instead of failing later in os_executor).
                 if action == "type":
-                    if not isinstance(args.get("text"), str) or not args.get("text", "").strip():
-                        raise ReplayError(f"computer_use action=type requires non-empty arguments.text: {tool_call}")
+                    if (
+                        not isinstance(args.get("text"), str)
+                        or not args.get("text", "").strip()
+                    ):
+                        raise ReplayError(
+                            f"computer_use action=type requires non-empty arguments.text: {tool_call}"
+                        )
                 elif action == "key":
                     keys = args.get("keys")
                     if not isinstance(keys, list) or not keys:
-                        raise ReplayError(f"computer_use action=key requires arguments.keys[]: {tool_call}")
-                elif action in {"mouse_move", "left_click", "right_click", "middle_click", "double_click", "triple_click"}:
+                        raise ReplayError(
+                            f"computer_use action=key requires arguments.keys[]: {tool_call}"
+                        )
+                elif action in {
+                    "mouse_move",
+                    "left_click",
+                    "right_click",
+                    "middle_click",
+                    "double_click",
+                    "triple_click",
+                }:
                     coord = args.get("coordinate")
                     if not isinstance(coord, list) or len(coord) != 2:
                         raise ReplayError(
@@ -357,26 +468,51 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
                         )
                 elif action in {"scroll", "hscroll"}:
                     if args.get("pixels") is None:
-                        raise ReplayError(f"computer_use action={action} requires arguments.pixels: {tool_call}")
+                        raise ReplayError(
+                            f"computer_use action={action} requires arguments.pixels: {tool_call}"
+                        )
                 elif action == "wait":
                     if args.get("time") is None:
-                        raise ReplayError(f"computer_use action=wait requires arguments.time: {tool_call}")
+                        raise ReplayError(
+                            f"computer_use action=wait requires arguments.time: {tool_call}"
+                        )
             elif name == "extract":
                 vn = args.get("variable_name")
                 q = args.get("query")
                 if not isinstance(vn, str) or not vn.strip():
-                    raise ReplayError(f"extract missing required arguments.variable_name: {tool_call}")
+                    raise ReplayError(
+                        f"extract missing required arguments.variable_name: {tool_call}"
+                    )
                 if not isinstance(q, str) or not q.strip():
-                    raise ReplayError(f"extract missing required arguments.query: {tool_call}")
-                if not isinstance(args.get("observation"), str) or not args.get("observation", "").strip():
-                    raise ReplayError(f"extract missing required arguments.observation: {tool_call}")
+                    raise ReplayError(
+                        f"extract missing required arguments.query: {tool_call}"
+                    )
+                if (
+                    not isinstance(args.get("observation"), str)
+                    or not args.get("observation", "").strip()
+                ):
+                    raise ReplayError(
+                        f"extract missing required arguments.observation: {tool_call}"
+                    )
                 if not isinstance(args.get("task_memory"), str):
-                    raise ReplayError(f"extract missing required arguments.task_memory: {tool_call}")
+                    raise ReplayError(
+                        f"extract missing required arguments.task_memory: {tool_call}"
+                    )
             else:
-                if not isinstance(args.get("result"), str) or not args.get("result", "").strip():
-                    raise ReplayError(f"done missing required arguments.result: {tool_call}")
+                if (
+                    not isinstance(args.get("result"), str)
+                    or not args.get("result", "").strip()
+                ):
+                    raise ReplayError(
+                        f"done missing required arguments.result: {tool_call}"
+                    )
                 if not isinstance(args.get("task_memory"), str):
-                    raise ReplayError(f"done missing required arguments.task_memory: {tool_call}")
+                    raise ReplayError(
+                        f"done missing required arguments.task_memory: {tool_call}"
+                    )
+
+            # Internal metadata used by downstream coordinate mapping.
+            tool_call["_ai_mime_model_provider"] = _model_provider(cfg.model)
 
             return tool_call
         except Exception as e:
@@ -387,7 +523,9 @@ def predict_computer_use_tool_call(image_path: Path, user_query: str, cfg: Repla
     ) from last_err
 
 
-def tool_call_to_pixel_action(image_path: Path, tool_call: dict[str, Any]) -> dict[str, Any]:
+def tool_call_to_pixel_action(
+    image_path: Path, tool_call: dict[str, Any]
+) -> dict[str, Any]:
     """
     Convert a tool_call with 0..1000 coordinates into pixel coordinates for the given screenshot.
     Returns a dict with normalized fields:
@@ -400,7 +538,11 @@ def tool_call_to_pixel_action(image_path: Path, tool_call: dict[str, Any]) -> di
         args = tool_call.get("arguments") or {}
         if not isinstance(args, dict):
             raise ReplayError(f"Invalid done.arguments: {tool_call}")
-        return {"action": "done", "result": args.get("result"), "task_memory": args.get("task_memory")}
+        return {
+            "action": "done",
+            "result": args.get("result"),
+            "task_memory": args.get("task_memory"),
+        }
 
     args = tool_call.get("arguments") or {}
     if not isinstance(args, dict):
@@ -427,16 +569,23 @@ def tool_call_to_pixel_action(image_path: Path, tool_call: dict[str, Any]) -> di
     if "status" in args:
         out["status"] = args.get("status")
 
+    provider = str(tool_call.get("_ai_mime_model_provider") or "").strip().lower()
+    is_openai = provider == "openai"
+
     # Map coordinates if present
     if "coordinate" in args and args.get("coordinate") is not None:
         x_rel, y_rel = _validate_relative_coordinate(args)
         with Image.open(Path(image_path)) as im:
             w, h = im.size
-        x_px = int(round((x_rel / 1000.0) * w))
-        y_px = int(round((y_rel / 1000.0) * h))
-        x_px = max(0, min(w - 1, x_px))
-        y_px = max(0, min(h - 1, y_px))
-        out["x_px"] = x_px
-        out["y_px"] = y_px
+
+        x_px, y_px = _map_coordinate_to_pixels(
+            x=x_rel,
+            y=y_rel,
+            width=w,
+            height=h,
+            provider=provider,
+        )
+        out["x_px"] = max(0, min(w - 1, x_px))
+        out["y_px"] = max(0, min(h - 1, y_px))
 
     return out
