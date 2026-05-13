@@ -262,6 +262,11 @@ class RecorderApp(rumps.App):
         # Track workflows currently being processed (session_name -> status)
         self._processing_workflows: dict[str, str] = {}  # session_name -> "reflecting" | "compiling"
 
+        # Browser dashboard -> rumps app commands and app -> dashboard status.
+        self.dashboard_command_q: multiprocessing.Queue | None = multiprocessing.Queue()
+        self._dashboard_manager = multiprocessing.Manager()
+        self.dashboard_state = self._dashboard_manager.dict()
+
         # Local workflow editor (FastAPI) subprocess
         self.editor_process: multiprocessing.Process | None = None
         self.editor_port: int | None = None
@@ -278,8 +283,13 @@ class RecorderApp(rumps.App):
         self._reflect_menu_refresh_timer = rumps.Timer(self._refresh_reflect_menu_if_processing, 1.0)
         self._reflect_menu_refresh_timer.start()
 
+        self._dashboard_command_timer = rumps.Timer(self._poll_dashboard_commands, 0.25)
+        self._dashboard_command_timer.start()
+        self._publish_dashboard_state()
+
         # Menu Items
         self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
+        self.tasks_button = rumps.MenuItem("Open Dashboard", callback=self._open_tasks_dashboard)
         # Repopulate on demand when user clicks "Replay" (no polling).
         self.replay_menu = rumps.MenuItem("Replay", callback=self._on_replay_menu_clicked)
         self._populate_replay_menu()
@@ -318,6 +328,7 @@ class RecorderApp(rumps.App):
                 self.menu.clear()
 
                 self.menu.add(self.start_button)
+                self.menu.add(self.tasks_button)
                 self.menu.add(None)
                 self.menu.add(self.replay_menu)
                 self.menu.add(None)
@@ -331,6 +342,7 @@ class RecorderApp(rumps.App):
                 # Fallback path: assign list-style menu (works across rumps versions).
                 self.menu = [
                     self.start_button,
+                    self.tasks_button,
                     None,
                     self.replay_menu,
                     None,
@@ -349,6 +361,53 @@ class RecorderApp(rumps.App):
             except Exception:
                 pass
 
+    def _publish_dashboard_state(self, *, recording_requested: bool | None = None) -> None:
+        try:
+            existing = dict(self.dashboard_state.get("recording") or {})
+            if recording_requested is None:
+                requested = bool(existing.get("requested")) and not self.is_recording
+            else:
+                requested = bool(recording_requested)
+            session_name = None
+            if self.session_dir:
+                try:
+                    session_name = Path(str(self.session_dir)).name
+                except Exception:
+                    session_name = str(self.session_dir)
+            self.dashboard_state["recording"] = {
+                "is_recording": bool(self.is_recording),
+                "session_name": session_name,
+                "requested": requested,
+            }
+            self.dashboard_state["reflecting"] = dict(self._processing_workflows)
+        except Exception as e:
+            log(f"Error publishing dashboard state: {e}", exc_info=True)
+
+    def _poll_dashboard_commands(self, _):
+        q = self.dashboard_command_q
+        if q is None:
+            return
+        handled = False
+        while True:
+            try:
+                cmd = q.get_nowait()
+            except Empty:
+                break
+            except Exception:
+                break
+            if not isinstance(cmd, dict):
+                continue
+            if cmd.get("type") == "start_recording":
+                handled = True
+                if self.is_recording:
+                    self._publish_dashboard_state(recording_requested=False)
+                    continue
+                try:
+                    self.start_recording()
+                finally:
+                    self._publish_dashboard_state(recording_requested=False)
+        if handled:
+            self._publish_dashboard_state()
 
     def _toggle_dummy_recording(self, _sender):
         # rumps supports a checkmark state via .state (0/1) on macOS.
@@ -536,6 +595,7 @@ class RecorderApp(rumps.App):
                 phase = evt.get("phase")
                 if session_name and phase:
                     self._processing_workflows[session_name] = phase
+                    self._publish_dashboard_state()
                     log(f"Updated {session_name} status to {phase}")
                     # Refresh menu to show updated phase
                     try:
@@ -554,6 +614,7 @@ class RecorderApp(rumps.App):
                 # Remove from processing state
                 if name in self._processing_workflows:
                     del self._processing_workflows[name]
+                self._publish_dashboard_state()
 
                 # Refresh menus to show updated state
                 try:
@@ -581,6 +642,7 @@ class RecorderApp(rumps.App):
                     session_name = Path(session_dir).name
                     if session_name in self._processing_workflows:
                         del self._processing_workflows[session_name]
+                self._publish_dashboard_state()
 
                 # Refresh menus to show updated state
                 try:
@@ -757,6 +819,7 @@ class RecorderApp(rumps.App):
 
         # Mark as processing
         self._processing_workflows[session_name] = "reflecting"
+        self._publish_dashboard_state()
         log(f"Added {session_name} to processing workflows: {self._processing_workflows}")
 
         # Refresh menu to show processing state immediately
@@ -811,7 +874,14 @@ class RecorderApp(rumps.App):
         if self.editor_process is not None and self.editor_process.is_alive() and self.editor_port is not None:
             return self.editor_port
 
-        proc, port = start_editor_server(workflows_root=self._workflows_root())
+        proc, port = start_editor_server(
+            workflows_root=self._workflows_root(),
+            recordings_root=get_recordings_dir(),
+            reflect_llm_cfg=self._user_cfg.reflect,
+            replay_llm_cfg=self._user_cfg.replay,
+            app_command_queue=self.dashboard_command_q,
+            app_state=self.dashboard_state,
+        )
         self.editor_process = proc
         self.editor_port = port
 
@@ -826,6 +896,16 @@ class RecorderApp(rumps.App):
                 time.sleep(0.05)
 
         return port
+
+    def _open_tasks_dashboard(self, _sender=None) -> None:
+        try:
+            port = self._ensure_editor_server()
+            url = f"http://127.0.0.1:{port}/tasks"
+            ok = webbrowser.open(url, new=1)
+            if not ok:
+                raise RuntimeError(f"Failed to open browser for: {url}")
+        except Exception as e:
+            rumps.alert(f"Open Tasks failed: {e}")
 
     def _open_workflow_editor(self, workflow_dir: Path, display_name: str) -> None:
         port = self._ensure_editor_server()
@@ -1056,6 +1136,7 @@ class RecorderApp(rumps.App):
             self.is_recording = True
             self.title = "🔴 Rec"
             self.start_button.title = "Stop Recording"
+            self._publish_dashboard_state(recording_requested=False)
         except Exception as e:
             # Best-effort cleanup if overlay/queues were partially created.
             try:
@@ -1066,6 +1147,7 @@ class RecorderApp(rumps.App):
             self._recording_overlay = None
             self.refine_cmd_q = None
             self.refine_resp_q = None
+            self._publish_dashboard_state(recording_requested=False)
             rumps.alert(f"Error starting: {e}")
 
     def cancel_recording(self):
@@ -1110,6 +1192,7 @@ class RecorderApp(rumps.App):
         self.is_recording = False
         self.title = "AI Mime"
         self.start_button.title = "Start Recording"
+        self._publish_dashboard_state(recording_requested=False)
 
         # Kick off reflect+schema compilation in the background (do not block UI).
         if self.session_dir and not self.dummy_recording and not self._skip_reflect_once and not cancelled:
@@ -1118,6 +1201,7 @@ class RecorderApp(rumps.App):
                 session_name = Path(self.session_dir).name
                 # Mark as processing
                 self._processing_workflows[session_name] = "reflecting"
+                self._publish_dashboard_state()
 
                 # Queue used to notify completion back to the UI process (so notifications reliably show).
                 self.reflect_event_q = multiprocessing.Queue()
@@ -1141,6 +1225,7 @@ class RecorderApp(rumps.App):
                 log(f"Error starting reflect: {e}", exc_info=True)
                 if session_name in self._processing_workflows:
                     del self._processing_workflows[session_name]
+                self._publish_dashboard_state()
                 rumps.alert(f"Error starting reflect: {e}")
         elif self.session_dir and self.dummy_recording:
             # Explicit notification so it's clear why the workflow doesn't appear.
@@ -1158,6 +1243,7 @@ class RecorderApp(rumps.App):
 
         # Reset one-shot flag.
         self._skip_reflect_once = False
+        self._publish_dashboard_state()
 
         rumps.notification(
             title="Recording Saved" if not cancelled else "Recording stopped",

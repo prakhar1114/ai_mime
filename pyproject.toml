@@ -10,7 +10,7 @@ authors = [
     {name = "Prakhar Jain", email = "prakharjain1114@gmail.com"},
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.11"
 dependencies = [
     "rumps>=0.4.0",
     "pynput>=1.7.6",

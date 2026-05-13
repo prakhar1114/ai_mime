@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import socket
 import sys
-from multiprocessing import Process
+import threading
+import traceback
+from multiprocessing import Event, Process, Queue
 from pathlib import Path
 from typing import Any
 
@@ -14,12 +17,18 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from ai_mime.replay.catalog import list_replayable_workflows
+from ai_mime.replay.engine import ReplayConfig, ReplayStopped, resolve_params, run_plan
+from ai_mime.replay.grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
+from ai_mime.replay.os_executor import exec_computer_use_action
+from ai_mime.reflect.workflow import compile_schema_for_workflow_dir, reflect_session
 from ai_mime.reflect.schema_utils import (
     available_upstream_extracts,
     reindex_schema,
     strip_details_in_schema,
     validate_schema,
 )
+from ai_mime.screenshot import ScreenshotRecorder
+from ai_mime.user_config import ResolvedLLMConfig, ResolvedReflectConfig
 
 _SINGLE_BRACE_PARAM_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 _EXTRACT_NAME_RE = re.compile(r"^extract_[0-9]+$")
@@ -33,6 +42,19 @@ def _workflows_root_from_env() -> Path:
     return p
 
 
+def _recordings_root_from_env(workflows_root: Path) -> Path:
+    raw = (os.getenv("AI_MIME_RECORDINGS_ROOT") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return workflows_root.parent / "recordings"
+
+
+def _safe_task_id(task_id: str) -> str:
+    if not task_id or "/" in task_id or "\\" in task_id or ".." in task_id:
+        raise HTTPException(status_code=400, detail="Invalid task id")
+    return task_id
+
+
 def _safe_workflow_dir(workflows_root: Path, workflow_id: str) -> Path:
     # workflow_id is expected to be a folder name under workflows_root.
     if not workflow_id or "/" in workflow_id or "\\" in workflow_id or ".." in workflow_id:
@@ -43,6 +65,17 @@ def _safe_workflow_dir(workflows_root: Path, workflow_id: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid workflow id")
     if not p.exists() or not p.is_dir():
         raise HTTPException(status_code=404, detail="Workflow not found")
+    return p
+
+
+def _safe_recording_dir(recordings_root: Path, task_id: str) -> Path:
+    task_id = _safe_task_id(task_id)
+    p = (recordings_root / task_id).resolve()
+    root = recordings_root.resolve()
+    if root not in p.parents and p != root:
+        raise HTTPException(status_code=400, detail="Invalid task id")
+    if not p.exists() or not p.is_dir():
+        raise HTTPException(status_code=404, detail="Recording not found")
     return p
 
 
@@ -132,13 +165,448 @@ def _apply_deleted_param_examples(*, schema: dict[str, Any], deleted_param_examp
                     )
 
 
-def create_app() -> FastAPI:
-    workflows_root = _workflows_root_from_env()
+def _emit(queue: Any | None, obj: dict[str, Any]) -> None:
+    if queue is None:
+        return
+    try:
+        if hasattr(queue, "put_nowait"):
+            queue.put_nowait(obj)
+        else:
+            queue.put(obj)
+    except Exception:
+        pass
+
+
+def _run_reflect_task(
+    session_dir: str,
+    workflows_root: str,
+    reflect_llm_cfg: ResolvedReflectConfig,
+    *,
+    event_queue: Any | None = None,
+) -> None:
+    session_dir_p = Path(session_dir)
+    session_name = session_dir_p.name
+    workflows_root_p = Path(workflows_root)
+    try:
+        _emit(event_queue, {"type": "reflect_phase_started", "session_name": session_name, "phase": "reflecting"})
+        out_dir = reflect_session(session_dir_p, workflows_root_p, clean_manifest_tail=False)
+        _emit(event_queue, {"type": "reflect_phase_started", "session_name": session_name, "phase": "compiling"})
+        compile_schema_for_workflow_dir(out_dir, llm_cfg=reflect_llm_cfg)
+        _emit(event_queue, {"type": "reflect_compile_done", "workflow_dir": str(out_dir)})
+    except Exception as e:
+        _emit(
+            event_queue,
+            {
+                "type": "reflect_compile_failed",
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "session_dir": str(session_dir_p),
+            },
+        )
+        raise
+
+
+def _run_replay_task(
+    workflow_dir: str,
+    replay_llm_cfg: ResolvedLLMConfig,
+    *,
+    overrides: dict[str, str] | None = None,
+    event_queue: Any | None = None,
+    stop_event: Any | None = None,
+) -> None:
+    wf_dir = Path(workflow_dir)
+    try:
+        schema = json.loads((wf_dir / "schema.json").read_text(encoding="utf-8"))
+        params = resolve_params(schema, overrides=overrides or {})
+        cfg = ReplayConfig(
+            model=replay_llm_cfg.model,
+            base_url=replay_llm_cfg.api_base,
+            api_key_env=replay_llm_cfg.api_key_env,
+            llm_extra_kwargs=dict(replay_llm_cfg.extra_kwargs or {}),
+        )
+        screenshotter = ScreenshotRecorder()
+
+        def _capture(dst: Path) -> Path:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            saved = screenshotter.capture(dst, exclude_window_id=None)
+            if not saved:
+                raise RuntimeError("Screenshot capture failed (check Screen Recording permission).")
+            return Path(saved)
+
+        run_plan(
+            wf_dir,
+            params=params,
+            cfg=cfg,
+            predict_tool_call=predict_computer_use_tool_call,
+            tool_call_to_pixel_action=tool_call_to_pixel_action,
+            capture_screenshot=_capture,
+            exec_action=exec_computer_use_action,
+            log=print,
+            event_queue=event_queue,
+            pause_event=None,
+            stop_event=stop_event,
+        )
+    except ReplayStopped:
+        _emit(event_queue, {"type": "replay_stopped"})
+    except Exception as e:
+        _emit(event_queue, {"type": "replay_failed", "error": str(e), "traceback": traceback.format_exc()})
+        raise
+
+
+class TaskRunner:
+    def __init__(
+        self,
+        *,
+        workflows_root: Path,
+        recordings_root: Path,
+        reflect_llm_cfg: ResolvedReflectConfig | None,
+        replay_llm_cfg: ResolvedLLMConfig | None,
+        app_state: Any | None = None,
+    ) -> None:
+        self.workflows_root = workflows_root
+        self.recordings_root = recordings_root
+        self.reflect_llm_cfg = reflect_llm_cfg
+        self.replay_llm_cfg = replay_llm_cfg
+        self.app_state = app_state
+        self._lock = threading.Lock()
+        self._states: dict[str, dict[str, Any]] = {}
+        self._reflect_processes: dict[str, tuple[Process, Queue]] = {}
+        self._replay_processes: dict[str, tuple[Process, Queue, Event]] = {}
+
+    def list_tasks(self) -> list[dict[str, Any]]:
+        with self._lock:
+            self._refresh_locked()
+            task_ids = self._discover_task_ids_locked()
+            return [self._task_row_locked(task_id) for task_id in sorted(task_ids, reverse=True)]
+
+    def get_status(self, task_id: str) -> dict[str, Any]:
+        task_id = _safe_task_id(task_id)
+        with self._lock:
+            self._refresh_locked()
+            if task_id not in self._discover_task_ids_locked() and task_id not in self._states:
+                raise HTTPException(status_code=404, detail="Task not found")
+            return self._task_row_locked(task_id)
+
+    def start_reflect(self, task_id: str) -> dict[str, Any]:
+        task_id = _safe_task_id(task_id)
+        if self.reflect_llm_cfg is None:
+            raise HTTPException(status_code=500, detail="Reflect config is unavailable")
+        with self._lock:
+            self._refresh_locked()
+            if task_id in self._reflect_processes:
+                raise HTTPException(status_code=409, detail="Reflection already running")
+            if task_id in self._replay_processes:
+                raise HTTPException(status_code=409, detail="Replay already running")
+            recording_dir = _safe_recording_dir(self.recordings_root, task_id)
+            if not (recording_dir / "manifest.jsonl").exists():
+                raise HTTPException(status_code=400, detail="Recording manifest.jsonl not found")
+            q: Queue = Queue()
+            p = Process(
+                target=_run_reflect_task,
+                args=(str(recording_dir), str(self.workflows_root), self.reflect_llm_cfg),
+                kwargs={"event_queue": q},
+                daemon=True,
+            )
+            self._states[task_id] = {"status": "reflecting", "phase": "reflecting", "error": None}
+            self._reflect_processes[task_id] = (p, q)
+            p.start()
+            return self._task_row_locked(task_id)
+
+    def start_replay(self, task_id: str) -> dict[str, Any]:
+        task_id = _safe_task_id(task_id)
+        if self.replay_llm_cfg is None:
+            raise HTTPException(status_code=500, detail="Replay config is unavailable")
+        with self._lock:
+            self._refresh_locked()
+            if self._replay_processes:
+                raise HTTPException(status_code=409, detail="Replay already running")
+            if task_id in self._reflect_processes:
+                raise HTTPException(status_code=409, detail="Reflection is running")
+            workflow_dir = _safe_workflow_dir(self.workflows_root, task_id)
+            if not (workflow_dir / "schema.json").exists():
+                raise HTTPException(status_code=400, detail="schema.json not found")
+            q: Queue = Queue()
+            stop_event: Event = Event()
+            p = Process(
+                target=_run_replay_task,
+                args=(str(workflow_dir), self.replay_llm_cfg),
+                kwargs={"overrides": {}, "event_queue": q, "stop_event": stop_event},
+                daemon=True,
+            )
+            self._states[task_id] = {"status": "replaying", "phase": "replaying", "error": None}
+            self._replay_processes[task_id] = (p, q, stop_event)
+            p.start()
+            return self._task_row_locked(task_id)
+
+    def delete_task(self, task_id: str) -> dict[str, Any]:
+        task_id = _safe_task_id(task_id)
+        with self._lock:
+            self._refresh_locked()
+            if task_id in self._reflect_processes:
+                raise HTTPException(status_code=409, detail="Cannot delete while reflection is running")
+            if task_id in self._replay_processes:
+                raise HTTPException(status_code=409, detail="Cannot delete while replay is running")
+            workflow_dir = (self.workflows_root / task_id).resolve()
+            recording_dir = (self.recordings_root / task_id).resolve()
+            self._assert_under_root(workflow_dir, self.workflows_root)
+            self._assert_under_root(recording_dir, self.recordings_root)
+            existed = False
+            self._states[task_id] = {"status": "deleting", "phase": "deleting", "error": None}
+            for path in (workflow_dir, recording_dir):
+                if path.exists():
+                    existed = True
+                    if not path.is_dir():
+                        raise HTTPException(status_code=400, detail=f"Refusing to delete non-directory: {path}")
+                    shutil.rmtree(path)
+            self._states.pop(task_id, None)
+            if not existed:
+                raise HTTPException(status_code=404, detail="Task not found")
+            return {"ok": True, "task_id": task_id}
+
+    def _discover_task_ids_locked(self) -> set[str]:
+        task_ids: set[str] = set()
+        for root in (self.workflows_root, self.recordings_root):
+            if not root.exists() or not root.is_dir():
+                continue
+            for p in root.iterdir():
+                if p.is_dir():
+                    task_ids.add(p.name)
+        task_ids.update(self._states.keys())
+        for task_id in self._external_reflecting_locked():
+            task_ids.add(task_id)
+        return task_ids
+
+    def _task_row_locked(self, task_id: str) -> dict[str, Any]:
+        workflow_dir = self.workflows_root / task_id
+        recording_dir = self.recordings_root / task_id
+        has_workflow = workflow_dir.exists() and workflow_dir.is_dir()
+        has_recording = recording_dir.exists() and recording_dir.is_dir()
+        has_schema = has_workflow and (workflow_dir / "schema.json").exists()
+        meta = _read_json(workflow_dir / "metadata.json") if has_workflow else _read_json(recording_dir / "metadata.json")
+        display_name = str(meta.get("name") or task_id).strip() if isinstance(meta, dict) else task_id
+        state = dict(self._states.get(task_id) or {})
+        external_reflecting = self._external_reflecting_locked()
+        if task_id in external_reflecting and task_id not in self._reflect_processes:
+            phase = str(external_reflecting.get(task_id) or "reflecting")
+            state = {"status": phase, "phase": phase, "error": None}
+        status = str(state.get("status") or "")
+        if not status or status in {"ready", "pending_reflection"}:
+            status = "ready" if has_schema else "pending_reflection"
+        if status == "reflecting" and state.get("phase") == "compiling":
+            status = "compiling"
+        active = status in {"reflecting", "compiling", "replaying", "deleting"}
+        can_reflect = bool(has_recording and not has_schema and not active)
+        can_replay = bool(has_schema and not active and not self._replay_processes)
+        return {
+            "id": task_id,
+            "display_name": display_name,
+            "status": status,
+            "phase": state.get("phase") or status,
+            "error": state.get("error"),
+            "has_recording": has_recording,
+            "has_workflow": has_workflow,
+            "has_schema": has_schema,
+            "can_reflect": can_reflect,
+            "can_replay": can_replay,
+            "can_edit": bool(has_schema and not active),
+            "can_delete": bool((has_recording or has_workflow) and not active),
+            "workflow_dir": str(workflow_dir) if has_workflow else None,
+            "recording_dir": str(recording_dir) if has_recording else None,
+        }
+
+    def app_status(self) -> dict[str, Any]:
+        state = self._read_app_state()
+        recording = state.get("recording") if isinstance(state.get("recording"), dict) else {}
+        return {
+            "is_recording": bool(recording.get("is_recording")),
+            "recording_session": recording.get("session_name"),
+            "recording_requested": bool(recording.get("requested")),
+            "reflecting": self._external_reflecting_locked(),
+        }
+
+    def _read_app_state(self) -> dict[str, Any]:
+        if self.app_state is None:
+            return {}
+        try:
+            return dict(self.app_state)
+        except Exception:
+            return {}
+
+    def _external_reflecting_locked(self) -> dict[str, str]:
+        state = self._read_app_state()
+        reflecting = state.get("reflecting")
+        if not isinstance(reflecting, dict):
+            return {}
+        out: dict[str, str] = {}
+        for key, value in reflecting.items():
+            if isinstance(key, str) and key:
+                out[key] = str(value or "reflecting")
+        return out
+
+    def _refresh_locked(self) -> None:
+        for task_id, (proc, queue) in list(self._reflect_processes.items()):
+            self._drain_reflect_events_locked(task_id, queue)
+            if not proc.is_alive():
+                self._drain_reflect_events_locked(task_id, queue)
+                _proc, _queue = self._reflect_processes.pop(task_id)
+                _proc.join(timeout=0.1)
+                state = self._states.get(task_id) or {}
+                if state.get("status") in {"reflecting", "compiling"}:
+                    if proc.exitcode == 0 and (self.workflows_root / task_id / "schema.json").exists():
+                        self._states[task_id] = {"status": "ready", "phase": "ready", "error": None}
+                    else:
+                        self._states[task_id] = {
+                            "status": "failed_reflection",
+                            "phase": "failed_reflection",
+                            "error": state.get("error") or f"Reflection exited with code {proc.exitcode}",
+                        }
+
+        for task_id, (proc, queue, _stop_event) in list(self._replay_processes.items()):
+            self._drain_replay_events_locked(task_id, queue)
+            if not proc.is_alive():
+                self._drain_replay_events_locked(task_id, queue)
+                _proc, _queue, _event = self._replay_processes.pop(task_id)
+                _proc.join(timeout=0.1)
+                state = self._states.get(task_id) or {}
+                if state.get("status") == "replaying":
+                    if proc.exitcode == 0:
+                        self._states[task_id] = {"status": "ready", "phase": "ready", "error": None}
+                    else:
+                        self._states[task_id] = {
+                            "status": "replay_failed",
+                            "phase": "replay_failed",
+                            "error": state.get("error") or f"Replay exited with code {proc.exitcode}",
+                        }
+
+    def _drain_reflect_events_locked(self, task_id: str, queue: Queue) -> None:
+        while True:
+            try:
+                evt = queue.get_nowait()
+            except Exception:
+                break
+            if not isinstance(evt, dict):
+                continue
+            et = evt.get("type")
+            if et == "reflect_phase_started":
+                phase = str(evt.get("phase") or "reflecting")
+                self._states[task_id] = {"status": phase, "phase": phase, "error": None}
+            elif et == "reflect_compile_done":
+                self._states[task_id] = {"status": "ready", "phase": "ready", "error": None}
+            elif et == "reflect_compile_failed":
+                self._states[task_id] = {
+                    "status": "failed_reflection",
+                    "phase": "failed_reflection",
+                    "error": str(evt.get("error") or "Reflection failed"),
+                }
+
+    def _drain_replay_events_locked(self, task_id: str, queue: Queue) -> None:
+        while True:
+            try:
+                evt = queue.get_nowait()
+            except Exception:
+                break
+            if not isinstance(evt, dict):
+                continue
+            et = evt.get("type")
+            if et in {"replay_started", "subtask_started", "predicted_tool_call", "pixel_action", "extract_result", "done"}:
+                state = self._states.get(task_id) or {}
+                state.update({"status": "replaying", "phase": "replaying", "error": None, "last_event": evt})
+                self._states[task_id] = state
+            elif et == "replay_finished":
+                self._states[task_id] = {"status": "ready", "phase": "ready", "error": None}
+            elif et == "replay_stopped":
+                self._states[task_id] = {"status": "ready", "phase": "stopped", "error": None}
+            elif et == "replay_failed":
+                self._states[task_id] = {
+                    "status": "replay_failed",
+                    "phase": "replay_failed",
+                    "error": str(evt.get("error") or "Replay failed"),
+                }
+
+    @staticmethod
+    def _assert_under_root(path: Path, root: Path) -> None:
+        root_r = root.resolve()
+        if root_r not in path.parents and path != root_r:
+            raise HTTPException(status_code=400, detail="Invalid task path")
+
+
+def create_app(
+    *,
+    workflows_root: Path | None = None,
+    recordings_root: Path | None = None,
+    reflect_llm_cfg: ResolvedReflectConfig | None = None,
+    replay_llm_cfg: ResolvedLLMConfig | None = None,
+    app_command_queue: Any | None = None,
+    app_state: Any | None = None,
+) -> FastAPI:
+    workflows_root = workflows_root or _workflows_root_from_env()
+    recordings_root = recordings_root or _recordings_root_from_env(workflows_root)
+    task_runner = TaskRunner(
+        workflows_root=workflows_root,
+        recordings_root=recordings_root,
+        reflect_llm_cfg=reflect_llm_cfg,
+        replay_llm_cfg=replay_llm_cfg,
+        app_state=app_state,
+    )
 
     app = FastAPI(title="AI Mime Workflow Editor", docs_url=None, redoc_url=None)
 
     web_dir = Path(__file__).parent / "web"
     app.mount("/static", StaticFiles(directory=str(web_dir)), name="static")
+
+    @app.get("/", response_class=HTMLResponse)
+    def root():
+        return tasks_dashboard()
+
+    @app.get("/tasks", response_class=HTMLResponse)
+    def tasks_dashboard():
+        index_path = web_dir / "tasks.html"
+        if not index_path.exists():
+            raise HTTPException(status_code=500, detail="Task dashboard UI not found")
+        return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
+
+    @app.get("/api/tasks")
+    def api_list_tasks():
+        return {"tasks": task_runner.list_tasks(), "app": task_runner.app_status()}
+
+    @app.get("/api/app/status")
+    def api_app_status():
+        return task_runner.app_status()
+
+    @app.post("/api/recording/start")
+    def api_start_recording():
+        if app_command_queue is None:
+            raise HTTPException(status_code=503, detail="Recording control is unavailable")
+        status = task_runner.app_status()
+        if status.get("is_recording") or status.get("recording_requested"):
+            return {"ok": True, "queued": False, "message": "Recording already active or queued"}
+        try:
+            if task_runner.app_state is not None:
+                state = task_runner._read_app_state()
+                recording = state.get("recording") if isinstance(state.get("recording"), dict) else {}
+                recording = dict(recording)
+                recording["requested"] = True
+                task_runner.app_state["recording"] = recording
+            app_command_queue.put({"type": "start_recording"})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to queue recording start: {e}")
+        return {"ok": True, "queued": True}
+
+    @app.get("/api/tasks/{task_id}/status")
+    def api_task_status(task_id: str):
+        return task_runner.get_status(task_id)
+
+    @app.post("/api/tasks/{task_id}/reflect")
+    def api_reflect_task(task_id: str):
+        return task_runner.start_reflect(task_id)
+
+    @app.post("/api/tasks/{task_id}/replay")
+    def api_replay_task(task_id: str):
+        return task_runner.start_replay(task_id)
+
+    @app.delete("/api/tasks/{task_id}")
+    def api_delete_task(task_id: str):
+        return task_runner.delete_task(task_id)
 
     @app.get("/workflows/{workflow_id}", response_class=HTMLResponse)
     def workflow_editor(workflow_id: str):
@@ -217,24 +685,63 @@ def _pick_free_port() -> int:
     return int(port)
 
 
-def _run_uvicorn(host: str, port: int) -> None:
+def _run_uvicorn(
+    host: str,
+    port: int,
+    workflows_root: str,
+    recordings_root: str,
+    reflect_llm_cfg: ResolvedReflectConfig | None,
+    replay_llm_cfg: ResolvedLLMConfig | None,
+    app_command_queue: Any | None,
+    app_state: Any | None,
+) -> None:
     # Import inside the subprocess so the caller doesn't require fastapi/uvicorn
     # unless the editor is actually used.
     import uvicorn  # type: ignore[import-not-found]
 
-    app = create_app()
+    app = create_app(
+        workflows_root=Path(workflows_root),
+        recordings_root=Path(recordings_root),
+        reflect_llm_cfg=reflect_llm_cfg,
+        replay_llm_cfg=replay_llm_cfg,
+        app_command_queue=app_command_queue,
+        app_state=app_state,
+    )
     # Ensure logs go to the parent terminal (stdout/stderr).
     uvicorn.run(app, host=host, port=port, log_level="info", access_log=True)
 
 
-def start_editor_server(*, workflows_root: Path) -> tuple[Process, int]:
+def start_editor_server(
+    *,
+    workflows_root: Path,
+    recordings_root: Path | None = None,
+    reflect_llm_cfg: ResolvedReflectConfig | None = None,
+    replay_llm_cfg: ResolvedLLMConfig | None = None,
+    app_command_queue: Any | None = None,
+    app_state: Any | None = None,
+) -> tuple[Process, int]:
     """
     Start the editor server in a subprocess and return (process, port).
     The server binds to 127.0.0.1 only.
     """
     os.environ["AI_MIME_WORKFLOWS_ROOT"] = str(workflows_root)
+    recordings_root = recordings_root or workflows_root.parent / "recordings"
+    os.environ["AI_MIME_RECORDINGS_ROOT"] = str(recordings_root)
     port = _pick_free_port()
-    p = Process(target=_run_uvicorn, args=("127.0.0.1", port), daemon=True)
+    p = Process(
+        target=_run_uvicorn,
+        args=(
+            "127.0.0.1",
+            port,
+            str(workflows_root),
+            str(recordings_root),
+            reflect_llm_cfg,
+            replay_llm_cfg,
+            app_command_queue,
+            app_state,
+        ),
+        daemon=False,
+    )
     p.start()
     print(f"[ai-mime] editor server starting on http://127.0.0.1:{port}", file=sys.stderr)
     return p, port
