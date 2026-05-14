@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ai_mime.replay.catalog import list_replayable_workflows
@@ -29,9 +30,16 @@ from ai_mime.reflect.schema_utils import (
 )
 from ai_mime.screenshot import ScreenshotRecorder
 from ai_mime.user_config import ResolvedLLMConfig, ResolvedReflectConfig
+from ai_mime.debug_log import log
+from ai_mime.agent_runner import AgentBusyError, WorkspaceAgentChatService
 
 _SINGLE_BRACE_PARAM_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 _EXTRACT_NAME_RE = re.compile(r"^extract_[0-9]+$")
+
+
+def _task_log(msg: str, *, exc_info: bool = False) -> None:
+    print(f"[ai-mime dashboard] {msg}", file=sys.stderr, flush=True)
+    log(f"Dashboard: {msg}", exc_info=exc_info)
 
 
 def _workflows_root_from_env() -> Path:
@@ -188,12 +196,19 @@ def _run_reflect_task(
     session_name = session_dir_p.name
     workflows_root_p = Path(workflows_root)
     try:
+        logging.basicConfig(level=logging.INFO)
+        _task_log(f"reflect subprocess started: session={session_name} session_dir={session_dir_p} workflows_root={workflows_root_p}")
         _emit(event_queue, {"type": "reflect_phase_started", "session_name": session_name, "phase": "reflecting"})
+        _task_log(f"reflect phase=reflecting session={session_name}")
         out_dir = reflect_session(session_dir_p, workflows_root_p, clean_manifest_tail=False)
+        _task_log(f"reflect_session finished: session={session_name} workflow_dir={out_dir}")
         _emit(event_queue, {"type": "reflect_phase_started", "session_name": session_name, "phase": "compiling"})
+        _task_log(f"reflect phase=compiling session={session_name}")
         compile_schema_for_workflow_dir(out_dir, llm_cfg=reflect_llm_cfg)
+        _task_log(f"compile finished: session={session_name} schema={out_dir / 'schema.json'}")
         _emit(event_queue, {"type": "reflect_compile_done", "workflow_dir": str(out_dir)})
     except Exception as e:
+        _task_log(f"reflect failed: session={session_name} error={e}", exc_info=True)
         _emit(
             event_queue,
             {
@@ -289,16 +304,21 @@ class TaskRunner:
 
     def start_reflect(self, task_id: str) -> dict[str, Any]:
         task_id = _safe_task_id(task_id)
+        _task_log(f"reflect requested: task_id={task_id}")
         if self.reflect_llm_cfg is None:
+            _task_log(f"reflect rejected: task_id={task_id} reason=missing_config")
             raise HTTPException(status_code=500, detail="Reflect config is unavailable")
         with self._lock:
             self._refresh_locked()
             if task_id in self._reflect_processes:
+                _task_log(f"reflect rejected: task_id={task_id} reason=already_running")
                 raise HTTPException(status_code=409, detail="Reflection already running")
             if task_id in self._replay_processes:
+                _task_log(f"reflect rejected: task_id={task_id} reason=replay_running")
                 raise HTTPException(status_code=409, detail="Replay already running")
             recording_dir = _safe_recording_dir(self.recordings_root, task_id)
             if not (recording_dir / "manifest.jsonl").exists():
+                _task_log(f"reflect rejected: task_id={task_id} reason=missing_manifest recording_dir={recording_dir}")
                 raise HTTPException(status_code=400, detail="Recording manifest.jsonl not found")
             q: Queue = Queue()
             p = Process(
@@ -310,6 +330,7 @@ class TaskRunner:
             self._states[task_id] = {"status": "reflecting", "phase": "reflecting", "error": None}
             self._reflect_processes[task_id] = (p, q)
             p.start()
+            _task_log(f"reflect process started: task_id={task_id} pid={p.pid} recording_dir={recording_dir}")
             return self._task_row_locked(task_id)
 
     def start_replay(self, task_id: str) -> dict[str, Any]:
@@ -395,7 +416,7 @@ class TaskRunner:
         if status == "reflecting" and state.get("phase") == "compiling":
             status = "compiling"
         active = status in {"reflecting", "compiling", "replaying", "deleting"}
-        can_reflect = bool(has_recording and not has_schema and not active)
+        can_reflect = bool(has_recording and not active)
         can_replay = bool(has_schema and not active and not self._replay_processes)
         return {
             "id": task_id,
@@ -454,12 +475,14 @@ class TaskRunner:
                 if state.get("status") in {"reflecting", "compiling"}:
                     if proc.exitcode == 0 and (self.workflows_root / task_id / "schema.json").exists():
                         self._states[task_id] = {"status": "ready", "phase": "ready", "error": None}
+                        _task_log(f"reflect process complete: task_id={task_id} pid={proc.pid}")
                     else:
                         self._states[task_id] = {
                             "status": "failed_reflection",
                             "phase": "failed_reflection",
                             "error": state.get("error") or f"Reflection exited with code {proc.exitcode}",
                         }
+                        _task_log(f"reflect process failed: task_id={task_id} pid={proc.pid} exitcode={proc.exitcode} error={self._states[task_id].get('error')}")
 
         for task_id, (proc, queue, _stop_event) in list(self._replay_processes.items()):
             self._drain_replay_events_locked(task_id, queue)
@@ -490,14 +513,17 @@ class TaskRunner:
             if et == "reflect_phase_started":
                 phase = str(evt.get("phase") or "reflecting")
                 self._states[task_id] = {"status": phase, "phase": phase, "error": None}
+                _task_log(f"reflect event: task_id={task_id} phase={phase}")
             elif et == "reflect_compile_done":
                 self._states[task_id] = {"status": "ready", "phase": "ready", "error": None}
+                _task_log(f"reflect event: task_id={task_id} done")
             elif et == "reflect_compile_failed":
                 self._states[task_id] = {
                     "status": "failed_reflection",
                     "phase": "failed_reflection",
                     "error": str(evt.get("error") or "Reflection failed"),
                 }
+                _task_log(f"reflect event: task_id={task_id} failed error={self._states[task_id].get('error')}")
 
     def _drain_replay_events_locked(self, task_id: str, queue: Queue) -> None:
         while True:
@@ -538,6 +564,7 @@ def create_app(
     replay_llm_cfg: ResolvedLLMConfig | None = None,
     app_command_queue: Any | None = None,
     app_state: Any | None = None,
+    agent_chat_service: WorkspaceAgentChatService | None = None,
 ) -> FastAPI:
     workflows_root = workflows_root or _workflows_root_from_env()
     recordings_root = recordings_root or _recordings_root_from_env(workflows_root)
@@ -548,6 +575,7 @@ def create_app(
         replay_llm_cfg=replay_llm_cfg,
         app_state=app_state,
     )
+    agent_service = agent_chat_service or WorkspaceAgentChatService()
 
     app = FastAPI(title="AI Mime Workflow Editor", docs_url=None, redoc_url=None)
 
@@ -565,6 +593,13 @@ def create_app(
             raise HTTPException(status_code=500, detail="Task dashboard UI not found")
         return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
 
+    @app.get("/agent", response_class=HTMLResponse)
+    def agent_dashboard():
+        index_path = web_dir / "agent.html"
+        if not index_path.exists():
+            raise HTTPException(status_code=500, detail="Agent UI not found")
+        return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
+
     @app.get("/api/tasks")
     def api_list_tasks():
         return {"tasks": task_runner.list_tasks(), "app": task_runner.app_status()}
@@ -572,6 +607,100 @@ def create_app(
     @app.get("/api/app/status")
     def api_app_status():
         return task_runner.app_status()
+
+    @app.get("/api/agent/sessions")
+    def api_agent_sessions():
+        return agent_service.status()
+
+    @app.get("/api/agent/models")
+    def api_agent_models():
+        return agent_service.list_models()
+
+    @app.post("/api/agent/sessions")
+    def api_agent_create_session():
+        return agent_service.create_session()
+
+    @app.get("/api/agent/sessions/{session_id}/messages")
+    def api_agent_session_messages(session_id: str):
+        if not session_id or "/" in session_id or "\\" in session_id or ".." in session_id:
+            raise HTTPException(status_code=400, detail="Invalid session id")
+        try:
+            return {"session_id": session_id, "messages": agent_service.load_messages(session_id)}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/agent/chat/stream")
+    async def api_agent_chat_stream(payload: dict[str, Any] = Body(...)):
+        message = payload.get("message")
+        session_id = payload.get("session_id")
+        model = payload.get("model")
+        if not isinstance(message, str) or not message.strip():
+            raise HTTPException(status_code=400, detail="message must be non-empty")
+        if session_id is not None and not isinstance(session_id, str):
+            raise HTTPException(status_code=400, detail="session_id must be a string or null")
+        if model is not None and not isinstance(model, str):
+            raise HTTPException(status_code=400, detail="model must be a string or null")
+
+        try:
+            event_iter = agent_service.chat_stream(message=message, session_id=session_id, model=model)
+        except AgentBusyError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        async def _sse():
+            try:
+                async for event in event_iter:
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+
+        return StreamingResponse(
+            _sse(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/agent/interrupt")
+    def api_agent_interrupt():
+        return {"interrupted": agent_service.interrupt()}
+
+    @app.post("/api/agent/permission")
+    def api_agent_permission(payload: dict[str, Any] = Body(...)):
+        request_id = payload.get("request_id")
+        decision = payload.get("decision")
+        if not isinstance(request_id, str) or not request_id:
+            raise HTTPException(status_code=400, detail="request_id must be a non-empty string")
+        if decision not in ("allow", "allow_always", "deny"):
+            raise HTTPException(status_code=400, detail="decision must be allow, allow_always, or deny")
+        return {"resolved": agent_service.resolve_permission(request_id, decision)}
+
+    @app.post("/api/agent/settings/bash_requires_approval")
+    def api_agent_set_bash_requires_approval(payload: dict[str, Any] = Body(...)):
+        value = payload.get("value")
+        if not isinstance(value, bool):
+            raise HTTPException(status_code=400, detail="value must be boolean")
+        return {"bash_requires_approval": agent_service.set_bash_requires_approval(value)}
+
+    @app.post("/api/agent/chat")
+    def api_agent_chat(payload: dict[str, Any] = Body(...)):
+        message = payload.get("message")
+        session_id = payload.get("session_id")
+        if not isinstance(message, str) or not message.strip():
+            raise HTTPException(status_code=400, detail="message must be non-empty")
+        if session_id is not None and not isinstance(session_id, str):
+            raise HTTPException(status_code=400, detail="session_id must be a string or null")
+        model = payload.get("model")
+        if model is not None and not isinstance(model, str):
+            raise HTTPException(status_code=400, detail="model must be a string or null")
+        try:
+            return agent_service.chat(message=message, session_id=session_id, model=model)
+        except AgentBusyError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/api/recording/start")
     def api_start_recording():

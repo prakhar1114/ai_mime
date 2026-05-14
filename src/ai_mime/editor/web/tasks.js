@@ -3,6 +3,7 @@
     taskList: document.getElementById("taskList"),
     refreshBtn: document.getElementById("refreshBtn"),
     startRecordingBtn: document.getElementById("startRecordingBtn"),
+    agentModeBtn: document.getElementById("agentModeBtn"),
     syncState: document.getElementById("syncState"),
     totalCount: document.getElementById("totalCount"),
     readyCount: document.getElementById("readyCount"),
@@ -189,6 +190,9 @@
   });
 
   el.refreshBtn.addEventListener("click", loadTasks);
+  el.agentModeBtn.addEventListener("click", () => {
+    window.location.href = "/agent";
+  });
   el.startRecordingBtn.addEventListener("click", async () => {
     try {
       el.startRecordingBtn.disabled = true;

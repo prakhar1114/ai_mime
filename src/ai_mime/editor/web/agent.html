@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AI Mime - Agent Mode</title>
+    <link rel="stylesheet" href="/static/agent.css" />
+  </head>
+  <body>
+    <div class="agent-shell">
+      <aside class="sidebar">
+        <div class="side-top">
+          <h1>Agent Mode</h1>
+        </div>
+        <button class="new-chat" id="newChatBtn">New Chat</button>
+        <div class="sessions" id="sessionsList">
+          <div class="empty">Loading sessions...</div>
+        </div>
+      </aside>
+
+      <main class="chat">
+        <header class="chat-head">
+          <div class="chat-title" id="chatTitle">New Chat</div>
+          <label class="bash-toggle">
+            <input type="checkbox" id="bashApprovalToggle" />
+            <span>Require approval for Bash</span>
+          </label>
+        </header>
+
+        <section class="messages" id="messages">
+          <div class="empty-state">Start a new workspace debugging chat.</div>
+        </section>
+
+        <footer class="composer">
+          <div class="error" id="errorBox" hidden></div>
+          <form id="chatForm">
+            <textarea id="messageInput" rows="1" placeholder="Write a message..."></textarea>
+            <div class="composer-actions">
+              <select class="model-select" id="modelSelect" aria-label="Claude model"></select>
+              <button class="stop" id="stopBtn" type="button" hidden>Stop</button>
+              <button class="send" id="sendBtn" type="submit">Send</button>
+            </div>
+          </form>
+        </footer>
+      </main>
+    </div>
+
+    <script src="/static/agent.js"></script>
+  </body>
+</html>

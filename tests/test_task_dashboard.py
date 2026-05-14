@@ -36,6 +36,7 @@ class TaskDashboardTests(unittest.TestCase):
 
     def test_inventory_marks_ready_and_pending_tasks(self) -> None:
         self._ready_workflow("20260513T000000Z-ready")
+        self._recording("20260513T000000Z-ready")
         self._recording("20260513T000100Z-pending")
 
         runner = TaskRunner(
@@ -48,6 +49,7 @@ class TaskDashboardTests(unittest.TestCase):
 
         self.assertTrue(rows["20260513T000000Z-ready"]["can_replay"])
         self.assertTrue(rows["20260513T000000Z-ready"]["can_edit"])
+        self.assertTrue(rows["20260513T000000Z-ready"]["can_reflect"])
         self.assertEqual(rows["20260513T000000Z-ready"]["status"], "ready")
         self.assertTrue(rows["20260513T000100Z-pending"]["can_reflect"])
         self.assertEqual(rows["20260513T000100Z-pending"]["status"], "pending_reflection")

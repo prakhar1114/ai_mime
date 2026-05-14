@@ -35,6 +35,66 @@ PassAActionType = Literal[
     "EXTRACT",
 ]
 
+OptimizedExecutor = Literal["bash", "browser_harness", "vision_agent"]
+
+
+class PassCFilesystemAccessPath(BaseModel):
+    """A user filesystem path Pass C believes the optimized execution needs."""
+    path: str = Field(description="Absolute user filesystem path or directory needed by the task.")
+    reason: str = Field(description="Why the optimized executor needs access to this path.")
+    approval_required: bool = Field(
+        default=False,
+        description="Whether this access must be approved before the runner grants it.",
+    )
+
+
+class PassCUserFilesystemAccess(BaseModel):
+    """User filesystem access hints. Workflow/temp/output permissions are runner-owned."""
+    readable_roots: list[PassCFilesystemAccessPath] = Field(
+        default_factory=list,
+        description="User filesystem paths the task may need to read.",
+    )
+    writable_roots: list[PassCFilesystemAccessPath] = Field(
+        default_factory=list,
+        description="User filesystem paths the task may need to write outside the workflow workspace.",
+    )
+
+
+class PassCInputSpec(BaseModel):
+    """Top-level optimized-plan input variable."""
+    name: str = Field(description="Stable snake_case variable name.")
+    description: str = Field(description="Human-readable description of this input.")
+    required: bool = Field(description="Whether the caller must provide this input before execution.")
+    default: str | None = Field(default=None, description="Optional inferred/default value.")
+
+
+class PassCStep(BaseModel):
+    """One executor-owned optimized step, potentially covering multiple schema subtasks."""
+    id: str = Field(description="Unique snake_case step id.")
+    title: str = Field(description="Short human-readable step title.")
+    source_subtask_ids: list[int] = Field(
+        min_length=1,
+        description="One or more source schema plan.subtasks indexes covered by this optimized step.",
+    )
+    executor: OptimizedExecutor = Field(description="Executor that should own this optimized step.")
+    goal: str = Field(description="Concrete execution goal. Mention any LLM/OCR needs here if relevant.")
+    inputs: list[str] = Field(default_factory=list, description="Variable names this step consumes.")
+    outputs: list[str] = Field(default_factory=list, description="Variable names this step produces.")
+    success_criteria: str = Field(description="How to know this optimized step succeeded.")
+    fallback: OptimizedExecutor = Field(description="Fallback executor, usually vision_agent.")
+
+
+class PassCOutput(BaseModel):
+    """Optimized execution strategy produced by Pass C."""
+    version: Literal[1] = Field(description="Optimized plan schema version. Must be 1.")
+    workflow_goal: str = Field(description="Concise goal of the workflow.")
+    user_filesystem_access: PassCUserFilesystemAccess = Field(
+        default_factory=PassCUserFilesystemAccess,
+        description="User filesystem read/write access hints only.",
+    )
+    inputs: list[PassCInputSpec] = Field(default_factory=list, description="Top-level workflow input variables.")
+    steps: list[PassCStep] = Field(min_length=1, description="Optimized executor-owned steps.")
+
 
 def _png_data_url(path: Path) -> str:
     raw = path.read_bytes()
@@ -144,6 +204,55 @@ Step summaries (ordered JSON array):
   - For others: `null`.
 - **subtask**: Must be an EXACT string match to one of the strings defined in your `subtasks` list.
   - *Note:* If you set `action_value` to `null` for a structural step (like typing an index), your subtask text MUST describe what to type (e.g., "Enter the next sequential index number").
+"""
+
+
+PASS_C_SYSTEM_PROMPT = """You are an optimized workflow strategy compiler.
+You convert a completed UI replay schema into a compact executor-oriented plan.
+
+Executors:
+- bash: local files, deterministic commands, app open-if-needed, direct OS work, local preprocessing.
+- browser_harness: browser tabs, web apps, Google Sheets, CDP/selector automation.
+- vision_agent: fallback for UI that is not safely optimizable.
+
+Rules:
+- Do not output tools. If a step needs OCR, extraction, or model-backed judgement, describe that inside goal.
+- Group adjacent source subtasks when one executor can do them faster.
+- Prefer direct file access over Finder/Desktop UI.
+- Prefer browser_harness for browser and web-app work.
+- Prefer bash for app open-if-needed and local file work.
+- Every step must include a fallback, usually vision_agent.
+- Use semantic variable names for data passed between steps.
+- user_filesystem_access is only for user files/directories needed by the task.
+- Do not include workflow_dir, outputs, agent state, skills, or temp directories in user_filesystem_access.
+- Mark user filesystem writes approval_required=true unless they are narrow task-specific files.
+"""
+
+
+PASS_C_USER_TEMPLATE = """Task name: {task_name}
+User task description: {task_description_user}
+
+Current final schema summary:
+{schema_summary_json}
+
+Manifest action summaries:
+{manifest_summary_json}
+
+Discovered local file hints:
+{file_hints_json}
+
+Generate optimized_plan.json version 1.
+
+Output requirements:
+- user_filesystem_access: include only user filesystem paths/directories needed by the optimized task, with reasons.
+- Do not include workflow/output/temp directories in user_filesystem_access; the runner grants those separately.
+- inputs: top-level variables needed before execution or inferred from recording.
+- steps: optimized executor steps. source_subtask_ids may contain multiple schema subtask indexes.
+- step inputs must reference top-level inputs or earlier step outputs.
+- step outputs must be unique.
+- executor and fallback must be one of: bash, browser_harness, vision_agent.
+- If a receipt/PDF/bill is opened only for extraction, collapse file opening + extraction into a bash step and mention using an LLM for OCR/semantic extraction if needed.
+- If Chrome/browser/Google Sheets/web tabs are involved, collapse that browser work into a browser_harness step when possible.
 """
 
 
@@ -597,6 +706,407 @@ def write_schema(workflow_dir: str | os.PathLike[str], schema: dict[str, Any]) -
     return path
 
 
+def write_optimized_plan(workflow_dir: str | os.PathLike[str], optimized_plan: dict[str, Any]) -> Path:
+    workflow_dir_p = Path(workflow_dir)
+    path = workflow_dir_p / "optimized_plan.json"
+    _write_json_atomic(path, optimized_plan)
+    return path
+
+
+def _schema_subtask_count(schema: dict[str, Any]) -> int:
+    plan = schema.get("plan") if isinstance(schema.get("plan"), dict) else {}
+    subtasks = plan.get("subtasks") if isinstance(plan, dict) else []
+    return len(subtasks) if isinstance(subtasks, list) else 0
+
+
+def _expanded_user_home_paths() -> set[str]:
+    home = Path.home()
+    return {
+        "/",
+        "$HOME",
+        "~",
+        str(home),
+        "~/Desktop",
+        str(home / "Desktop"),
+        "~/Documents",
+        str(home / "Documents"),
+        "~/Downloads",
+        str(home / "Downloads"),
+    }
+
+
+def _validate_user_filesystem_access(plan: PassCOutput) -> None:
+    access = plan.user_filesystem_access
+    for field_name, entries in (
+        ("readable_roots", access.readable_roots),
+        ("writable_roots", access.writable_roots),
+    ):
+        seen: set[str] = set()
+        for entry in entries:
+            path = entry.path.strip()
+            if not path:
+                raise ValueError(f"optimized_plan.user_filesystem_access.{field_name}[].path must be non-empty")
+            if path in seen:
+                raise ValueError(f"optimized_plan.user_filesystem_access.{field_name} path duplicated: {path}")
+            seen.add(path)
+            if not entry.reason.strip():
+                raise ValueError(
+                    f"optimized_plan.user_filesystem_access.{field_name} path {path!r}: reason must be non-empty"
+                )
+            if field_name == "writable_roots" and path in _expanded_user_home_paths() and not entry.approval_required:
+                raise ValueError(
+                    "optimized_plan.user_filesystem_access.writable_roots broad path "
+                    f"{path!r} must set approval_required=true"
+                )
+
+
+def validate_optimized_plan(optimized_plan: dict[str, Any], schema: dict[str, Any]) -> None:
+    """
+    Validate the minimal Pass C optimized_plan.json contract.
+    Raises ValueError with a readable message when the plan is invalid.
+    """
+    try:
+        plan = PassCOutput.model_validate(optimized_plan)
+    except Exception as e:
+        raise ValueError(f"optimized_plan failed schema validation: {e}") from e
+
+    if plan.version != 1:
+        raise ValueError("optimized_plan.version must be 1")
+    if not plan.workflow_goal.strip():
+        raise ValueError("optimized_plan.workflow_goal must be non-empty")
+    _validate_user_filesystem_access(plan)
+
+    input_names: set[str] = set()
+    for inp in plan.inputs:
+        name = inp.name.strip()
+        if not name:
+            raise ValueError("optimized_plan.inputs[].name must be non-empty")
+        if name in input_names:
+            raise ValueError(f"optimized_plan input name duplicated: {name}")
+        input_names.add(name)
+        if not inp.description.strip():
+            raise ValueError(f"optimized_plan input {name}: description must be non-empty")
+
+    if not plan.steps:
+        raise ValueError("optimized_plan.steps must be non-empty")
+
+    subtask_count = _schema_subtask_count(schema)
+    if subtask_count <= 0:
+        raise ValueError("schema has no plan.subtasks for optimized_plan source_subtask_ids validation")
+
+    step_ids: set[str] = set()
+    available_vars: set[str] = set(input_names)
+    produced_vars: set[str] = set()
+    for step in plan.steps:
+        sid = step.id.strip()
+        if not sid:
+            raise ValueError("optimized_plan.steps[].id must be non-empty")
+        if sid in step_ids:
+            raise ValueError(f"optimized_plan step id duplicated: {sid}")
+        step_ids.add(sid)
+
+        if not step.title.strip():
+            raise ValueError(f"optimized_plan step {sid}: title must be non-empty")
+        if not step.goal.strip():
+            raise ValueError(f"optimized_plan step {sid}: goal must be non-empty")
+        if not step.success_criteria.strip():
+            raise ValueError(f"optimized_plan step {sid}: success_criteria must be non-empty")
+
+        if not step.source_subtask_ids:
+            raise ValueError(f"optimized_plan step {sid}: source_subtask_ids must be non-empty")
+        for si in step.source_subtask_ids:
+            if not isinstance(si, int) or si < 0 or si >= subtask_count:
+                raise ValueError(
+                    f"optimized_plan step {sid}: invalid source_subtask_id={si!r}; schema has {subtask_count} subtasks"
+                )
+
+        for name in step.inputs:
+            if name not in available_vars:
+                raise ValueError(f"optimized_plan step {sid}: unknown input variable {name!r}")
+
+        for name in step.outputs:
+            name_s = str(name).strip()
+            if not name_s:
+                raise ValueError(f"optimized_plan step {sid}: outputs must be non-empty strings")
+            if name_s in input_names:
+                raise ValueError(f"optimized_plan step {sid}: output {name_s!r} duplicates a top-level input")
+            if name_s in produced_vars:
+                raise ValueError(f"optimized_plan output duplicated across steps: {name_s}")
+            produced_vars.add(name_s)
+            available_vars.add(name_s)
+
+
+def _iter_strings(obj: Any) -> Iterable[str]:
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _iter_strings(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _iter_strings(v)
+
+
+def _summarize_schema_for_pass_c(schema: dict[str, Any]) -> dict[str, Any]:
+    plan = schema.get("plan") if isinstance(schema.get("plan"), dict) else {}
+    subtasks_any = plan.get("subtasks") if isinstance(plan, dict) else []
+    subtasks_out: list[dict[str, Any]] = []
+    if isinstance(subtasks_any, list):
+        for st in subtasks_any:
+            if not isinstance(st, dict):
+                continue
+            steps_out: list[dict[str, Any]] = []
+            for s in st.get("steps") or []:
+                if not isinstance(s, dict):
+                    continue
+                steps_out.append(
+                    {
+                        "i": s.get("i"),
+                        "intent": s.get("intent"),
+                        "action_type": s.get("action_type"),
+                        "action_value": s.get("action_value"),
+                        "variable_name": s.get("variable_name"),
+                        "target_primary": (
+                            (s.get("target") or {}).get("primary") if isinstance(s.get("target"), dict) else None
+                        ),
+                        "expected_current_state": s.get("expected_current_state"),
+                    }
+                )
+            subtasks_out.append(
+                {
+                    "subtask_i": st.get("subtask_i"),
+                    "text": st.get("text"),
+                    "dependencies": st.get("dependencies") or [],
+                    "steps": steps_out,
+                }
+            )
+    return {
+        "task_name": schema.get("task_name"),
+        "task_description_user": schema.get("task_description_user"),
+        "detailed_task_description": schema.get("detailed_task_description"),
+        "task_params": schema.get("task_params") or [],
+        "success_criteria": schema.get("success_criteria"),
+        "subtasks": subtasks_out,
+    }
+
+
+def _summarize_manifest_for_pass_c(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for i, e in enumerate(events):
+        if not isinstance(e, dict):
+            continue
+        details = e.get("action_details") if isinstance(e.get("action_details"), dict) else {}
+        slim_details: dict[str, Any] = {}
+        if e.get("action_type") == "type":
+            slim_details["text"] = details.get("text")
+        elif e.get("action_type") == "key":
+            slim_details["key"] = details.get("key")
+        elif e.get("action_type") == "extract":
+            slim_details["query"] = details.get("query")
+            slim_details["values"] = details.get("values")
+        elif e.get("action_type") in {"click", "double_click", "right_click", "middle_click", "scroll", "drag"}:
+            for k in ("button", "dx", "dy"):
+                if k in details:
+                    slim_details[k] = details.get(k)
+        out.append(
+            {
+                "event_i": i,
+                "action_type": e.get("action_type"),
+                "action_details": slim_details,
+                "details": e.get("details"),
+                "screenshot": e.get("screenshot"),
+            }
+        )
+    return out
+
+
+_FILE_NAME_RE = re.compile(r"[^/\\\n\r\t\"']+\.(?:pdf|csv|tsv|xlsx|xls|docx|png|jpe?g|webp)", re.IGNORECASE)
+
+
+def _discover_file_hints_for_pass_c(workflow_dir: Path, schema: dict[str, Any], events: list[dict[str, Any]]) -> list[str]:
+    """
+    Best-effort local file hints for Pass C. This is intentionally conservative:
+    only search exact filenames mentioned in schema/manifest under the workflow dir and ~/Desktop.
+    """
+    text_blob = "\n".join(_iter_strings(schema)) + "\n" + "\n".join(_iter_strings(events))
+    names: list[str] = []
+    seen_names: set[str] = set()
+    for m in _FILE_NAME_RE.finditer(text_blob):
+        name = m.group(0).strip()
+        if name and name not in seen_names:
+            seen_names.add(name)
+            names.append(name)
+    if not names:
+        return []
+
+    roots = [workflow_dir, Path.home() / "Desktop"]
+    found: list[str] = []
+    seen_paths: set[str] = set()
+
+    def _walk_limited(root: Path, max_depth: int = 4) -> Iterable[Path]:
+        if not root.exists():
+            return
+        root = root.resolve()
+        for dirpath, dirnames, filenames in os.walk(root):
+            cur = Path(dirpath)
+            try:
+                depth = len(cur.relative_to(root).parts)
+            except Exception:
+                depth = 0
+            if depth >= max_depth:
+                dirnames[:] = []
+            for fn in filenames:
+                yield cur / fn
+
+    wanted = set(names)
+    for root in roots:
+        for p in _walk_limited(root):
+            if p.name not in wanted:
+                continue
+            ps = str(p)
+            if ps not in seen_paths:
+                seen_paths.add(ps)
+                found.append(ps)
+    return found[:20]
+
+
+@observe()
+def run_pass_c_optimizer(
+    *,
+    workflow_dir: str | os.PathLike[str],
+    schema: dict[str, Any],
+    llm_cfg: ResolvedReflectConfig,
+) -> dict[str, Any]:
+    """
+    Pass C: compile a completed schema into a compact optimized execution strategy.
+    """
+    workflow_dir_p = Path(workflow_dir)
+    task_name = str(schema.get("task_name") or "")
+    task_description_user = str(schema.get("task_description_user") or "")
+    events = load_events(workflow_dir_p)
+
+    pass_c_model = llm_cfg.pass_b_model or llm_cfg.model
+    logger.info("Pass C: compiling optimized plan (model=%s)", pass_c_model)
+    debug_log(f"Pass C: starting optimized plan generation model={pass_c_model}")
+
+    user = PASS_C_USER_TEMPLATE.format(
+        task_name=task_name,
+        task_description_user=task_description_user,
+        schema_summary_json=json.dumps(_summarize_schema_for_pass_c(schema), ensure_ascii=False),
+        manifest_summary_json=json.dumps(_summarize_manifest_for_pass_c(events), ensure_ascii=False),
+        file_hints_json=json.dumps(_discover_file_hints_for_pass_c(workflow_dir_p, schema, events), ensure_ascii=False),
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": PASS_C_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+    client = LiteLLMChatClient(
+        model=pass_c_model,
+        api_base=llm_cfg.api_base,
+        api_key_env=llm_cfg.api_key_env,
+        extra_kwargs=llm_cfg.extra_kwargs,
+        max_retries=MAX_RETRIES,
+    )
+    event = client.create(
+        response_model=PassCOutput,
+        messages=messages,
+        max_tokens=llm_cfg.pass_b_max_tokens,
+    )
+    optimized_plan = event.model_dump()
+    validate_optimized_plan(optimized_plan, schema)
+    return optimized_plan
+
+
+def ensure_optimized_plan(
+    *,
+    workflow_dir: str | os.PathLike[str],
+    schema: dict[str, Any],
+    llm_cfg: ResolvedReflectConfig,
+) -> dict[str, Any]:
+    workflow_dir_p = Path(workflow_dir)
+    path = workflow_dir_p / "optimized_plan.json"
+    existing = _read_json_if_exists(path)
+    if isinstance(existing, dict):
+        try:
+            validate_optimized_plan(existing, schema)
+            debug_log("Pass C: found valid optimized_plan.json; skipping.")
+            logger.info("Pass C: found valid optimized_plan.json; skipping.")
+            cleanup_reflect_artifacts(workflow_dir_p, schema=schema, optimized_plan=existing)
+            return existing
+        except Exception as e:
+            debug_log(f"Pass C: existing optimized_plan.json invalid; regenerating: {e}")
+            logger.info("Pass C: existing optimized_plan.json invalid; regenerating: %s", e)
+
+    optimized_plan = run_pass_c_optimizer(workflow_dir=workflow_dir_p, schema=schema, llm_cfg=llm_cfg)
+    write_optimized_plan(workflow_dir_p, optimized_plan)
+    cleanup_reflect_artifacts(workflow_dir_p, schema=schema, optimized_plan=optimized_plan)
+    debug_log(f"Pass C complete: {path}")
+    logger.info("Pass C complete: wrote optimized_plan.json")
+    return optimized_plan
+
+
+def cleanup_reflect_artifacts(
+    workflow_dir: str | os.PathLike[str],
+    *,
+    schema: dict[str, Any],
+    optimized_plan: dict[str, Any],
+) -> list[Path]:
+    """
+    Remove reflect-only workflow artifacts once schema.json and optimized_plan.json are valid.
+
+    The original recording directory is not touched; this only cleans files copied/generated
+    inside the workflow directory.
+    """
+    workflow_dir_p = Path(workflow_dir)
+    if not (workflow_dir_p / "schema.json").exists():
+        raise RuntimeError(f"Cannot cleanup reflect artifacts before schema.json exists: {workflow_dir_p}")
+    if not (workflow_dir_p / "optimized_plan.json").exists():
+        raise RuntimeError(f"Cannot cleanup reflect artifacts before optimized_plan.json exists: {workflow_dir_p}")
+    validate_optimized_plan(optimized_plan, schema)
+
+    removed: list[Path] = []
+
+    manifest_path = workflow_dir_p / "manifest.jsonl"
+    screenshot_paths: set[Path] = set()
+    if manifest_path.exists():
+        try:
+            for event in _read_jsonl(manifest_path):
+                rel = event.get("screenshot") if isinstance(event, dict) else None
+                if not isinstance(rel, str) or not rel.strip():
+                    continue
+                candidate = (workflow_dir_p / rel).resolve()
+                try:
+                    candidate.relative_to(workflow_dir_p.resolve())
+                except ValueError:
+                    continue
+                screenshot_paths.add(candidate)
+        except Exception as e:
+            logger.info("Reflect cleanup: could not parse manifest screenshots: %s", e)
+
+    for path in sorted(screenshot_paths):
+        if path.exists() and path.is_file():
+            path.unlink()
+            removed.append(path)
+
+    for name in (
+        "manifest.jsonl",
+        "step_cards.json",
+        "plan_creation.json",
+        "schema.draft.json",
+        "schema.draft.v1.json",
+        "schema.v1.json",
+    ):
+        path = workflow_dir_p / name
+        if path.exists() and path.is_file():
+            path.unlink()
+            removed.append(path)
+
+    if removed:
+        logger.info("Reflect cleanup removed %d artifacts from %s", len(removed), workflow_dir_p)
+        debug_log(f"Reflect cleanup removed {len(removed)} artifacts from {workflow_dir_p}")
+    return removed
+
+
 _TEMPLATE_RE = re.compile(r"\{\{([a-zA-Z0-9_]+)\}\}")
 
 _EXTRACT_PLACEHOLDER_RE = re.compile(r"\{(extract_[0-9]+)\}")
@@ -735,7 +1245,8 @@ def compile_workflow_schema(
             or isinstance(existing_schema.get("plan", {}).get("steps"), list)
         )
     ):
-        logger.info("Schema compile: found existing schema.json; skipping all passes.")
+        logger.info("Schema compile: found existing schema.json; skipping Pass A/B/finalization.")
+        ensure_optimized_plan(workflow_dir=workflow_dir_p, schema=existing_schema, llm_cfg=llm_cfg)
         return existing_schema
 
     # Pass A: must be complete before Pass B.
@@ -911,6 +1422,7 @@ def compile_workflow_schema(
     update_dependencies(final_schema)
 
     write_schema(workflow_dir_p, final_schema)
+    ensure_optimized_plan(workflow_dir=workflow_dir_p, schema=final_schema, llm_cfg=llm_cfg)
     debug_log(f"Schema compilation complete: {workflow_dir_p / 'schema.json'}")
     logger.info("Wrote schema.json")
     return final_schema

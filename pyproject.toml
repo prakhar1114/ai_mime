@@ -32,7 +32,8 @@ dependencies = [
     "setuptools",
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
-    "lmnr[all]"
+    "lmnr[all]",
+    "claude-agent-sdk>=0.1.0"
 ]
 
 [project.scripts]
