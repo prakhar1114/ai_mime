@@ -168,6 +168,14 @@
     }
   }
 
+  function positionOpenMenu() {
+    const menu = el.taskList.querySelector(".menu.open");
+    if (!menu) return;
+    menu.classList.remove("flip-up");
+    const rect = menu.getBoundingClientRect();
+    if (rect.bottom > window.innerHeight - 8) menu.classList.add("flip-up");
+  }
+
   el.taskList.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
     if (!button || button.disabled) return;
@@ -176,6 +184,7 @@
     if (button.dataset.action === "menu") {
       openMenuTaskId = openMenuTaskId === row.dataset.id ? null : row.dataset.id;
       render();
+      positionOpenMenu();
       return;
     }
     openMenuTaskId = null;

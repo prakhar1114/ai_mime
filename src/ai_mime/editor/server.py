@@ -5,9 +5,11 @@ import logging
 import os
 import re
 import shutil
-import socket
+import signal
+import subprocess
 import sys
 import threading
+import time
 import traceback
 from multiprocessing import Event, Process, Queue
 from pathlib import Path
@@ -35,6 +37,53 @@ from ai_mime.agent_runner import AgentBusyError, WorkspaceAgentChatService
 
 _SINGLE_BRACE_PARAM_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 _EXTRACT_NAME_RE = re.compile(r"^extract_[0-9]+$")
+EDITOR_SERVER_PORT = 58838
+
+
+def _kill_processes_on_tcp_port(port: int) -> None:
+    """Stop any process using this TCP port so a new editor server can bind (macOS/Linux: uses lsof)."""
+    try:
+        proc = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return
+    ours = os.getpid()
+    pids: list[int] = []
+    for token in raw.replace("\n", " ").split():
+        if token.isdigit():
+            pid = int(token)
+            if pid != ours:
+                pids.append(pid)
+    seen: set[int] = set()
+    unique: list[int] = []
+    for p in pids:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+    if not unique:
+        return
+    print(
+        f"[ai-mime] editor server port {port} in use; stopping PIDs {unique}",
+        file=sys.stderr,
+        flush=True,
+    )
+    for pid in unique:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                break
+            except PermissionError:
+                break
+    time.sleep(0.15)
 
 
 def _task_log(msg: str, *, exc_info: bool = False) -> None:
@@ -806,12 +855,16 @@ def create_app(
     return app
 
 
-def _pick_free_port() -> int:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 0))
-    _host, port = s.getsockname()
-    s.close()
-    return int(port)
+# Fixed loopback port for a stable URL; re-enable if collisions with other local services matter.
+
+
+
+# def _pick_free_port() -> int:
+#     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+#     s.bind(("127.0.0.1", 0))
+#     _host, port = s.getsockname()
+#     s.close()
+#     return int(port)
 
 
 def _run_uvicorn(
@@ -856,7 +909,8 @@ def start_editor_server(
     os.environ["AI_MIME_WORKFLOWS_ROOT"] = str(workflows_root)
     recordings_root = recordings_root or workflows_root.parent / "recordings"
     os.environ["AI_MIME_RECORDINGS_ROOT"] = str(recordings_root)
-    port = _pick_free_port()
+    port = EDITOR_SERVER_PORT
+    _kill_processes_on_tcp_port(port)
     p = Process(
         target=_run_uvicorn,
         args=(

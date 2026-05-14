@@ -113,10 +113,11 @@ h1 {
   margin-top: 18px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: hidden;
   background: var(--surface-2);
   box-shadow: 0 14px 34px var(--shadow);
 }
+
+.task-list { position: relative; }
 
 .list-head,
 .task-row {
@@ -291,7 +292,7 @@ h1 {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 20;
+  z-index: 50;
   display: none;
   min-width: 150px;
   overflow: hidden;
@@ -299,6 +300,11 @@ h1 {
   border-radius: 8px;
   background: #111a26;
   box-shadow: 0 18px 42px var(--shadow);
+}
+
+.menu.flip-up {
+  top: auto;
+  bottom: calc(100% + 6px);
 }
 
 .menu.open {

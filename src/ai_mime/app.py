@@ -309,6 +309,7 @@ class RecorderApp(rumps.App):
 
         # Build the menu using rumps.Menu APIs (more robust across rumps versions than assigning a raw list).
         self._build_menu()
+        self.port = self._ensure_editor_server()
 
     def _log_to_tmp(self, msg: str) -> None:
         try:
@@ -899,8 +900,7 @@ class RecorderApp(rumps.App):
 
     def _open_tasks_dashboard(self, _sender=None) -> None:
         try:
-            port = self._ensure_editor_server()
-            url = f"http://127.0.0.1:{port}/tasks"
+            url = f"http://127.0.0.1:{self.port}/tasks"
             ok = webbrowser.open(url, new=1)
             if not ok:
                 raise RuntimeError(f"Failed to open browser for: {url}")
@@ -908,8 +908,7 @@ class RecorderApp(rumps.App):
             rumps.alert(f"Open Tasks failed: {e}")
 
     def _open_workflow_editor(self, workflow_dir: Path, display_name: str) -> None:
-        port = self._ensure_editor_server()
-        url = f"http://127.0.0.1:{port}/workflows/{workflow_dir.name}"
+        url = f"http://127.0.0.1:{self.port}/workflows/{workflow_dir.name}"
         ok = webbrowser.open(url, new=1)
         if not ok:
             raise RuntimeError(f"Failed to open browser for: {url}")
