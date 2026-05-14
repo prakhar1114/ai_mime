@@ -4,7 +4,6 @@ from .models import (
     AgentRunMode,
     AgentRunRequest,
     AgentRunResult,
-    BrowserHarnessConfig,
     FilesystemAccess,
     FilesystemAccessEntry,
 )
@@ -18,7 +17,6 @@ __all__ = [
     "AgentRunMode",
     "AgentRunRequest",
     "AgentRunResult",
-    "BrowserHarnessConfig",
     "FilesystemAccess",
     "FilesystemAccessEntry",
     "build_agent_run_request",

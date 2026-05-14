@@ -27,14 +27,6 @@ class FilesystemAccess(BaseModel):
     writable_roots: list[FilesystemAccessEntry] = Field(default_factory=list)
 
 
-class BrowserHarnessConfig(BaseModel):
-    enabled: bool = False
-    harness_root: Path | None = None
-    agent_workspace: Path | None = None
-    domain_skills_dir: Path | None = None
-    shared_domain_skills_dir: Path | None = None
-
-
 class AgentRunRequest(BaseModel):
     provider: AgentProvider
     mode: AgentRunMode
@@ -47,7 +39,6 @@ class AgentRunRequest(BaseModel):
     readable_roots: list[Path] = Field(default_factory=list)
     writable_roots: list[Path] = Field(default_factory=list)
     user_filesystem_access: FilesystemAccess = Field(default_factory=FilesystemAccess)
-    browser_harness: BrowserHarnessConfig = Field(default_factory=BrowserHarnessConfig)
     temp_dir: Path | None = None
     system_prompt: str | None = None
 

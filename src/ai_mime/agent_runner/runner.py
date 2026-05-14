@@ -12,12 +12,10 @@ from ai_mime.agent_runner.models import (
     AgentRunMode,
     AgentRunRequest,
     AgentRunResult,
-    BrowserHarnessConfig,
     FilesystemAccess,
     FilesystemAccessEntry,
 )
 from ai_mime.app_data import get_workflows_dir
-from ai_mime.reflect.schema_compiler import validate_optimized_plan
 
 
 class AgentAdapter(Protocol):
@@ -97,7 +95,6 @@ def build_agent_run_request(
     mode: AgentRunMode = "execute_optimized_plan",
     model: str | None = None,
     session_id: str | None = None,
-    browser_harness: BrowserHarnessConfig | None = None,
 ) -> AgentRunRequest:
     workflow_dir_p = Path(workflow_dir)
     if mode == "general":
@@ -114,7 +111,6 @@ def build_agent_run_request(
             optimized_plan_path=None,
             readable_roots=_unique_paths([workspace_dir]),
             writable_roots=_unique_paths([agent_dir]),
-            browser_harness=browser_harness or BrowserHarnessConfig(),
         )
 
     schema_path = workflow_dir_p / "schema.json"
@@ -154,7 +150,6 @@ def build_agent_run_request(
         readable_roots=readable_roots,
         writable_roots=writable_roots,
         user_filesystem_access=access,
-        browser_harness=browser_harness or BrowserHarnessConfig(),
     )
 
 
@@ -193,9 +188,6 @@ Readable roots:
 Writable roots:
 {json.dumps([str(p) for p in request.writable_roots], indent=2)}
 
-Browser harness:
-{request.browser_harness.model_dump_json(indent=2)}
-
 Existing memory:
 {memory}
 """
@@ -218,9 +210,6 @@ Readable roots:
 
 Writable roots:
 {json.dumps([str(p) for p in request.writable_roots], indent=2)}
-
-Browser harness:
-{request.browser_harness.model_dump_json(indent=2)}
 
 Existing memory:
 {memory}
