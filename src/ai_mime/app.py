@@ -19,7 +19,7 @@ from ai_mime.app_data import get_bundled_resource, get_recordings_dir
 
 from ai_mime.replay.catalog import list_replayable_workflows
 from ai_mime.user_config import ResolvedLLMConfig, ResolvedReflectConfig, ResolvedUserConfig, load_user_config
-from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
+from ai_mime.reflect.runner import run_reflect_and_compile_schema
 from ai_mime.replay.engine import ReplayConfig, ReplayStopped, resolve_params, run_plan
 from ai_mime.replay.grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
 from ai_mime.replay.os_executor import exec_computer_use_action
@@ -71,53 +71,12 @@ def _run_reflect_and_compile_schema(
     - reflect_session(session_dir) -> workflows/<session_name>/
     - compile schema.json inside that workflow dir
     """
-    log(f"=== Reflect subprocess started: {session_dir} ===")
-    log(f"reflect_llm_cfg.model={reflect_llm_cfg.model}")
-    log(f"clean_manifest_tail={clean_manifest_tail}")
-
-    # Ensure INFO logs from schema compiler show up in this subprocess.
-    try:
-        logging.basicConfig(level=logging.INFO)
-    except Exception:
-        pass
-
-    def _emit(obj: dict[str, Any]) -> None:
-        if event_queue is None:
-            return
-        try:
-            if hasattr(event_queue, "put_nowait"):
-                event_queue.put_nowait(obj)
-            else:
-                event_queue.put(obj)
-        except Exception:
-            pass
-
-    try:
-        log("Starting reflect_session...")
-        session_dir_p = Path(session_dir)
-        session_name = session_dir_p.name
-        recordings_dir = session_dir_p.parent
-        workflows_root = recordings_dir.parent / "workflows"
-
-        # Notify start of reflect phase
-        _emit({"type": "reflect_phase_started", "session_name": session_name, "phase": "reflecting"})
-
-        out_dir = reflect_session(session_dir_p, workflows_root, clean_manifest_tail=clean_manifest_tail)
-        log(f"Reflect finished: {out_dir}")
-        print(f"Reflect finished: {out_dir}")
-
-        # Notify start of compile phase
-        _emit({"type": "reflect_phase_started", "session_name": session_name, "phase": "compiling"})
-
-        log("Starting compile_schema_for_workflow_dir...")
-        compile_schema_for_workflow_dir(out_dir, llm_cfg=reflect_llm_cfg)
-        log(f"Schema compiled: {out_dir / 'schema.json'}")
-        print(f"Schema compiled: {out_dir / 'schema.json'}")
-        _emit({"type": "reflect_compile_done", "workflow_dir": str(out_dir)})
-    except Exception as e:
-        log(f"FAILED reflect/compile: {e}", exc_info=True)
-        _emit({"type": "reflect_compile_failed", "error": str(e), "session_dir": str(session_dir)})
-        raise
+    run_reflect_and_compile_schema(
+        session_dir,
+        reflect_llm_cfg,
+        clean_manifest_tail=clean_manifest_tail,
+        event_queue=event_queue,
+    )
 
 
 def _resolve_menubar_icon_path() -> str | None:

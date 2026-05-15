@@ -6,8 +6,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 AgentProvider = Literal["claude"]
-AgentRunMode = Literal["general", "execute_optimized_plan", "build_skill"]
-AgentRunStatus = Literal["success", "failed", "cancelled"]
+AgentRunMode = Literal["general", "execute_optimized_plan", "build_skill_chat"]
+AgentRunStatus = Literal["success", "failed", "cancelled", "skill_ready", "skill_unbuildable"]
 
 
 class AgentModelOption(BaseModel):

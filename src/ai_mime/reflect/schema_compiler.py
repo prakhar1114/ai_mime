@@ -9,7 +9,7 @@ from lmnr import observe
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Callable, Iterable, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field  # type: ignore[import-not-found]
 from tqdm import tqdm  # type: ignore[import-not-found]
@@ -1017,7 +1017,7 @@ def run_pass_c_optimizer(
     return optimized_plan
 
 
-def ensure_optimized_plan(
+def create_optimized_plan(
     *,
     workflow_dir: str | os.PathLike[str],
     schema: dict[str, Any],
@@ -1089,7 +1089,7 @@ def cleanup_reflect_artifacts(
             removed.append(path)
 
     for name in (
-        "manifest.jsonl",
+        # "manifest.jsonl",
         "step_cards.json",
         "plan_creation.json",
         "schema.draft.json",
@@ -1220,6 +1220,7 @@ def compile_workflow_schema(
     *,
     workflow_dir: str | os.PathLike[str],
     llm_cfg: ResolvedReflectConfig,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """
     End-to-end compile:
@@ -1230,6 +1231,20 @@ def compile_workflow_schema(
     """
     workflow_dir_p = Path(workflow_dir)
     task_name, task_description_user = load_task_metadata(workflow_dir_p)
+
+    def _progress(event_type: str, *, phase: str, label: str, progress: int) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback({
+                "type": event_type,
+                "phase": phase,
+                "label": label,
+                "progress": progress,
+                "workflow_dir": str(workflow_dir_p),
+            })
+        except Exception:
+            pass
 
     debug_log(f"Schema compile start: workflow_dir={workflow_dir_p} task={task_name} model={llm_cfg.model}")
     logger.info("Schema compile start: workflow_dir=%s task_name=%s model=%s", workflow_dir_p, task_name, llm_cfg.model)
@@ -1246,7 +1261,11 @@ def compile_workflow_schema(
         )
     ):
         logger.info("Schema compile: found existing schema.json; skipping Pass A/B/finalization.")
-        ensure_optimized_plan(workflow_dir=workflow_dir_p, schema=existing_schema, llm_cfg=llm_cfg)
+        _progress("reflect_progress", phase="pass_a_complete", label="Pass A", progress=33)
+        _progress("reflect_progress", phase="pass_b_complete", label="Pass B", progress=66)
+        _progress("reflect_progress", phase="optimized_plan_started", label="Optimized plan", progress=82)
+        optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=existing_schema, llm_cfg=llm_cfg)
+        _progress("reflect_progress", phase="optimized_plan_complete", label="Optimized plan", progress=100)
         return existing_schema
 
     # Pass A: must be complete before Pass B.
@@ -1257,12 +1276,15 @@ def compile_workflow_schema(
         step_cards = existing_step_cards
         debug_log(f"Pass A: found existing step_cards.json with {len(step_cards)} steps; skipping.")
         logger.info("Pass A: found existing step_cards.json; skipping.")
+        _progress("reflect_progress", phase="pass_a_complete", label="Pass A", progress=33)
     else:
+        _progress("reflect_progress", phase="pass_a_started", label="Pass A", progress=10)
         debug_log("Pass A: starting step card generation...")
         step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p, llm_cfg=llm_cfg)
         write_step_cards(workflow_dir_p, step_cards)
         debug_log(f"Pass A complete: {len(step_cards)} steps")
         logger.info("Pass A complete: step_cards.json (%d steps)", len(step_cards))
+        _progress("reflect_progress", phase="pass_a_complete", label="Pass A", progress=33)
 
     # Validate that we have actionable steps before proceeding
     if not step_cards:
@@ -1282,7 +1304,9 @@ def compile_workflow_schema(
         debug_log("Pass B: found existing plan_creation; skipping.")
         logger.info("Pass B: found existing plan_creation checkpoint; skipping.")
         plan_creation: dict[str, Any] = dict(existing_plan_creation)
+        _progress("reflect_progress", phase="pass_b_complete", label="Pass B", progress=66)
     else:
+        _progress("reflect_progress", phase="pass_b_started", label="Pass B", progress=45)
         debug_log("Pass B: starting task compilation...")
         task_compiler_out = run_pass_b_task_compiler(workflow_dir=workflow_dir_p, step_cards=step_cards, llm_cfg=llm_cfg)
 
@@ -1290,6 +1314,7 @@ def compile_workflow_schema(
         write_plan_creation(workflow_dir_p, plan_creation)
         debug_log("Pass B complete")
         logger.info("Pass B complete: wrote plan_creation.json")
+        _progress("reflect_progress", phase="pass_b_complete", label="Pass B", progress=66)
 
     # Build final schema by merging plan_creation + step_cards into a v2 plan.subtasks format.
     final_schema: dict[str, Any] = {
@@ -1422,7 +1447,10 @@ def compile_workflow_schema(
     update_dependencies(final_schema)
 
     write_schema(workflow_dir_p, final_schema)
-    ensure_optimized_plan(workflow_dir=workflow_dir_p, schema=final_schema, llm_cfg=llm_cfg)
+    _progress("reflect_progress", phase="optimized_plan_started", label="Optimized plan", progress=82)
+    optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=final_schema, llm_cfg=llm_cfg)
+    _progress("reflect_progress", phase="optimized_plan_complete", label="Optimized plan", progress=100)
+
     debug_log(f"Schema compilation complete: {workflow_dir_p / 'schema.json'}")
     logger.info("Wrote schema.json")
     return final_schema

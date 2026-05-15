@@ -5,7 +5,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ai_mime.agent_runner import AgentRunRequest, AgentRunResult, WorkspaceAgentChatService, build_agent_run_request, run_agent_task
+from ai_mime.agent_runner import (
+    AgentRunRequest,
+    AgentRunResult,
+    WorkspaceAgentChatService,
+    build_agent_run_request,
+    run_agent_task,
+    run_skill_e2e_test,
+    validate_skill_package,
+)
 
 
 def _schema() -> dict:
@@ -43,6 +51,45 @@ def _optimized_plan() -> dict:
             }
         ],
     }
+
+
+def _optimized_plan_with_default_input() -> dict:
+    plan = _optimized_plan()
+    plan["inputs"] = [
+        {
+            "name": "receipt_path",
+            "description": "Path to the receipt.",
+            "required": True,
+            "default": "/tmp/receipt.pdf",
+        }
+    ]
+    plan["steps"][0]["inputs"] = ["receipt_path"]
+    return plan
+
+
+def _write_valid_skill_package(skill_dir: Path, schema: dict, optimized_plan: dict) -> None:
+    (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "references").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "# Record Expenses Skill\n\nRun with `python scripts/run.py --inputs-json inputs.json`.\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "references" / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    (skill_dir / "references" / "optimized_plan.json").write_text(json.dumps(optimized_plan), encoding="utf-8")
+    (skill_dir / "references" / "learned_notes.md").write_text("No learned notes yet.\n", encoding="utf-8")
+    (skill_dir / "scripts" / "run.py").write_text(
+        "import argparse\n"
+        "import json\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--inputs-json', required=True)\n"
+        "args = parser.parse_args()\n"
+        "with open(args.inputs_json, 'r', encoding='utf-8') as f:\n"
+        "    inputs = json.load(f)\n"
+        "print('step extract_receipt: starting')\n"
+        "print('inputs=' + json.dumps(inputs, sort_keys=True))\n"
+        "print('step extract_receipt: done')\n",
+        encoding="utf-8",
+    )
 
 
 class FakeAdapter:
@@ -112,6 +159,70 @@ class AgentRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(FileNotFoundError):
                 build_agent_run_request(workflow_dir=Path(td), provider="claude")
+
+    def test_build_skill_chat_prompt_contains_iteration_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            schema = _schema()
+            plan = _optimized_plan()
+            (workflow_dir / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            request = build_agent_run_request(workflow_dir=workflow_dir, provider="claude", mode="build_skill_chat")
+            adapter = FakeAdapter()
+
+            run_agent_task(request, adapter)
+
+            prompt = adapter.prompt or ""
+            # Core protocol elements
+            self.assertIn("build_signal.json", prompt)
+            self.assertIn("skill_ready", prompt)
+            self.assertIn("skill_unbuildable", prompt)
+            self.assertIn("ask_gemini", prompt)
+            # Inputs editing
+            self.assertIn("task_params", prompt)
+            self.assertIn("inputs[]", prompt)
+            # Side effect protocol
+            self.assertIn("side_effects.md", prompt)
+            # File contract
+            self.assertIn("scripts/run.py", prompt)
+            self.assertIn("references/learned_notes.md", prompt)
+            # schema/optimized_plan are writable for input edits
+            writable = {str(p) for p in request.writable_roots}
+            self.assertIn(str(workflow_dir / "schema.json"), writable)
+            self.assertIn(str(workflow_dir / "optimized_plan.json"), writable)
+
+    def test_validate_skill_package_accepts_valid_package(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "skills" / "record-expenses-in-a-sheet"
+            schema = _schema()
+            plan = _optimized_plan_with_default_input()
+            _write_valid_skill_package(skill_dir, schema, plan)
+
+            validate_skill_package(skill_dir, schema, plan)
+
+    def test_validate_skill_package_rejects_missing_required_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "skills" / "record-expenses-in-a-sheet"
+            schema = _schema()
+            plan = _optimized_plan_with_default_input()
+            _write_valid_skill_package(skill_dir, schema, plan)
+            (skill_dir / "scripts" / "run.py").unlink()
+
+            with self.assertRaisesRegex(FileNotFoundError, "scripts/run.py"):
+                validate_skill_package(skill_dir, schema, plan)
+
+    def test_run_skill_e2e_test_rejects_missing_required_default(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "skills" / "record-expenses-in-a-sheet"
+            schema = _schema()
+            plan = _optimized_plan()
+            plan["inputs"] = [{"name": "receipt_path", "description": "Path", "required": True}]
+            _write_valid_skill_package(skill_dir, schema, plan)
+
+            result = run_skill_e2e_test(skill_dir, plan)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("required optimized_plan inputs have no default", result.error or "")
 
     def test_workspace_chat_service_persists_returned_session_id(self) -> None:
         prompts: list[str] = []

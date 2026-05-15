@@ -4,8 +4,15 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from ai_mime.reflect.schema_compiler import cleanup_reflect_artifacts, ensure_optimized_plan, validate_optimized_plan
+from ai_mime.reflect.schema_compiler import (
+    cleanup_reflect_artifacts,
+    compile_workflow_schema,
+    create_optimized_plan,
+    validate_optimized_plan,
+)
 
 
 def _schema(subtask_count: int = 5) -> dict:
@@ -138,7 +145,7 @@ class PassCOptimizerTests(unittest.TestCase):
             (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
             (workflow_dir / "optimized_plan.json").write_text(json.dumps(plan), encoding="utf-8")
 
-            loaded = ensure_optimized_plan(
+            loaded = create_optimized_plan(
                 workflow_dir=workflow_dir,
                 schema=_schema(),
                 llm_cfg=None,  # type: ignore[arg-type]
@@ -186,6 +193,24 @@ class PassCOptimizerTests(unittest.TestCase):
                 cleanup_reflect_artifacts(workflow_dir, schema=schema, optimized_plan=plan)
 
             self.assertTrue((workflow_dir / "step_cards.json").exists())
+
+    def test_compile_completes_without_calling_into_agent_runner(self) -> None:
+        # Skill build is now a user-initiated chat flow (WorkflowSkillBuildService);
+        # the reflect pipeline no longer auto-invokes the agent runner.
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            schema = _schema()
+            plan = _valid_plan()
+            (workflow_dir / "metadata.json").write_text(json.dumps({"name": "Expense", "description": ""}), encoding="utf-8")
+            (workflow_dir / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            llm_cfg = SimpleNamespace(model="test-model")
+
+            with patch("ai_mime.reflect.schema_compiler.create_optimized_plan", return_value=plan) as ensure_plan:
+                result = compile_workflow_schema(workflow_dir=workflow_dir, llm_cfg=llm_cfg)  # type: ignore[arg-type]
+
+            self.assertEqual(result, schema)
+            ensure_plan.assert_called_once()
 
 
 if __name__ == "__main__":

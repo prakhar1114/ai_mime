@@ -79,9 +79,10 @@
       const status = escapeHtml(task.status);
       const error = task.error ? `<div class="error">${escapeHtml(task.error)}</div>` : "";
       const reflectText = task.status === "failed_reflection" ? "Retry reflection" : "Reflect";
+      const reflectDisabled = ACTIVE.has(task.status) ? "disabled" : "";
       const menuItems = [
         task.can_edit ? `<button class="menu-item" data-action="edit">Edit</button>` : "",
-        task.can_reflect ? `<button class="menu-item" data-action="reflect">${reflectText}</button>` : "",
+        task.can_reflect ? `<button class="menu-item" data-action="reflect" ${reflectDisabled}>${reflectText}</button>` : "",
         task.can_delete ? `<button class="menu-item danger" data-action="delete">Delete</button>` : "",
       ].filter(Boolean).join("");
       const menuOpen = openMenuTaskId === task.id;
@@ -157,7 +158,13 @@
         if (!confirm(`Delete ${taskId}? This removes the workflow and recording folders when present.`)) return;
         await request(`/api/tasks/${encoded}`, { method: "DELETE" });
       } else if (action === "reflect") {
-        await request(`/api/tasks/${encoded}/reflect`, { method: "POST" });
+        await request(`/api/tasks/${encoded}/reflect`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ force: true }),
+        });
+        window.location.href = `/reflect/${encoded}`;
+        return;
       } else if (action === "replay") {
         await request(`/api/tasks/${encoded}/replay`, { method: "POST" });
       }

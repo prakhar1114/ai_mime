@@ -1,4 +1,7 @@
 (() => {
+  const shell = document.querySelector(".agent-shell");
+  const taskId = shell && shell.dataset ? shell.dataset.taskId : "";
+  const apiPrefix = taskId ? `/api/tasks/${encodeURIComponent(taskId)}/agent` : "/api/agent";
   const el = {
     newChatBtn: document.getElementById("newChatBtn"),
     sessionsList: document.getElementById("sessionsList"),
@@ -285,7 +288,7 @@
 
   async function loadSessions() {
     try {
-      const data = await request("/api/agent/sessions");
+      const data = await request(`${apiPrefix}/sessions`);
       sessions = Array.isArray(data.sessions) ? data.sessions.filter((s) => s.session_id) : [];
       models = Array.isArray(data.models) ? data.models : models;
       if (models.length && !el.modelSelect.options.length) renderModels(data.default_model);
@@ -308,7 +311,7 @@
     renderSessions();
     renderHeader();
     try {
-      const data = await request(`/api/agent/sessions/${encodeURIComponent(sessionId)}/messages`);
+      const data = await request(`${apiPrefix}/sessions/${encodeURIComponent(sessionId)}/messages`);
       messages = Array.isArray(data.messages) ? data.messages : [];
       renderMessages();
     } catch (e) {
@@ -432,7 +435,7 @@
     setSending(true);
     streamController = new AbortController();
     try {
-      const response = await fetch("/api/agent/chat/stream", {
+      const response = await fetch(`${apiPrefix}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -463,7 +466,7 @@
 
   async function interruptCurrent() {
     try {
-      await request("/api/agent/interrupt", { method: "POST" });
+      await request(`${apiPrefix}/interrupt`, { method: "POST" });
     } catch (e) {
       setError(e.message || String(e));
     }
@@ -491,7 +494,7 @@
       renderMessages();
     }
     try {
-      await request("/api/agent/permission", {
+      await request(`${apiPrefix}/permission`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ request_id: requestId, decision }),
@@ -504,7 +507,7 @@
   if (el.bashApprovalToggle) {
     el.bashApprovalToggle.addEventListener("change", async () => {
       try {
-        await request("/api/agent/settings/bash_requires_approval", {
+        await request(`${apiPrefix}/settings/bash_requires_approval`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ value: el.bashApprovalToggle.checked }),
@@ -546,7 +549,7 @@
 
   async function loadModels() {
     try {
-      const data = await request("/api/agent/models");
+      const data = await request(`${apiPrefix}/models`);
       models = Array.isArray(data.models) ? data.models : [];
       renderModels(data.default_model);
     } catch {

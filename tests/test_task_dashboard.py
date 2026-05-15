@@ -5,11 +5,14 @@ import queue
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from ai_mime.editor.server import TaskRunner, create_app
 from ai_mime.agent_runner import AgentRunRequest, AgentRunResult, WorkspaceAgentChatService
+from ai_mime.reflect.workflow import reflect_session
 
 
 class TaskDashboardTests(unittest.TestCase):
@@ -35,10 +38,18 @@ class TaskDashboardTests(unittest.TestCase):
         (rec / "manifest.jsonl").write_text("{}\n", encoding="utf-8")
         return rec
 
+    def _broken_workflow(self, task_id: str) -> Path:
+        wf = self.workflows / task_id
+        wf.mkdir(parents=True)
+        (wf / "metadata.json").write_text(json.dumps({"name": "Broken Task"}), encoding="utf-8")
+        return wf
+
     def test_inventory_marks_ready_and_pending_tasks(self) -> None:
         self._ready_workflow("20260513T000000Z-ready")
+        self._ready_workflow("20260513T000050Z-workflow-only")
         self._recording("20260513T000000Z-ready")
         self._recording("20260513T000100Z-pending")
+        self._broken_workflow("20260513T000200Z-broken")
 
         runner = TaskRunner(
             workflows_root=self.workflows,
@@ -52,8 +63,11 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertTrue(rows["20260513T000000Z-ready"]["can_edit"])
         self.assertTrue(rows["20260513T000000Z-ready"]["can_reflect"])
         self.assertEqual(rows["20260513T000000Z-ready"]["status"], "ready")
+        self.assertTrue(rows["20260513T000050Z-workflow-only"]["can_reflect"])
+        self.assertEqual(rows["20260513T000050Z-workflow-only"]["status"], "ready")
         self.assertTrue(rows["20260513T000100Z-pending"]["can_reflect"])
         self.assertEqual(rows["20260513T000100Z-pending"]["status"], "pending_reflection")
+        self.assertFalse(rows["20260513T000200Z-broken"]["can_reflect"])
 
     def test_api_lists_and_deletes_matching_task_folders(self) -> None:
         self._ready_workflow("20260513T000000Z-ready")
@@ -76,6 +90,99 @@ class TaskDashboardTests(unittest.TestCase):
 
         self.assertEqual(client.post("/api/tasks/20260513T000100Z-pending/reflect").status_code, 500)
         self.assertEqual(client.post("/api/tasks/20260513T000000Z-ready/replay").status_code, 500)
+
+    def test_force_reflect_rewrites_existing_workflow_manifest(self) -> None:
+        task_id = "20260513T000100Z-pending"
+        recording = self._recording(task_id)
+        (recording / "metadata.json").write_text(json.dumps({"name": "Updated"}), encoding="utf-8")
+        (recording / "manifest.jsonl").write_text(json.dumps({"new": True}) + "\n", encoding="utf-8")
+        workflow = self.workflows / task_id
+        workflow.mkdir(parents=True)
+        (workflow / "metadata.json").write_text(json.dumps({"name": "Old"}), encoding="utf-8")
+        (workflow / "manifest.jsonl").write_text(json.dumps({"old": True}) + "\n", encoding="utf-8")
+        (workflow / "schema.json").write_text(json.dumps({"plan": {"subtasks": []}}), encoding="utf-8")
+
+        reflect_session(recording, self.workflows)
+        self.assertEqual((workflow / "manifest.jsonl").read_text(encoding="utf-8"), json.dumps({"old": True}) + "\n")
+
+        reflect_session(recording, self.workflows, force=True)
+        self.assertEqual((workflow / "manifest.jsonl").read_text(encoding="utf-8"), json.dumps({"new": True}) + "\n")
+        self.assertTrue((workflow / "schema.json").exists())
+
+    def test_reflect_accepts_workflow_only_schema_task(self) -> None:
+        task_id = "20260513T000000Z-ready"
+        workflow = self._ready_workflow(task_id)
+
+        class FakeProcess:
+            instances: list["FakeProcess"] = []
+
+            def __init__(self, *, target, args, kwargs, daemon):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs
+                self.daemon = daemon
+                self.pid = 1234
+                self.started = False
+                FakeProcess.instances.append(self)
+
+            def start(self) -> None:
+                self.started = True
+
+        app = create_app(
+            workflows_root=self.workflows,
+            recordings_root=self.recordings,
+            reflect_llm_cfg=SimpleNamespace(model="test"),
+        )
+        client = TestClient(app)
+
+        with patch("ai_mime.editor.server.Process", FakeProcess):
+            response = client.post(f"/api/tasks/{task_id}/reflect")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(FakeProcess.instances[-1].args[0], str(workflow.resolve()))
+        self.assertTrue(FakeProcess.instances[-1].started)
+
+    def test_reflect_rejects_task_without_recording_manifest_or_schema(self) -> None:
+        task_id = "20260513T000200Z-broken"
+        self._broken_workflow(task_id)
+        app = create_app(
+            workflows_root=self.workflows,
+            recordings_root=self.recordings,
+            reflect_llm_cfg=SimpleNamespace(model="test"),
+        )
+        client = TestClient(app)
+
+        response = client.post(f"/api/tasks/{task_id}/reflect")
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("Recording manifest.jsonl or workflow schema.json not found", response.text)
+
+    def test_runner_skips_reflect_session_when_schema_exists(self) -> None:
+        from ai_mime.reflect.runner import run_reflect_and_compile_schema
+
+        task_id = "20260513T000000Z-ready"
+        workflow = self._ready_workflow(task_id)
+        compiled: list[Path] = []
+
+        def fake_compile_schema_for_workflow_dir(out_dir, **_kwargs):
+            compiled.append(Path(out_dir))
+            return {"plan": {"subtasks": []}}
+
+        with (
+            patch("ai_mime.reflect.runner.reflect_session") as reflect_session_mock,
+            patch(
+                "ai_mime.reflect.runner.compile_schema_for_workflow_dir",
+                side_effect=fake_compile_schema_for_workflow_dir,
+            ),
+        ):
+            run_reflect_and_compile_schema(
+                str(self.recordings / task_id),
+                SimpleNamespace(model="test"),
+                workflows_root=self.workflows,
+            )
+
+        reflect_session_mock.assert_not_called()
+        self.assertEqual(compiled, [workflow])
 
     def test_recording_start_api_and_external_reflect_status(self) -> None:
         self._recording("20260513T000100Z-pending")
@@ -100,6 +207,57 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(command_q.get_nowait()["type"], "start_recording")
         self.assertTrue(app_state["recording"]["requested"])
+
+    def test_reflect_progress_events_update_status(self) -> None:
+        self._recording("20260513T000100Z-pending")
+        runner = TaskRunner(
+            workflows_root=self.workflows,
+            recordings_root=self.recordings,
+            reflect_llm_cfg=None,
+            replay_llm_cfg=None,
+        )
+        q: queue.Queue = queue.Queue()
+        q.put({"type": "reflect_phase_started", "phase": "compiling", "label": "Compiling", "progress": 8})
+        q.put({"type": "reflect_progress", "phase": "pass_a_complete", "label": "Pass A", "progress": 33})
+        q.put({"type": "reflect_progress", "phase": "pass_b_complete", "label": "Pass B", "progress": 66})
+
+        with runner._lock:
+            runner._drain_reflect_events_locked("20260513T000100Z-pending", q)
+            row = runner._task_row_locked("20260513T000100Z-pending")
+
+        self.assertEqual(row["status"], "compiling")
+        self.assertEqual(row["phase"], "pass_b_complete")
+        self.assertEqual(row["progress"]["value"], 66)
+        self.assertEqual(row["progress"]["label"], "Pass B")
+
+    def test_reflect_page_status_and_task_agent_workspace(self) -> None:
+        self._recording("20260513T000100Z-pending")
+        self._ready_workflow("20260513T000000Z-ready")
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        page = client.get("/reflect/20260513T000100Z-pending")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertNotIn("__TASK_ID__", page.text)
+        self.assertIn("20260513T000100Z-pending", page.text)
+
+        missing = client.get("/reflect/not-found")
+        self.assertEqual(missing.status_code, 404)
+
+        invalid = client.get("/reflect/../bad")
+        self.assertIn(invalid.status_code, {400, 404})
+
+        status = client.get("/api/tasks/20260513T000100Z-pending/reflect/status")
+        self.assertEqual(status.status_code, 200, status.text)
+        self.assertEqual(status.json()["progress"]["phase"], "pending_reflection")
+
+        pending_agent = client.get("/api/tasks/20260513T000100Z-pending/agent/sessions")
+        self.assertEqual(pending_agent.status_code, 200, pending_agent.text)
+        self.assertEqual(pending_agent.json()["workspace_dir"], str(self.recordings / "20260513T000100Z-pending"))
+
+        ready_agent = client.get("/api/tasks/20260513T000000Z-ready/agent/sessions")
+        self.assertEqual(ready_agent.status_code, 200, ready_agent.text)
+        self.assertEqual(ready_agent.json()["workspace_dir"], str(self.workflows / "20260513T000000Z-ready"))
 
     def test_agent_page_and_api_chat(self) -> None:
         seen_models: list[str | None] = []

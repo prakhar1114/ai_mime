@@ -129,6 +129,10 @@ h1 {
   background: var(--bg);
 }
 
+.reflect-shell .chat {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
 .chat-head {
   height: 58px;
   display: flex;
@@ -136,6 +140,83 @@ h1 {
   justify-content: space-between;
   gap: 16px;
   padding: 0 32px;
+}
+
+.reflect-progress {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 16px 32px 14px;
+  background: #fbfaf8;
+}
+
+.progress-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.progress-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.progress-subtitle {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8e4de;
+}
+
+.progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #2f2a25;
+  transition: width 220ms ease;
+}
+
+.progress-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.progress-steps span:nth-child(2) { text-align: center; }
+.progress-steps span:nth-child(3) { text-align: right; }
+.progress-steps .done {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.start-reflect {
+  min-height: 34px;
+  border: 1px solid #2f2a25;
+  border-radius: 999px;
+  background: #2f2a25;
+  color: #fff;
+  padding: 0 14px;
+  cursor: pointer;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.start-reflect:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .bash-toggle {
