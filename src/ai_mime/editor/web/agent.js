@@ -1,7 +1,10 @@
 (() => {
   const shell = document.querySelector(".agent-shell");
   const taskId = shell && shell.dataset ? shell.dataset.taskId : "";
-  const apiPrefix = taskId ? `/api/tasks/${encodeURIComponent(taskId)}/agent` : "/api/agent";
+  const explicitPrefix = shell && shell.dataset ? shell.dataset.apiPrefix : "";
+  const apiPrefix = explicitPrefix
+    ? explicitPrefix
+    : (taskId ? `/api/tasks/${encodeURIComponent(taskId)}/agent` : "/api/agent");
   const el = {
     newChatBtn: document.getElementById("newChatBtn"),
     sessionsList: document.getElementById("sessionsList"),
@@ -51,6 +54,8 @@
     let codeLang = "";
     let para = [];
     let list = [];
+    let listType = "ul";
+    let listStart = 1;
 
     function flushPara() {
       if (!para.length) return;
@@ -60,8 +65,16 @@
 
     function flushList() {
       if (!list.length) return;
-      blocks.push(`<ul>${list.map((item) => `<li>${inlineMarkdown(item)}</li>`).join("")}</ul>`);
+      const items = list.map((item) => `<li>${inlineMarkdown(item)}</li>`).join("");
+      if (listType === "ol") {
+        const startAttr = listStart && listStart !== 1 ? ` start="${listStart}"` : "";
+        blocks.push(`<ol${startAttr}>${items}</ol>`);
+      } else {
+        blocks.push(`<ul>${items}</ul>`);
+      }
       list = [];
+      listType = "ul";
+      listStart = 1;
     }
 
     function flushCode() {
@@ -70,7 +83,22 @@
       codeLang = "";
     }
 
-    for (const line of source.split("\n")) {
+    function splitRow(row) {
+      let s = row.trim();
+      if (s.startsWith("|")) s = s.slice(1);
+      if (s.endsWith("|")) s = s.slice(0, -1);
+      return s.split("|").map((c) => c.trim());
+    }
+
+    function isTableSeparator(line) {
+      const trimmed = line.trim();
+      if (!trimmed.includes("|")) return false;
+      return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(trimmed);
+    }
+
+    const lines = source.split("\n");
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
       const fence = line.match(/^```(.*)$/);
       if (fence) {
         if (inCode) {
@@ -93,6 +121,42 @@
         flushList();
         continue;
       }
+      if (/^\s*(---|\*\*\*|___)\s*$/.test(line)) {
+        flushPara();
+        flushList();
+        blocks.push("<hr>");
+        continue;
+      }
+      if (line.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+        flushPara();
+        flushList();
+        const header = splitRow(line);
+        const aligns = splitRow(lines[i + 1]).map((c) => {
+          const left = c.startsWith(":");
+          const right = c.endsWith(":");
+          if (left && right) return "center";
+          if (right) return "right";
+          if (left) return "left";
+          return "";
+        });
+        i += 2;
+        const rows = [];
+        while (i < lines.length && lines[i].trim() && lines[i].includes("|")) {
+          rows.push(splitRow(lines[i]));
+          i += 1;
+        }
+        i -= 1;
+        const thead = `<thead><tr>${header.map((c, idx) => {
+          const a = aligns[idx] ? ` style="text-align:${aligns[idx]}"` : "";
+          return `<th${a}>${inlineMarkdown(c)}</th>`;
+        }).join("")}</tr></thead>`;
+        const tbody = `<tbody>${rows.map((r) => `<tr>${r.map((c, idx) => {
+          const a = aligns[idx] ? ` style="text-align:${aligns[idx]}"` : "";
+          return `<td${a}>${inlineMarkdown(c)}</td>`;
+        }).join("")}</tr>`).join("")}</tbody>`;
+        blocks.push(`<table>${thead}${tbody}</table>`);
+        continue;
+      }
       const heading = line.match(/^(#{1,3})\s+(.+)$/);
       if (heading) {
         flushPara();
@@ -101,10 +165,23 @@
         blocks.push(`<h${level}>${inlineMarkdown(heading[2].trim())}</h${level}>`);
         continue;
       }
-      const item = line.match(/^\s*[-*]\s+(.+)$/);
-      if (item) {
+      const ulItem = line.match(/^\s*[-*]\s+(.+)$/);
+      if (ulItem) {
         flushPara();
-        list.push(item[1].trim());
+        if (list.length && listType !== "ul") flushList();
+        listType = "ul";
+        list.push(ulItem[1].trim());
+        continue;
+      }
+      const olItem = line.match(/^\s*(\d+)[.)]\s+(.+)$/);
+      if (olItem) {
+        flushPara();
+        if (list.length && listType !== "ol") flushList();
+        if (!list.length) {
+          listType = "ol";
+          listStart = parseInt(olItem[1], 10) || 1;
+        }
+        list.push(olItem[2].trim());
         continue;
       }
       para.push(line.trim());
@@ -336,24 +413,35 @@
     return null;
   }
 
+  function ensureAssistant(ctx) {
+    if (ctx.assistant && messages.indexOf(ctx.assistant) >= 0) return ctx.assistant;
+    const fresh = { role: "assistant", text: "", loading: true };
+    messages.push(fresh);
+    ctx.assistant = fresh;
+    return fresh;
+  }
+
   function handleStreamEvent(event, ctx) {
     if (!event || typeof event !== "object") return;
     if (event.event === "text" && typeof event.text === "string") {
-      ctx.assistant.loading = false;
-      ctx.assistant.text = (ctx.assistant.text || "") + event.text;
+      const target = ensureAssistant(ctx);
+      target.loading = false;
+      target.text = (target.text || "") + event.text;
     } else if (event.event === "tool_use") {
-      const idx = messages.indexOf(ctx.assistant);
-      const toolMsg = {
+      if (ctx.assistant) {
+        ctx.assistant.loading = false;
+        if (!ctx.assistant.text) {
+          const idx = messages.indexOf(ctx.assistant);
+          if (idx >= 0) messages.splice(idx, 1);
+        }
+      }
+      ctx.assistant = null;
+      messages.push({
         role: "tool",
         toolId: event.id,
         toolName: event.name,
         toolInput: event.input,
-      };
-      if (idx >= 0) {
-        messages.splice(idx, 0, toolMsg);
-      } else {
-        messages.push(toolMsg);
-      }
+      });
     } else if (event.event === "tool_result") {
       const existing = findToolMessage(event.tool_use_id);
       const content = Array.isArray(event.content)
@@ -385,16 +473,25 @@
         permReason: event.reason,
       });
     } else if (event.event === "interrupted") {
-      ctx.assistant.loading = false;
-      ctx.assistant.text = (ctx.assistant.text || "") + "\n\n_(interrupted)_";
+      const target = ensureAssistant(ctx);
+      target.loading = false;
+      target.text = (target.text || "") + "\n\n_(interrupted)_";
     } else if (event.event === "error") {
       setError(event.message || "Stream error");
-      ctx.assistant.loading = false;
+      if (ctx.assistant) ctx.assistant.loading = false;
     } else if (event.event === "done") {
-      ctx.assistant.loading = false;
+      if (ctx.assistant) ctx.assistant.loading = false;
       if (event.session_id) currentSessionId = event.session_id;
       if (event.status && event.status !== "success" && event.error) {
         setError(`${event.status}: ${event.error}`);
+      }
+    } else {
+      // Forward unknown event types so panel-specific scripts (e.g. skill build)
+      // can handle them. The detail is the raw event object.
+      try {
+        window.dispatchEvent(new CustomEvent("agent-stream-event", { detail: event }));
+      } catch {
+        // ignore
       }
     }
   }

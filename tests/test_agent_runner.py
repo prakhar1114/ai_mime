@@ -42,12 +42,12 @@ def _optimized_plan() -> dict:
                 "id": "extract_receipt",
                 "title": "Extract receipt",
                 "source_subtask_ids": [0],
-                "executor": "bash",
+                "executor": "script",
                 "goal": "Extract receipt details using direct file access.",
                 "inputs": [],
                 "outputs": ["receipt_expense"],
                 "success_criteria": "Receipt expense is structured.",
-                "fallback": "vision_agent",
+                "fallback": "ui_agent",
             }
         ],
     }
@@ -178,6 +178,17 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertIn("skill_ready", prompt)
             self.assertIn("skill_unbuildable", prompt)
             self.assertIn("ask_gemini", prompt)
+            # Executor taxonomy
+            self.assertIn("script", prompt)
+            self.assertIn("browser_harness", prompt)
+            self.assertIn("ui_agent", prompt)
+            # Four-phase protocol
+            self.assertIn("Phase A", prompt)
+            self.assertIn("Phase B", prompt)
+            self.assertIn("Phase C", prompt)
+            self.assertIn("Phase D", prompt)
+            # Final approval gate before packaging
+            self.assertIn("create the skill", prompt)
             # Inputs editing
             self.assertIn("task_params", prompt)
             self.assertIn("inputs[]", prompt)

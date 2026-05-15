@@ -33,7 +33,7 @@ def _optimized_plan() -> dict:
                 "id": "extract_receipt",
                 "title": "Extract receipt",
                 "source_subtask_ids": [0],
-                "executor": "bash",
+                "executor": "script",
                 "goal": "Extract receipt details.",
                 "inputs": ["receipt_path"],
                 "outputs": ["receipt_expense"],

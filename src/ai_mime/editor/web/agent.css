@@ -514,13 +514,19 @@ textarea::placeholder {
 .message.assistant .bubble h2 { font-size: 24px; }
 .message.assistant .bubble h3 { font-size: 21px; }
 
-.message.assistant .bubble ul {
+.message.assistant .bubble ul,
+.message.assistant .bubble ol {
   margin: 0 0 14px 24px;
   padding: 0;
 }
 
 .message.assistant .bubble li {
   margin: 6px 0;
+}
+
+.message.assistant .bubble p + ul,
+.message.assistant .bubble p + ol {
+  margin-top: -6px;
 }
 
 .message.assistant .bubble code {
@@ -545,6 +551,34 @@ textarea::placeholder {
   background: transparent;
   border-radius: 0;
   padding: 0;
+}
+
+.message.assistant .bubble table {
+  border-collapse: collapse;
+  margin: 0 0 14px;
+  font-family: var(--sans);
+  font-size: 15px;
+  width: auto;
+  max-width: 100%;
+}
+
+.message.assistant .bubble th,
+.message.assistant .bubble td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.message.assistant .bubble thead th {
+  background: #f3f1ec;
+  font-weight: 650;
+}
+
+.message.assistant .bubble hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 18px 0;
 }
 
 .message.assistant .bubble a {

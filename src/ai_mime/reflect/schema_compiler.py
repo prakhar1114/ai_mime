@@ -35,7 +35,7 @@ PassAActionType = Literal[
     "EXTRACT",
 ]
 
-OptimizedExecutor = Literal["bash", "browser_harness", "vision_agent"]
+OptimizedExecutor = Literal["script", "browser_harness", "ui_agent"]
 
 
 class PassCFilesystemAccessPath(BaseModel):
@@ -81,7 +81,7 @@ class PassCStep(BaseModel):
     inputs: list[str] = Field(default_factory=list, description="Variable names this step consumes.")
     outputs: list[str] = Field(default_factory=list, description="Variable names this step produces.")
     success_criteria: str = Field(description="How to know this optimized step succeeded.")
-    fallback: OptimizedExecutor = Field(description="Fallback executor, usually vision_agent.")
+    fallback: OptimizedExecutor = Field(description="Fallback executor (usually ui_agent).")
 
 
 class PassCOutput(BaseModel):
@@ -210,22 +210,58 @@ Step summaries (ordered JSON array):
 PASS_C_SYSTEM_PROMPT = """You are an optimized workflow strategy compiler.
 You convert a completed UI replay schema into a compact executor-oriented plan.
 
-Executors:
-- bash: local files, deterministic commands, app open-if-needed, direct OS work, local preprocessing.
-- browser_harness: browser tabs, web apps, Google Sheets, CDP/selector automation.
-- vision_agent: fallback for UI that is not safely optimizable.
+Executors (pick exactly one per step):
+- script: pure deterministic Python — file IO, HTTP, parsing, shell-outs, library
+  calls. No UI of any kind. May call ask_gemini() for irreducible judgment that
+  returns a JSON-schema-constrained answer. This is the preferred executor.
+- browser_harness: composable browser-harness CDP script (new_tab, js,
+  click_at_xy, wait_for_*, etc.) when the workflow genuinely needs a tab. May
+  also call ask_gemini() for in-page judgment.
+- ui_agent: live screenshot + click loop. Slowest and least reliable; last
+  resort, for native macOS apps or web UIs whose DOM is too hostile for CDP.
+
+ask_gemini is the stochasticity escape hatch: if a step has one fuzzy decision
+(e.g. "pick the row that matches the user's query"), keep the step as script or
+browser_harness and let ask_gemini handle the decision — do NOT downgrade to
+ui_agent just because one sub-decision is judgment-based.
+
+Prefer the smarter deterministic path over the recorded UI path.
+The recording shows what the user *did*; you should produce what they *meant*,
+by whatever route survives replay most reliably. Whenever a chunk of UI steps
+can be replaced by a smarter path that reaches the same end state, prefer that
+path and collapse the source subtasks into a single script (or browser_harness)
+step. Examples of "smarter paths" — non-exhaustive, pick whichever fits:
+- A direct API or CLI call instead of clicking through the UI.
+- A deep-link / URL-scheme that jumps past a navigation flow.
+- Reading or writing the underlying file directly (PDF parsing, CSV/JSON edit,
+  plist/SQLite for a native app) instead of opening the app.
+- A keyboard shortcut, AppleScript/osascript, or built-in OS command that
+  replaces a multi-click path.
+- A query parameter or hidden route that skips a loader/wizard.
+- Any other shortcut the recording missed because the user did it manually.
+
+When you swap in a smarter path, state it in `goal` (e.g. "reads PDF text
+directly via pdfplumber instead of opening Preview", "uses URL scheme to open
+file in-place", "calls hosts CLI instead of System Settings UI"). The skill
+builder will verify the chosen path actually works.
 
 Rules:
-- Do not output tools. If a step needs OCR, extraction, or model-backed judgement, describe that inside goal.
+- Do not name tools. Describe OCR / extraction / model judgement needs inside
+  `goal`; the runner picks the implementation.
 - Group adjacent source subtasks when one executor can do them faster.
-- Prefer direct file access over Finder/Desktop UI.
-- Prefer browser_harness for browser and web-app work.
-- Prefer bash for app open-if-needed and local file work.
-- Every step must include a fallback, usually vision_agent.
+- Prefer `script` whenever the work does not require a browser tab or native UI.
+- Prefer `browser_harness` over `ui_agent` for any web work; only fall back to
+  `ui_agent` when CDP cannot survive replay.
+- Every step must include a `fallback` executor (usually `ui_agent`).
 - Use semantic variable names for data passed between steps.
-- user_filesystem_access is only for user files/directories needed by the task.
-- Do not include workflow_dir, outputs, agent state, skills, or temp directories in user_filesystem_access.
-- Mark user filesystem writes approval_required=true unless they are narrow task-specific files.
+- `user_filesystem_access` is only for user files/directories needed by the task.
+- Do not include workflow_dir, outputs, agent state, skills, or temp directories
+  in `user_filesystem_access`.
+- Mark user filesystem writes `approval_required=true` unless they are narrow
+  task-specific files.
+- When you replace a UI chunk with a smarter path, `source_subtask_ids` should
+  still list every collapsed source subtask — the mapping back to the recording
+  stays intact even when the execution path diverges.
 """
 
 
@@ -250,9 +286,11 @@ Output requirements:
 - steps: optimized executor steps. source_subtask_ids may contain multiple schema subtask indexes.
 - step inputs must reference top-level inputs or earlier step outputs.
 - step outputs must be unique.
-- executor and fallback must be one of: bash, browser_harness, vision_agent.
-- If a receipt/PDF/bill is opened only for extraction, collapse file opening + extraction into a bash step and mention using an LLM for OCR/semantic extraction if needed.
-- If Chrome/browser/Google Sheets/web tabs are involved, collapse that browser work into a browser_harness step when possible.
+- executor and fallback must be one of: script, browser_harness, ui_agent.
+- Prefer `script` for any work that does not require a browser tab or native UI.
+- Before emitting any `browser_harness` or `ui_agent` step, ask: is there a smarter, more deterministic way to reach the same end state that the recording happened to miss (direct file read/write, CLI, URL-scheme, shortcut, library call, etc.)? If yes, emit a single `script` step using that path and state the chosen shortcut in `goal`. Only keep UI-level steps when no shortcut is viable.
+- If a receipt/PDF/bill is opened only for extraction, collapse file opening + extraction into a single `script` step that parses the file directly; mention ask_gemini in `goal` if semantic OCR is needed.
+- If Chrome/browser/Google Sheets/web tabs are unavoidable, collapse the browser work into a single `browser_harness` step.
 """
 
 

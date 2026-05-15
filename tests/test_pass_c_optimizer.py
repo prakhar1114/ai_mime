@@ -53,7 +53,7 @@ def _valid_plan() -> dict:
                 "id": "extract_receipt",
                 "title": "Find and extract receipt expense details",
                 "source_subtask_ids": [0, 1],
-                "executor": "bash",
+                "executor": "script",
                 "goal": (
                     "Use direct file access to locate the receipt PDF, render or read it as needed, "
                     "and use an LLM only if OCR or semantic extraction is required."
@@ -61,7 +61,7 @@ def _valid_plan() -> dict:
                 "inputs": ["receipt_path"],
                 "outputs": ["receipt_expense"],
                 "success_criteria": "A structured receipt expense with description and amount is available.",
-                "fallback": "vision_agent",
+                "fallback": "ui_agent",
             },
             {
                 "id": "append_expense_to_sheet",
@@ -75,7 +75,7 @@ def _valid_plan() -> dict:
                 "inputs": ["receipt_expense"],
                 "outputs": [],
                 "success_criteria": "The sheet contains a new row matching the extracted description and amount.",
-                "fallback": "vision_agent",
+                "fallback": "ui_agent",
             },
         ],
     }

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AI Mime - Build Skill</title>
+    <link rel="stylesheet" href="/static/agent.css" />
+    <link rel="stylesheet" href="/static/skill_build.css" />
+  </head>
+  <body>
+    <div
+      class="agent-shell"
+      data-task-id="__TASK_ID__"
+      data-api-prefix="/api/tasks/__TASK_ID__/skill-build"
+    >
+      <aside class="sidebar">
+        <div class="side-top">
+          <h1>Build Skill</h1>
+          <div class="sub">Iteratively turn this workflow into a reusable, deterministic skill.</div>
+        </div>
+        <button class="new-chat" id="newChatBtn">New Session</button>
+        <div class="sessions" id="sessionsList">
+          <div class="empty">Loading sessions...</div>
+        </div>
+      </aside>
+
+      <main class="chat">
+        <header class="chat-head">
+          <div class="chat-title" id="chatTitle">New Session</div>
+          <label class="bash-toggle">
+            <input type="checkbox" id="bashApprovalToggle" />
+            <span>Require approval for Bash</span>
+          </label>
+        </header>
+
+        <div id="terminalBanner" class="terminal-banner" hidden></div>
+
+        <section class="messages" id="messages">
+          <div class="empty-state">
+            Type <code>begin</code> to start. The agent will walk the workflow step by step,
+            confirm inputs with you, learn the environment, and finish by producing a
+            one-shot <code>scripts/run.py</code> in the workflow's <code>skills/</code> directory.
+          </div>
+        </section>
+
+        <footer class="composer">
+          <div class="error" id="errorBox" hidden></div>
+          <form id="chatForm">
+            <textarea id="messageInput" rows="1" placeholder="Write a message..."></textarea>
+            <div class="composer-actions">
+              <select class="model-select" id="modelSelect" aria-label="Claude model"></select>
+              <button class="stop" id="stopBtn" type="button" hidden>Stop</button>
+              <button class="send" id="sendBtn" type="submit">Send</button>
+            </div>
+          </form>
+        </footer>
+      </main>
+    </div>
+
+    <script src="/static/agent.js"></script>
+    <script src="/static/skill_build.js"></script>
+  </body>
+</html>

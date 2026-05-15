@@ -14,6 +14,7 @@
   };
 
   let polling = false;
+  let redirectedToSkillBuild = false;
 
   function escapeHtml(s) {
     return String(s == null ? "" : s)
@@ -84,6 +85,11 @@
     markStep(el.passALabel, value >= 33 || phase === "pass_a_complete");
     markStep(el.passBLabel, value >= 66 || phase === "pass_b_complete");
     markStep(el.optimizedLabel, value >= 100 || phase === "optimized_plan_complete");
+    if (!redirectedToSkillBuild && (phase === "optimized_plan_complete" || (status === "ready" && value >= 100))) {
+      redirectedToSkillBuild = true;
+      window.location.replace(`/skill-build/${encodeURIComponent(taskId)}`);
+      return;
+    }
     if (el.startReflectBtn) {
       el.startReflectBtn.hidden = !task.can_reflect;
       el.startReflectBtn.textContent = status === "failed_reflection" ? "Retry reflection" : "Start reflection";
@@ -104,7 +110,11 @@
     if (!el.startReflectBtn) return;
     el.startReflectBtn.disabled = true;
     try {
-      const task = await request(`/api/tasks/${encodeURIComponent(taskId)}/reflect`, { method: "POST" });
+      const task = await request(`/api/tasks/${encodeURIComponent(taskId)}/reflect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      });
       renderStatus(task);
     } catch (e) {
       if (el.progressSubtitle) el.progressSubtitle.textContent = e.message || String(e);

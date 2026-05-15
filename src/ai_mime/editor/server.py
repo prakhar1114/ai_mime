@@ -32,7 +32,7 @@ from ai_mime.reflect.schema_utils import (
 from ai_mime.screenshot import ScreenshotRecorder
 from ai_mime.user_config import ResolvedLLMConfig, ResolvedReflectConfig
 from ai_mime.debug_log import log
-from ai_mime.agent_runner import AgentBusyError, WorkspaceAgentChatService
+from ai_mime.agent_runner import AgentBusyError, WorkflowSkillBuildService, WorkspaceAgentChatService
 
 _SINGLE_BRACE_PARAM_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 _EXTRACT_NAME_RE = re.compile(r"^extract_[0-9]+$")
@@ -347,14 +347,23 @@ class TaskRunner:
             if task_id in self._replay_processes:
                 _task_log(f"reflect rejected: task_id={task_id} reason=replay_running")
                 raise HTTPException(status_code=409, detail="Replay already running")
-            recording_dir = _safe_recording_dir(self.recordings_root, task_id)
-            if not (recording_dir / "manifest.jsonl").exists():
-                _task_log(f"reflect rejected: task_id={task_id} reason=missing_manifest recording_dir={recording_dir}")
-                raise HTTPException(status_code=400, detail="Recording manifest.jsonl not found")
+            recording_dir = (self.recordings_root / task_id).resolve()
+            workflow_dir = (self.workflows_root / task_id).resolve()
+            self._assert_under_root(recording_dir, self.recordings_root)
+            self._assert_under_root(workflow_dir, self.workflows_root)
+            has_recording_manifest = (recording_dir / "manifest.jsonl").exists()
+            has_workflow_schema = (workflow_dir / "schema.json").exists()
+            if not has_recording_manifest and not has_workflow_schema:
+                _task_log(
+                    f"reflect rejected: task_id={task_id} reason=missing_reflect_input "
+                    f"recording_dir={recording_dir} workflow_dir={workflow_dir}"
+                )
+                raise HTTPException(status_code=400, detail="Recording manifest.jsonl or workflow schema.json not found")
+            reflect_input_dir = workflow_dir if has_workflow_schema else recording_dir
             q: Queue = Queue()
             p = Process(
                 target=_run_reflect_task,
-                args=(str(recording_dir), str(self.workflows_root), self.reflect_llm_cfg),
+                args=(str(reflect_input_dir), str(self.workflows_root), self.reflect_llm_cfg),
                 kwargs={"force": force, "event_queue": q},
                 daemon=True,
             )
@@ -366,7 +375,7 @@ class TaskRunner:
             }
             self._reflect_processes[task_id] = (p, q)
             p.start()
-            _task_log(f"reflect process started: task_id={task_id} pid={p.pid} recording_dir={recording_dir}")
+            _task_log(f"reflect process started: task_id={task_id} pid={p.pid} input_dir={reflect_input_dir}")
             return self._task_row_locked(task_id)
 
     def start_replay(self, task_id: str) -> dict[str, Any]:
@@ -438,6 +447,7 @@ class TaskRunner:
         recording_dir = self.recordings_root / task_id
         has_workflow = workflow_dir.exists() and workflow_dir.is_dir()
         has_recording = recording_dir.exists() and recording_dir.is_dir()
+        has_recording_manifest = has_recording and (recording_dir / "manifest.jsonl").exists()
         has_schema = has_workflow and (workflow_dir / "schema.json").exists()
         meta = _read_json(workflow_dir / "metadata.json") if has_workflow else _read_json(recording_dir / "metadata.json")
         display_name = str(meta.get("name") or task_id).strip() if isinstance(meta, dict) else task_id
@@ -457,7 +467,7 @@ class TaskRunner:
         if status == "reflecting" and state.get("phase") == "compiling":
             status = "compiling"
         active = status in {"reflecting", "compiling", "replaying", "deleting"}
-        can_reflect = bool(has_recording and not active)
+        can_reflect = bool((has_recording_manifest or has_schema) and not active)
         can_replay = bool(has_schema and not active and not self._replay_processes)
         return {
             "id": task_id,
@@ -678,6 +688,7 @@ def create_app(
     )
     agent_service = agent_chat_service or WorkspaceAgentChatService()
     task_agent_services: dict[str, WorkspaceAgentChatService] = {}
+    skill_build_services: dict[str, WorkflowSkillBuildService] = {}
 
     app = FastAPI(title="AI Mime Workflow Editor", docs_url=None, redoc_url=None)
 
@@ -914,6 +925,120 @@ def create_app(
     @app.post("/api/tasks/{task_id}/agent/chat")
     def api_task_agent_chat(task_id: str, payload: dict[str, Any] = Body(...)):
         return _agent_chat_response(_task_agent_service(task_id), payload)
+
+    def _skill_build_service(task_id: str) -> WorkflowSkillBuildService:
+        row = task_runner.get_status(task_id)
+        workspace_raw = row.get("workflow_dir")
+        if not isinstance(workspace_raw, str) or not workspace_raw:
+            raise HTTPException(status_code=404, detail="Workflow directory not found for task")
+        workflow_dir = Path(workspace_raw)
+        if not (workflow_dir / "optimized_plan.json").exists():
+            raise HTTPException(
+                status_code=409,
+                detail="optimized_plan.json not present yet; finish reflect first",
+            )
+        existing = skill_build_services.get(task_id)
+        if existing is not None and existing.workflow_dir == workflow_dir:
+            return existing
+        service = WorkflowSkillBuildService(workflow_dir=workflow_dir)
+        skill_build_services[task_id] = service
+        return service
+
+    async def _skill_build_stream_response(
+        service: WorkflowSkillBuildService,
+        payload: dict[str, Any],
+    ) -> StreamingResponse:
+        message = payload.get("message")
+        session_id = payload.get("session_id")
+        model = payload.get("model")
+        if not isinstance(message, str) or not message.strip():
+            raise HTTPException(status_code=400, detail="message must be non-empty")
+        if session_id is not None and not isinstance(session_id, str):
+            raise HTTPException(status_code=400, detail="session_id must be a string or null")
+        if model is not None and not isinstance(model, str):
+            raise HTTPException(status_code=400, detail="model must be a string or null")
+        try:
+            event_iter = service.chat_stream(message=message, session_id=session_id, model=model)
+        except AgentBusyError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        async def _sse():
+            try:
+                async for event in event_iter:
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+
+        return StreamingResponse(
+            _sse(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/skill-build/{task_id}", response_class=HTMLResponse)
+    def skill_build_page(task_id: str):
+        _safe_task_id(task_id)
+        task_runner.get_status(task_id)
+        index_path = web_dir / "skill_build.html"
+        if not index_path.exists():
+            raise HTTPException(status_code=500, detail="Skill build UI not found")
+        html = index_path.read_text(encoding="utf-8").replace("__TASK_ID__", task_id)
+        return HTMLResponse(content=html)
+
+    @app.get("/api/tasks/{task_id}/skill-build/sessions")
+    def api_skill_build_sessions(task_id: str):
+        return _skill_build_service(task_id).status()
+
+    @app.get("/api/tasks/{task_id}/skill-build/models")
+    def api_skill_build_models(task_id: str):
+        return _skill_build_service(task_id).list_models()
+
+    @app.post("/api/tasks/{task_id}/skill-build/sessions")
+    def api_skill_build_create_session(task_id: str):
+        return _skill_build_service(task_id).create_session()
+
+    @app.get("/api/tasks/{task_id}/skill-build/sessions/{session_id}/messages")
+    def api_skill_build_session_messages(task_id: str, session_id: str):
+        _validate_agent_session_id(session_id)
+        try:
+            return {
+                "session_id": session_id,
+                "messages": _skill_build_service(task_id).load_messages(session_id),
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/tasks/{task_id}/skill-build/chat/stream")
+    async def api_skill_build_chat_stream(task_id: str, payload: dict[str, Any] = Body(...)):
+        return await _skill_build_stream_response(_skill_build_service(task_id), payload)
+
+    @app.post("/api/tasks/{task_id}/skill-build/interrupt")
+    def api_skill_build_interrupt(task_id: str):
+        return {"interrupted": _skill_build_service(task_id).interrupt()}
+
+    @app.post("/api/tasks/{task_id}/skill-build/permission")
+    def api_skill_build_permission(task_id: str, payload: dict[str, Any] = Body(...)):
+        request_id = payload.get("request_id")
+        decision = payload.get("decision")
+        if not isinstance(request_id, str) or not request_id:
+            raise HTTPException(status_code=400, detail="request_id must be a non-empty string")
+        if decision not in ("allow", "allow_always", "deny"):
+            raise HTTPException(status_code=400, detail="decision must be allow, allow_always, or deny")
+        return {"resolved": _skill_build_service(task_id).resolve_permission(request_id, decision)}
+
+    @app.post("/api/tasks/{task_id}/skill-build/settings/bash_requires_approval")
+    def api_skill_build_bash_approval(task_id: str, payload: dict[str, Any] = Body(...)):
+        value = payload.get("value")
+        if not isinstance(value, bool):
+            raise HTTPException(status_code=400, detail="value must be boolean")
+        return {"bash_requires_approval": _skill_build_service(task_id).set_bash_requires_approval(value)}
+
+    @app.post("/api/tasks/{task_id}/skill-build/reset")
+    def api_skill_build_reset(task_id: str):
+        _skill_build_service(task_id).reset_terminal()
+        return {"ok": True}
 
     @app.post("/api/tasks/{task_id}/reflect")
     def api_reflect_task(task_id: str, payload: dict[str, Any] | None = Body(default=None)):
