@@ -16,10 +16,14 @@
     banner.classList.add("success");
     banner.hidden = false;
     const logs = event.e2e_logs ? `<pre>${escapeHtml(event.e2e_logs)}</pre>` : "";
+    const runCmd = event.skill_dir
+      ? `cd ${event.skill_dir} && ./run.sh`
+      : "";
     banner.innerHTML = `
       <h2>Skill ready ✓</h2>
       <div>${escapeHtml(event.summary || "Skill package built and verified.")}</div>
       ${event.skill_dir ? `<div style="margin-top:6px;font-family:monospace">${escapeHtml(event.skill_dir)}</div>` : ""}
+      ${runCmd ? `<div style="margin-top:10px">Run it:</div><pre><code>${escapeHtml(runCmd)}</code></pre>` : ""}
       ${logs}
     `;
   }

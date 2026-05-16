@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -41,6 +41,8 @@ class AgentRunRequest(BaseModel):
     user_filesystem_access: FilesystemAccess = Field(default_factory=FilesystemAccess)
     temp_dir: Path | None = None
     system_prompt: str | None = None
+    allowed_tools: list[str] | None = None
+    mcp_servers: dict[str, dict[str, Any]] | None = None
 
 
 class AgentRunResult(BaseModel):

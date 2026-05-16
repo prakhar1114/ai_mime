@@ -70,10 +70,14 @@ class WorkflowSkillBuildService:
         self._terminal_status: str | None = None
 
     def status(self) -> dict[str, Any]:
-        active = self._read_active()
+        # Intentionally do NOT surface skill_build_active.json's session_id here.
+        # Each time the user opens /skill-build/<task_id> they should land on a
+        # fresh draft session; resuming a previous chat must require an explicit
+        # click in the sidebar. (agent.js auto-resumes from `active_session_id`
+        # when present, so withholding it is what enforces the new-session default.)
         return {
             "workflow_dir": str(self.workflow_dir),
-            "active_session_id": active.get("session_id"),
+            "active_session_id": None,
             "sessions": self.list_sessions(),
             "models": self.model_options,
             "default_model": self.default_model,
@@ -194,7 +198,10 @@ class WorkflowSkillBuildService:
         final_summary = ""
         stream_done = asyncio.Event()
 
-        auto_allow = ["Glob", "Grep", "Read", "Write", "Edit", "MultiEdit", "Skill"]
+        auto_allow = [
+            "Glob", "Grep", "Read", "Write", "Edit", "MultiEdit", "Skill",
+            "WebFetch", "WebSearch",
+        ]
         if not self.bash_requires_approval:
             auto_allow.append("Bash")
 
@@ -411,6 +418,19 @@ class WorkflowSkillBuildService:
             return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}
         if tool_name == "Skill":
             return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}
+        if tool_name in {"WebFetch", "WebSearch"}:
+            return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}
+        if tool_name.startswith("mcp__"):
+            servers = request.mcp_servers or {}
+            parts = tool_name.split("__", 2)
+            server_name = parts[1] if len(parts) >= 2 else ""
+            if server_name and server_name in servers:
+                return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}
+            return {
+                "behavior": "deny",
+                "message": f"{tool_name} blocked: MCP server {server_name!r} is not registered for this workflow.",
+                "interrupt": False,
+            }
         if tool_name == "Bash":
             if not self.bash_requires_approval or self._session_bash_allow_all:
                 return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}

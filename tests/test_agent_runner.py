@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -67,16 +69,49 @@ def _optimized_plan_with_default_input() -> dict:
     return plan
 
 
+def _example_inputs_from_plan(optimized_plan: dict) -> dict[str, object]:
+    out: dict[str, object] = {}
+    for item in optimized_plan.get("inputs", []) or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        out[name] = item.get("default") if "default" in item else f"<FILL IN: {item.get('description','')}>"
+    return out
+
+
 def _write_valid_skill_package(skill_dir: Path, schema: dict, optimized_plan: dict) -> None:
     (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "inputs").mkdir(parents=True, exist_ok=True)
     (skill_dir / "references").mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
-        "# Record Expenses Skill\n\nRun with `python scripts/run.py --inputs-json inputs.json`.\n",
+        "---\n"
+        'name: record-expenses-in-a-sheet\n'
+        'description: Record a receipt expense. Use when the user asks to log an expense.\n'
+        "---\n\n"
+        "# Record Expenses Skill\n\n"
+        "## Inputs\n- receipt_path (required, string) — path to receipt.\n\n"
+        "## Run\n`./run.sh`\n\n"
+        "## Outputs\nA structured expense record.\n\n"
+        "## Progress log format\nstep_start / step_done / step_failed / workflow_done JSON-line events.\n\n"
+        "## Fallback\nSee references/fallback_plan.md.\n\n"
+        "## ask_gemini decision points\nNone.\n\n"
+        "## References\n- fallback_plan.md\n",
         encoding="utf-8",
     )
-    (skill_dir / "references" / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
-    (skill_dir / "references" / "optimized_plan.json").write_text(json.dumps(optimized_plan), encoding="utf-8")
-    (skill_dir / "references" / "learned_notes.md").write_text("No learned notes yet.\n", encoding="utf-8")
+    inputs_example = _example_inputs_from_plan(optimized_plan)
+    (skill_dir / "inputs" / "inputs.example.json").write_text(
+        json.dumps(inputs_example, indent=2), encoding="utf-8"
+    )
+    (skill_dir / "inputs" / "inputs.template.json").write_text(
+        json.dumps({k: f"<FILL IN: {k}>" for k in inputs_example.keys()}, indent=2),
+        encoding="utf-8",
+    )
+    (skill_dir / "references" / "fallback_plan.md").write_text(
+        "# Fallback plan\n\n## Subtask 0 — Extract receipt\nIntent: parse the receipt.\n",
+        encoding="utf-8",
+    )
     (skill_dir / "scripts" / "run.py").write_text(
         "import argparse\n"
         "import json\n"
@@ -90,6 +125,16 @@ def _write_valid_skill_package(skill_dir: Path, schema: dict, optimized_plan: di
         "print('step extract_receipt: done')\n",
         encoding="utf-8",
     )
+    run_sh = skill_dir / "run.sh"
+    run_sh.write_text(
+        '#!/usr/bin/env bash\n'
+        'set -euo pipefail\n'
+        'HERE="$(cd "$(dirname "$0")" && pwd)"\n'
+        'INPUTS="${1:-$HERE/inputs/inputs.example.json}"\n'
+        'exec python3 "$HERE/scripts/run.py" --inputs-json "$INPUTS"\n',
+        encoding="utf-8",
+    )
+    run_sh.chmod(run_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 class FakeAdapter:
@@ -196,7 +241,25 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertIn("side_effects.md", prompt)
             # File contract
             self.assertIn("scripts/run.py", prompt)
-            self.assertIn("references/learned_notes.md", prompt)
+            self.assertIn("run.sh", prompt)
+            self.assertIn("inputs/inputs.example.json", prompt)
+            self.assertIn("inputs/inputs.template.json", prompt)
+            self.assertIn("references/fallback_plan.md", prompt)
+            self.assertIn("skill-creator", prompt)
+            # Internet & external services guidance
+            self.assertIn("WebSearch", prompt)
+            self.assertIn("WebFetch", prompt)
+            self.assertIn("uvx", prompt)
+            self.assertIn("npx", prompt)
+            self.assertIn("no user setup", prompt)
+            # Structured log contract
+            self.assertIn("step_start", prompt)
+            self.assertIn("step_done", prompt)
+            self.assertIn("step_failed", prompt)
+            self.assertIn("workflow_done", prompt)
+            # Skill must not ship internal builder artifacts
+            self.assertNotIn("references/schema.json", prompt)
+            self.assertNotIn("references/optimized_plan.json", prompt)
             # schema/optimized_plan are writable for input edits
             writable = {str(p) for p in request.writable_roots}
             self.assertIn(str(workflow_dir / "schema.json"), writable)
@@ -229,11 +292,124 @@ class AgentRunnerTests(unittest.TestCase):
             plan = _optimized_plan()
             plan["inputs"] = [{"name": "receipt_path", "description": "Path", "required": True}]
             _write_valid_skill_package(skill_dir, schema, plan)
+            # Force the resolver past confirmed_inputs and inputs.example.json so
+            # it must synthesize from optimized_plan and discover the missing default.
+            (skill_dir / "inputs" / "inputs.example.json").unlink()
 
             result = run_skill_e2e_test(skill_dir, plan)
 
             self.assertEqual(result.status, "failed")
             self.assertIn("required optimized_plan inputs have no default", result.error or "")
+
+    def test_validate_skill_package_rejects_missing_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "skills" / "record-expenses-in-a-sheet"
+            schema = _schema()
+            plan = _optimized_plan_with_default_input()
+            _write_valid_skill_package(skill_dir, schema, plan)
+            (skill_dir / "SKILL.md").write_text("# No frontmatter here\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "frontmatter"):
+                validate_skill_package(skill_dir, schema, plan)
+
+    def test_validate_skill_package_rejects_frontmatter_missing_name(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "skills" / "record-expenses-in-a-sheet"
+            schema = _schema()
+            plan = _optimized_plan_with_default_input()
+            _write_valid_skill_package(skill_dir, schema, plan)
+            (skill_dir / "SKILL.md").write_text(
+                "---\ndescription: only description\n---\n\n# Body\n", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "'name'"):
+                validate_skill_package(skill_dir, schema, plan)
+
+    def test_validate_skill_package_rejects_non_executable_run_sh(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "skills" / "record-expenses-in-a-sheet"
+            schema = _schema()
+            plan = _optimized_plan_with_default_input()
+            _write_valid_skill_package(skill_dir, schema, plan)
+            run_sh = skill_dir / "run.sh"
+            run_sh.chmod(run_sh.stat().st_mode & ~(stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+
+            with self.assertRaisesRegex(ValueError, "run.sh is not executable"):
+                validate_skill_package(skill_dir, schema, plan)
+
+    def test_validate_skill_package_accepts_free_form_references(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "skills" / "record-expenses-in-a-sheet"
+            schema = _schema()
+            plan = _optimized_plan_with_default_input()
+            _write_valid_skill_package(skill_dir, schema, plan)
+            (skill_dir / "references" / "domain_notes.md").write_text("Domain.\n", encoding="utf-8")
+            (skill_dir / "references" / "subtask_0.md").write_text("Subtask 0 notes.\n", encoding="utf-8")
+
+            validate_skill_package(skill_dir, schema, plan)
+
+    def test_validate_skill_package_rejects_example_missing_required_key(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "skills" / "record-expenses-in-a-sheet"
+            schema = _schema()
+            plan = _optimized_plan_with_default_input()
+            _write_valid_skill_package(skill_dir, schema, plan)
+            (skill_dir / "inputs" / "inputs.example.json").write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "inputs.example.json missing required keys"):
+                validate_skill_package(skill_dir, schema, plan)
+
+    def test_build_skill_chat_request_has_empty_mcp_servers_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
+            prev = os.environ.pop("AI_MIME_MCP_SERVERS_JSON", None)
+            try:
+                request = build_agent_run_request(
+                    workflow_dir=workflow_dir, provider="claude", mode="build_skill_chat"
+                )
+            finally:
+                if prev is not None:
+                    os.environ["AI_MIME_MCP_SERVERS_JSON"] = prev
+            self.assertEqual(request.mcp_servers, {})
+
+    def test_build_skill_chat_request_reads_mcp_servers_from_env(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
+            payload = {"hello": {"type": "stdio", "command": "echo", "args": ["mcp"]}}
+            prev = os.environ.get("AI_MIME_MCP_SERVERS_JSON")
+            os.environ["AI_MIME_MCP_SERVERS_JSON"] = json.dumps(payload)
+            try:
+                request = build_agent_run_request(
+                    workflow_dir=workflow_dir, provider="claude", mode="build_skill_chat"
+                )
+            finally:
+                if prev is None:
+                    os.environ.pop("AI_MIME_MCP_SERVERS_JSON", None)
+                else:
+                    os.environ["AI_MIME_MCP_SERVERS_JSON"] = prev
+            self.assertEqual(request.mcp_servers, payload)
+
+    def test_build_skill_chat_request_ignores_invalid_mcp_env(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
+            prev = os.environ.get("AI_MIME_MCP_SERVERS_JSON")
+            os.environ["AI_MIME_MCP_SERVERS_JSON"] = "not-json{"
+            try:
+                request = build_agent_run_request(
+                    workflow_dir=workflow_dir, provider="claude", mode="build_skill_chat"
+                )
+            finally:
+                if prev is None:
+                    os.environ.pop("AI_MIME_MCP_SERVERS_JSON", None)
+                else:
+                    os.environ["AI_MIME_MCP_SERVERS_JSON"] = prev
+            self.assertEqual(request.mcp_servers, {})
 
     def test_workspace_chat_service_persists_returned_session_id(self) -> None:
         prompts: list[str] = []

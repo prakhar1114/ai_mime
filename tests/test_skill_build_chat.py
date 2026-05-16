@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,11 +49,31 @@ def _write_workflow(workflow_dir: Path, schema: dict, plan: dict) -> Path:
     (workflow_dir / "optimized_plan.json").write_text(json.dumps(plan), encoding="utf-8")
     skill_dir = workflow_dir / "skills" / "record-expenses-in-a-sheet"
     (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "inputs").mkdir(parents=True, exist_ok=True)
     (skill_dir / "references").mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILL.md").write_text("# x\n", encoding="utf-8")
-    (skill_dir / "references" / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
-    (skill_dir / "references" / "optimized_plan.json").write_text(json.dumps(plan), encoding="utf-8")
-    (skill_dir / "references" / "learned_notes.md").write_text("ok\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: record-expenses-in-a-sheet\n"
+        "description: Record a receipt expense. Use when the user asks to log an expense.\n"
+        "---\n\n"
+        "# Record Expenses Skill\n",
+        encoding="utf-8",
+    )
+    example_inputs = {}
+    for item in plan.get("inputs", []) or []:
+        if isinstance(item, dict) and isinstance(item.get("name"), str):
+            example_inputs[item["name"]] = item.get("default") or f"<FILL IN: {item.get('description','')}>"
+    (skill_dir / "inputs" / "inputs.example.json").write_text(
+        json.dumps(example_inputs, indent=2), encoding="utf-8"
+    )
+    (skill_dir / "inputs" / "inputs.template.json").write_text(
+        json.dumps({k: f"<FILL IN: {k}>" for k in example_inputs.keys()}, indent=2),
+        encoding="utf-8",
+    )
+    (skill_dir / "references" / "fallback_plan.md").write_text(
+        "# Fallback plan\n\n## Subtask 0 — Extract receipt\nIntent: parse the receipt.\n",
+        encoding="utf-8",
+    )
     (skill_dir / "scripts" / "run.py").write_text(
         "import argparse, json\n"
         "p = argparse.ArgumentParser()\n"
@@ -62,6 +83,16 @@ def _write_workflow(workflow_dir: Path, schema: dict, plan: dict) -> Path:
         "print('ok')\n",
         encoding="utf-8",
     )
+    run_sh = skill_dir / "run.sh"
+    run_sh.write_text(
+        '#!/usr/bin/env bash\n'
+        'set -euo pipefail\n'
+        'HERE="$(cd "$(dirname "$0")" && pwd)"\n'
+        'INPUTS="${1:-$HERE/inputs/inputs.example.json}"\n'
+        'exec python3 "$HERE/scripts/run.py" --inputs-json "$INPUTS"\n',
+        encoding="utf-8",
+    )
+    run_sh.chmod(run_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return skill_dir
 
 
@@ -131,8 +162,8 @@ class WorkflowSkillBuildServiceTests(unittest.TestCase):
             schema = _schema()
             plan = _optimized_plan()
             skill_dir = _write_workflow(workflow_dir, schema, plan)
-            # Corrupt the references copy so validate_skill_package fails.
-            (skill_dir / "references" / "schema.json").write_text("{}", encoding="utf-8")
+            # Corrupt SKILL.md (strip frontmatter) so validate_skill_package fails.
+            (skill_dir / "SKILL.md").write_text("# no frontmatter here\n", encoding="utf-8")
             service = _build_service(workflow_dir)
             _write_signal(workflow_dir, {"status": "skill_ready", "summary": "done"})
 
@@ -144,6 +175,59 @@ class WorkflowSkillBuildServiceTests(unittest.TestCase):
             self.assertIn("validate_skill_package", event["error"])
             self.assertIsNone(service._terminal_status)
             self.assertFalse((workflow_dir / "agent" / "build_signal.json").exists())
+
+
+class AuthorizeToolTests(unittest.TestCase):
+    def _request(self, workflow_dir: Path, mcp_servers: dict | None = None):
+        from ai_mime.agent_runner.models import AgentRunRequest, FilesystemAccess
+
+        return AgentRunRequest(
+            provider="claude",
+            mode="build_skill_chat",
+            workflow_dir=workflow_dir,
+            workspace_dir=workflow_dir,
+            readable_roots=[workflow_dir],
+            writable_roots=[workflow_dir],
+            user_filesystem_access=FilesystemAccess(),
+            mcp_servers=mcp_servers,
+        )
+
+    def test_authorize_allows_web_tools_without_path_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            service = _build_service(workflow_dir)
+            request = self._request(workflow_dir)
+            for tool in ("WebFetch", "WebSearch"):
+                decision = service._authorize_tool(request, tool, {"url": "https://example.com"})
+                self.assertEqual(decision.get("behavior"), "allow", f"{tool} should be allowed")
+
+    def test_authorize_allows_registered_mcp_server_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            service = _build_service(workflow_dir)
+            request = self._request(workflow_dir, mcp_servers={"hello": {"type": "stdio", "command": "echo"}})
+            decision = service._authorize_tool(request, "mcp__hello__do_thing", {})
+            self.assertEqual(decision.get("behavior"), "allow")
+
+    def test_authorize_denies_unregistered_mcp_server_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            service = _build_service(workflow_dir)
+            request = self._request(workflow_dir, mcp_servers={"hello": {"type": "stdio", "command": "echo"}})
+            decision = service._authorize_tool(request, "mcp__other__do_thing", {})
+            self.assertEqual(decision.get("behavior"), "deny")
+
+    def test_authorize_denies_mcp_when_none_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            service = _build_service(workflow_dir)
+            request = self._request(workflow_dir, mcp_servers=None)
+            decision = service._authorize_tool(request, "mcp__hello__do_thing", {})
+            self.assertEqual(decision.get("behavior"), "deny")
 
 
 if __name__ == "__main__":

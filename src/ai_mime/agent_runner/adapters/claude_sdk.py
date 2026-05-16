@@ -21,7 +21,10 @@ from claude_agent_sdk import (
 
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 
-DEFAULT_ALLOWED_TOOLS = ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "Bash", "Skill"]
+DEFAULT_ALLOWED_TOOLS = [
+    "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "Bash", "Skill",
+    "WebFetch", "WebSearch",
+]
 DEFAULT_SETTING_SOURCES = ["user", "project", "local"]
 
 CanUseToolCallback = Callable[[str, dict[str, Any], Any], Awaitable[dict[str, Any]]]
@@ -112,12 +115,15 @@ def _options_kwargs_for(
     skills: list[str] | Literal["all"] | None = "all",
     setting_sources: list[str] | None = None,
 ) -> dict[str, Any]:
-    available = list(allowed_tools or DEFAULT_ALLOWED_TOOLS)
+    effective_allowed = allowed_tools if allowed_tools is not None else request.allowed_tools
+    available = list(effective_allowed or DEFAULT_ALLOWED_TOOLS)
     kwargs: dict[str, Any] = {
         "cwd": str(request.workspace_dir),
         "tools": available,
         "allowed_tools": list(auto_allow_tools) if auto_allow_tools is not None else list(available),
     }
+    if request.mcp_servers:
+        kwargs["mcp_servers"] = dict(request.mcp_servers)
     if skills is not None:
         kwargs["skills"] = skills
     kwargs["setting_sources"] = list(setting_sources) if setting_sources is not None else list(DEFAULT_SETTING_SOURCES)
