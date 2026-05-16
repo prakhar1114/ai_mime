@@ -98,4 +98,76 @@
       // ignore
     }
   })();
+
+  // Handover pickup: when /replay/<id> hands off a failed script run, the
+  // payload is left in sessionStorage. We start a fresh session and
+  // auto-submit a healing prompt so the agent has the right context.
+  (function handleReplayHandover() {
+    const key = `replay:handover:${taskId}`;
+    let payload = null;
+    try {
+      const raw = sessionStorage.getItem(key);
+      if (!raw) return;
+      payload = JSON.parse(raw);
+    } catch { return; }
+    if (!payload) return;
+    try { sessionStorage.removeItem(key); } catch { /* ignore */ }
+
+    function buildPrompt() {
+      const paramLines = Object.entries(payload.params || {})
+        .map(([k, v]) => `  ${k} = ${typeof v === "string" ? v : JSON.stringify(v)}`)
+        .join("\n") || "  (no params)";
+      return [
+        `The skill at ${payload.skillDir || "(unknown skill dir)"} failed when run with params:`,
+        paramLines,
+        ``,
+        `Error: ${payload.error || "(no error message)"}`,
+        ``,
+        `Last logs:`,
+        "```",
+        payload.logsTail || "(no logs captured)",
+        "```",
+        ``,
+        `Please edit the skill (scripts/run.py / run.sh) to fix this. After editing, run the end-to-end check to verify.`,
+      ].join("\n");
+    }
+
+    function trySubmit() {
+      const newChatBtn = document.getElementById("newChatBtn");
+      const messageInput = document.getElementById("messageInput");
+      const chatForm = document.getElementById("chatForm");
+      if (!messageInput || !chatForm) {
+        // agent.js may not have mounted yet — retry shortly.
+        setTimeout(trySubmit, 120);
+        return;
+      }
+      // Start from a fresh session.
+      try { newChatBtn && newChatBtn.click(); } catch { /* ignore */ }
+      // Render a small handover banner so the user sees what's happening.
+      if (banner) {
+        banner.classList.remove("success");
+        banner.classList.add("failure");
+        banner.hidden = false;
+        banner.innerHTML = `
+          <h2>Healing the skill from a failed replay run</h2>
+          <div>${escapeHtml(payload.error || "Script failed during replay.")}</div>
+          <div style="margin-top:6px;font-family:monospace">${escapeHtml(payload.skillDir || "")}</div>
+        `;
+      }
+      messageInput.value = buildPrompt();
+      messageInput.dispatchEvent(new Event("input", { bubbles: true }));
+      // Submit the form via requestSubmit so agent.js's submit handler runs.
+      setTimeout(() => {
+        if (typeof chatForm.requestSubmit === "function") {
+          chatForm.requestSubmit();
+        } else {
+          chatForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        }
+      }, 80);
+    }
+
+    // Defer to next tick so agent.js (loaded later in skill_build.html order)
+    // has a chance to mount its handlers.
+    setTimeout(trySubmit, 0);
+  })();
 })();

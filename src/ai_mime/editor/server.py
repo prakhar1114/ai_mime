@@ -135,6 +135,26 @@ def _safe_recording_dir(recordings_root: Path, task_id: str) -> Path:
     return p
 
 
+def _find_skill_dir(workflow_dir: Path) -> Path | None:
+    """Return the per-task skill dir if a built skill is present.
+
+    A skill is considered built when workflow_dir/skills/<slug>/run.sh exists.
+    There is typically a single subdirectory; if there are multiple, prefer the
+    most recently modified.
+    """
+    skills_root = workflow_dir / "skills"
+    if not skills_root.is_dir():
+        return None
+    candidates: list[Path] = []
+    for child in skills_root.iterdir():
+        if child.is_dir() and (child / "run.sh").exists():
+            candidates.append(child)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -467,8 +487,10 @@ class TaskRunner:
         if status == "reflecting" and state.get("phase") == "compiling":
             status = "compiling"
         active = status in {"reflecting", "compiling", "replaying", "deleting"}
+        skill_dir = _find_skill_dir(workflow_dir) if has_workflow else None
+        has_skill = skill_dir is not None
         can_reflect = bool((has_recording_manifest or has_schema) and not active)
-        can_replay = bool(has_schema and not active and not self._replay_processes)
+        can_replay = bool(has_skill and not active and not self._replay_processes)
         return {
             "id": task_id,
             "display_name": display_name,
@@ -479,9 +501,11 @@ class TaskRunner:
             "has_recording": has_recording,
             "has_workflow": has_workflow,
             "has_schema": has_schema,
+            "has_skill": has_skill,
+            "skill_dir": str(skill_dir) if skill_dir else None,
             "can_reflect": can_reflect,
             "can_replay": can_replay,
-            "can_edit": bool(has_schema and not active),
+            # "can_edit": bool(has_schema and not active),
             "can_delete": bool((has_recording or has_workflow) and not active),
             "workflow_dir": str(workflow_dir) if has_workflow else None,
             "recording_dir": str(recording_dir) if has_recording else None,
@@ -987,6 +1011,42 @@ def create_app(
         html = index_path.read_text(encoding="utf-8").replace("__TASK_ID__", task_id)
         return HTMLResponse(content=html)
 
+    @app.get("/api/tasks/{task_id}/skill/inputs-template")
+    def api_skill_inputs_template(task_id: str):
+        _safe_task_id(task_id)
+        row = task_runner.get_status(task_id)
+        skill_dir_raw = row.get("skill_dir")
+        if not isinstance(skill_dir_raw, str) or not skill_dir_raw:
+            raise HTTPException(status_code=404, detail="Skill is not built for this task yet")
+        skill_dir = Path(skill_dir_raw)
+        template_path = skill_dir / "inputs" / "inputs.template.json"
+        if not template_path.exists():
+            raise HTTPException(status_code=404, detail=f"inputs.template.json not found at {template_path}")
+        try:
+            raw = template_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to parse inputs.template.json: {e}")
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=500, detail="inputs.template.json must be a JSON object")
+        return {
+            "skill_dir": str(skill_dir),
+            "template_path": str(template_path),
+            "template": data,
+        }
+
+    @app.get("/replay/{task_id}", response_class=HTMLResponse)
+    def replay_page(task_id: str):
+        _safe_task_id(task_id)
+        row = task_runner.get_status(task_id)
+        if not row.get("has_skill"):
+            raise HTTPException(status_code=409, detail="Skill is not built for this task yet")
+        index_path = web_dir / "replay.html"
+        if not index_path.exists():
+            raise HTTPException(status_code=500, detail="Replay UI not found")
+        html = index_path.read_text(encoding="utf-8").replace("__TASK_ID__", task_id)
+        return HTMLResponse(content=html)
+
     @app.get("/api/tasks/{task_id}/skill-build/sessions")
     def api_skill_build_sessions(task_id: str):
         return _skill_build_service(task_id).status()
@@ -1052,68 +1112,6 @@ def create_app(
     @app.delete("/api/tasks/{task_id}")
     def api_delete_task(task_id: str):
         return task_runner.delete_task(task_id)
-
-    @app.get("/workflows/{workflow_id}", response_class=HTMLResponse)
-    def workflow_editor(workflow_id: str):
-        # Validate workflow id early so broken URLs fail fast (and log it).
-        _safe_workflow_dir(workflows_root, workflow_id)
-        # Serve a single-page app; workflow_id is passed via querystring for simplicity.
-        index_path = web_dir / "index.html"
-        if not index_path.exists():
-            raise HTTPException(status_code=500, detail="Editor UI not found")
-        html = index_path.read_text(encoding="utf-8")
-        # Minimal inline config
-        html = html.replace("__WORKFLOW_ID__", workflow_id)
-        return HTMLResponse(content=html)
-
-    @app.get("/api/workflows")
-    def api_list_workflows():
-        wfs = list_replayable_workflows(workflows_root)
-        return {
-            "workflows": [
-                {"id": wf.workflow_dir.name, "display_name": wf.display_name, "dir": str(wf.workflow_dir)}
-                for wf in sorted(wfs, key=lambda w: w.workflow_dir.name, reverse=True)
-            ]
-        }
-
-    @app.get("/api/workflows/{workflow_id}")
-    def api_get_workflow(workflow_id: str):
-        wf_dir = _safe_workflow_dir(workflows_root, workflow_id)
-        schema_path = wf_dir / "schema.json"
-        if not schema_path.exists():
-            raise HTTPException(status_code=404, detail="schema.json not found")
-        schema = _read_json(schema_path)
-        meta = _read_json(wf_dir / "metadata.json")
-        return {"workflow_id": workflow_id, "schema": schema, "metadata": meta}
-
-    @app.get("/api/workflows/{workflow_id}/upstream_extracts")
-    def api_upstream_extracts(workflow_id: str, subtask_i: int):
-        wf_dir = _safe_workflow_dir(workflows_root, workflow_id)
-        schema_path = wf_dir / "schema.json"
-        schema = _read_json(schema_path)
-        if not isinstance(subtask_i, int) or subtask_i < 0:
-            raise HTTPException(status_code=400, detail="subtask_i must be >= 0")
-        return {"extracts": available_upstream_extracts(schema, subtask_i=subtask_i)}
-
-    @app.post("/api/workflows/{workflow_id}")
-    def api_save_workflow(workflow_id: str, payload: dict[str, Any] = Body(...)):
-        wf_dir = _safe_workflow_dir(workflows_root, workflow_id)
-        schema_path = wf_dir / "schema.json"
-        schema = payload.get("schema")
-        deleted_param_examples = payload.get("deleted_param_examples") or {}
-        if not isinstance(schema, dict):
-            raise HTTPException(status_code=400, detail="Body must be {schema: {...}}")
-        if not isinstance(deleted_param_examples, dict):
-            raise HTTPException(status_code=400, detail="deleted_param_examples must be an object (name -> example string)")
-        try:
-            _apply_deleted_param_examples(schema=schema, deleted_param_examples=deleted_param_examples)  # may raise ValueError
-            reindex_schema(schema)
-            strip_details_in_schema(schema)
-            validate_schema(schema)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        _write_json_atomic(schema_path, schema)
-        return {"ok": True, "schema": schema}
 
     @app.get("/health")
     def health():

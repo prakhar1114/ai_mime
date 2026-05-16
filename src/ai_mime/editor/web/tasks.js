@@ -81,7 +81,7 @@
       const reflectText = task.status === "failed_reflection" ? "Retry reflection" : "Reflect";
       const reflectDisabled = ACTIVE.has(task.status) ? "disabled" : "";
       const menuItems = [
-        task.can_edit ? `<button class="menu-item" data-action="edit">Edit</button>` : "",
+        // task.can_edit ? `<button class="menu-item" data-action="edit">Edit</button>` : "",
         task.can_reflect ? `<button class="menu-item" data-action="reflect" ${reflectDisabled}>${reflectText}</button>` : "",
         task.can_delete ? `<button class="menu-item danger" data-action="delete">Delete</button>` : "",
       ].filter(Boolean).join("");
@@ -166,7 +166,8 @@
         window.location.href = `/reflect/${encoded}`;
         return;
       } else if (action === "replay") {
-        await request(`/api/tasks/${encoded}/replay`, { method: "POST" });
+        window.location.href = `/replay/${encoded}`;
+        return;
       }
       await loadTasks();
     } catch (e) {
