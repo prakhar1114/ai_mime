@@ -9,6 +9,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    HookMatcher,
     ResultMessage,
     TextBlock,
     ToolResultBlock,
@@ -28,6 +29,78 @@ DEFAULT_ALLOWED_TOOLS = [
 DEFAULT_SETTING_SOURCES = ["user", "project", "local"]
 
 CanUseToolCallback = Callable[[str, dict[str, Any], Any], Awaitable[dict[str, Any]]]
+
+
+_READ_FILE_TOOLS = {"Read", "NotebookRead", "Glob", "Grep"}
+_WRITE_FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+_SANDBOX_MATCHER = "Read|NotebookRead|Glob|Grep|Write|Edit|MultiEdit|NotebookEdit"
+
+
+def _within_roots(target: str, roots: list[Path]) -> bool:
+    try:
+        target_path = Path(target).expanduser().resolve()
+    except Exception:
+        return False
+    for root in roots:
+        try:
+            root_resolved = Path(root).expanduser().resolve()
+        except Exception:
+            continue
+        if target_path == root_resolved:
+            return True
+        try:
+            target_path.relative_to(root_resolved)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _extract_tool_paths(tool_input: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for key in ("file_path", "path", "notebook_path"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            paths.append(value)
+    return paths
+
+
+def _build_filesystem_sandbox_hook(request: AgentRunRequest):
+    """PreToolUse hook that denies file ops outside the request's roots.
+
+    Hooks run BEFORE allow rules in the SDK's permission flow, so this is
+    the authoritative sandbox even when Read/Write/Edit are auto-allowed.
+    Returns None when no roots are configured (no enforcement).
+    """
+    readable = list(request.readable_roots or [])
+    writable = list(request.writable_roots or [])
+    if not readable and not writable:
+        return None
+
+    async def _hook(input_data, _tool_use_id, _context):  # type: ignore[no-untyped-def]
+        tool_name = input_data.get("tool_name") or ""
+        tool_input = input_data.get("tool_input") or {}
+        if tool_name in _READ_FILE_TOOLS:
+            roots = readable
+        elif tool_name in _WRITE_FILE_TOOLS:
+            roots = writable
+        else:
+            return {}
+        paths = _extract_tool_paths(tool_input)
+        if not paths:
+            return {}
+        denied = [p for p in paths if not _within_roots(p, roots)]
+        if denied:
+            return {
+                "decision": "block",
+                "reason": (
+                    f"{tool_name} blocked by filesystem sandbox: "
+                    f"path(s) outside allowed roots: {denied}"
+                ),
+            }
+        return {}
+
+    return _hook
 
 
 def _text_from_message(message: Any) -> list[str]:
@@ -140,6 +213,13 @@ def _options_kwargs_for(
     if can_use_tool is not None:
         kwargs["can_use_tool"] = can_use_tool
         kwargs["permission_mode"] = "default"
+    sandbox_hook = _build_filesystem_sandbox_hook(request)
+    if sandbox_hook is not None:
+        existing_hooks = kwargs.get("hooks") or {}
+        pre_tool_use = list(existing_hooks.get("PreToolUse") or [])
+        pre_tool_use.append(HookMatcher(matcher=_SANDBOX_MATCHER, hooks=[sandbox_hook]))
+        existing_hooks["PreToolUse"] = pre_tool_use
+        kwargs["hooks"] = existing_hooks
     return kwargs
 
 

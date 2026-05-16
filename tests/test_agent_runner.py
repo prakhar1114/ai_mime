@@ -359,6 +359,82 @@ class AgentRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "inputs.example.json missing required keys"):
                 validate_skill_package(skill_dir, schema, plan)
 
+    def test_filesystem_sandbox_hook_blocks_paths_outside_roots(self) -> None:
+        import asyncio as _asyncio
+
+        from ai_mime.agent_runner.adapters.claude_sdk import _build_filesystem_sandbox_hook
+        from ai_mime.agent_runner.models import FilesystemAccess
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            allowed = workflow_dir / "agent"
+            allowed.mkdir()
+            request = AgentRunRequest(
+                provider="claude",
+                mode="build_skill_chat",
+                workflow_dir=workflow_dir,
+                workspace_dir=workflow_dir,
+                readable_roots=[workflow_dir],
+                writable_roots=[allowed],
+                user_filesystem_access=FilesystemAccess(),
+            )
+            hook = _build_filesystem_sandbox_hook(request)
+            assert hook is not None
+
+            async def _call(tool_name: str, tool_input: dict) -> dict:
+                return await hook({"tool_name": tool_name, "tool_input": tool_input}, "tid", None)
+
+            # Read inside readable root → allowed (empty dict)
+            out = _asyncio.get_event_loop().run_until_complete(
+                _call("Read", {"file_path": str(workflow_dir / "schema.json")})
+            )
+            self.assertEqual(out, {})
+
+            # Read outside readable root → block
+            out = _asyncio.get_event_loop().run_until_complete(
+                _call("Read", {"file_path": "/etc/passwd"})
+            )
+            self.assertEqual(out.get("decision"), "block")
+            self.assertIn("sandbox", out.get("reason", ""))
+
+            # Write to writable root → allowed
+            out = _asyncio.get_event_loop().run_until_complete(
+                _call("Write", {"file_path": str(allowed / "x.json")})
+            )
+            self.assertEqual(out, {})
+
+            # Write outside writable root (still inside readable workflow_dir) → block
+            out = _asyncio.get_event_loop().run_until_complete(
+                _call("Write", {"file_path": str(workflow_dir / "outside.txt")})
+            )
+            self.assertEqual(out.get("decision"), "block")
+
+            # Bash / unrelated tool → pass through
+            out = _asyncio.get_event_loop().run_until_complete(
+                _call("Bash", {"command": "echo hi"})
+            )
+            self.assertEqual(out, {})
+
+    def test_options_kwargs_installs_sandbox_pretooluse_hook(self) -> None:
+        from ai_mime.agent_runner.adapters.claude_sdk import _options_kwargs_for
+        from ai_mime.agent_runner.models import FilesystemAccess
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            request = AgentRunRequest(
+                provider="claude",
+                mode="build_skill_chat",
+                workflow_dir=workflow_dir,
+                workspace_dir=workflow_dir,
+                readable_roots=[workflow_dir],
+                writable_roots=[workflow_dir],
+                user_filesystem_access=FilesystemAccess(),
+            )
+            kwargs = _options_kwargs_for(request, None)
+            hooks = kwargs.get("hooks") or {}
+            pre = hooks.get("PreToolUse") or []
+            self.assertEqual(len(pre), 1)
+
     def test_build_skill_chat_request_has_empty_mcp_servers_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             workflow_dir = Path(td)
