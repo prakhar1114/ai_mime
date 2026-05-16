@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import queue as thread_queue
 import re
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -167,6 +169,20 @@ def _write_json_atomic(path: Path, obj: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
+
+
+def _sse_event(obj: dict[str, Any]) -> str:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+def _parse_skill_progress_event(line: str) -> dict[str, Any] | None:
+    try:
+        obj = json.loads(line)
+    except Exception:
+        return None
+    if not isinstance(obj, dict) or not isinstance(obj.get("event"), str):
+        return None
+    return obj
 
 
 def _apply_deleted_param_examples(*, schema: dict[str, Any], deleted_param_examples: dict[str, str]) -> None:
@@ -1034,6 +1050,143 @@ def create_app(
             "template_path": str(template_path),
             "template": data,
         }
+
+    @app.post("/api/tasks/{task_id}/skill/run/stream")
+    def api_skill_run_stream(task_id: str, payload: dict[str, Any] | None = Body(default=None)):
+        _safe_task_id(task_id)
+        row = task_runner.get_status(task_id)
+        workflow_dir_raw = row.get("workflow_dir")
+        skill_dir_raw = row.get("skill_dir")
+        if not isinstance(workflow_dir_raw, str) or not workflow_dir_raw:
+            raise HTTPException(status_code=404, detail="Workflow directory not found for task")
+        if not isinstance(skill_dir_raw, str) or not skill_dir_raw:
+            raise HTTPException(status_code=404, detail="Skill is not built for this task yet")
+
+        workflow_dir = Path(workflow_dir_raw).resolve()
+        skill_dir = Path(skill_dir_raw).resolve()
+        _safe_workflow_dir(task_runner.workflows_root, task_id)
+        if workflow_dir not in skill_dir.parents:
+            raise HTTPException(status_code=400, detail="Invalid skill directory")
+        run_sh = skill_dir / "run.sh"
+        if not run_sh.exists():
+            raise HTTPException(status_code=404, detail=f"run.sh not found at {run_sh}")
+        if not os.access(run_sh, os.X_OK):
+            raise HTTPException(status_code=400, detail=f"run.sh is not executable: {run_sh}")
+
+        params = payload.get("params") if isinstance(payload, dict) else None
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise HTTPException(status_code=400, detail="params must be a JSON object")
+
+        def _stream():
+            started = time.monotonic()
+            stdout_lines: list[str] = []
+            stderr_lines: list[str] = []
+            final_outputs: dict[str, Any] = {}
+            q: thread_queue.Queue[tuple[str, str | int | None]] = thread_queue.Queue()
+            proc: subprocess.Popen[str] | None = None
+
+            def _reader(pipe: Any, source: str) -> None:
+                try:
+                    for raw in iter(pipe.readline, ""):
+                        q.put((source, raw.rstrip("\n")))
+                finally:
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass
+                    q.put((f"{source}_done", None))
+
+            with tempfile.TemporaryDirectory(prefix="ai-mime-skill-run-") as td:
+                inputs_path = Path(td) / "inputs.json"
+                inputs_path.write_text(json.dumps(params, indent=2, ensure_ascii=False), encoding="utf-8")
+                cmd = [str(run_sh), str(inputs_path)]
+                yield _sse_event({
+                    "event": "started",
+                    "skill_dir": str(skill_dir),
+                    "inputs_path": str(inputs_path),
+                    "command": "./run.sh",
+                })
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(skill_dir),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        bufsize=1,
+                    )
+                except Exception as e:
+                    yield _sse_event({"event": "error", "message": f"Failed to start run.sh: {e}"})
+                    return
+
+                assert proc.stdout is not None
+                assert proc.stderr is not None
+                threading.Thread(target=_reader, args=(proc.stdout, "stdout"), daemon=True).start()
+                threading.Thread(target=_reader, args=(proc.stderr, "stderr"), daemon=True).start()
+
+                done_streams: set[str] = set()
+                try:
+                    while len(done_streams) < 2:
+                        try:
+                            source, value = q.get(timeout=0.1)
+                        except thread_queue.Empty:
+                            if proc.poll() is not None and len(done_streams) >= 2:
+                                break
+                            continue
+                        if source.endswith("_done"):
+                            done_streams.add(source.removesuffix("_done"))
+                            continue
+                        line = "" if value is None else str(value)
+                        if source == "stdout":
+                            stdout_lines.append(line)
+                        else:
+                            stderr_lines.append(line)
+                        yield _sse_event({"event": source, "line": line})
+
+                        progress = _parse_skill_progress_event(line)
+                        if progress is None:
+                            continue
+                        outputs = progress.get("outputs")
+                        if isinstance(outputs, dict):
+                            source_event = str(progress.get("event") or "output")
+                            if source_event == "workflow_done":
+                                final_outputs = dict(outputs)
+                                key = "workflow_done"
+                            else:
+                                key = str(progress.get("id") or source_event)
+                            yield _sse_event({
+                                "event": "output",
+                                "key": key,
+                                "value": outputs,
+                                "source_event": source_event,
+                            })
+                    exit_code = proc.wait()
+                except GeneratorExit:
+                    if proc is not None and proc.poll() is None:
+                        proc.terminate()
+                    raise
+                finally:
+                    if proc is not None and proc.poll() is None:
+                        proc.terminate()
+
+                duration_ms = int((time.monotonic() - started) * 1000)
+                yield _sse_event({
+                    "event": "done",
+                    "success": exit_code == 0,
+                    "exit_code": exit_code,
+                    "duration_ms": duration_ms,
+                    "outputs": final_outputs,
+                    "stdout_log": "\n".join(stdout_lines),
+                    "stderr_log": "\n".join(stderr_lines),
+                })
+
+        return StreamingResponse(
+            _stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/replay/{task_id}", response_class=HTMLResponse)
     def replay_page(task_id: str):

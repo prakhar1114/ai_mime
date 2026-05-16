@@ -42,6 +42,7 @@
     lastRunValues: null,   // { [name]: value }
     skillDir: null,
     runActive: false,
+    runTerminal: false,
   };
 
   // ---------- helpers ----------
@@ -306,68 +307,119 @@
   async function startScriptRun(values) {
     state.lastRunValues = values;
     state.runActive = true;
+    state.runTerminal = false;
     resetOutputs();
     el.runOutput.hidden = false;
+    selectTab("logs");
     el.runStatus.textContent = "Running…";
     el.runStatus.dataset.state = "running";
     el.summaryParams.textContent = formatSummary(values);
     el.scriptSummary.hidden = false;
     setMode("running_script");
 
-    // TODO(agent-runner): replace this stub with a real transport that
-    // streams stdout/stderr from run.sh and emits structured outputs.
     try {
-      await stubRun(values);
+      await streamScriptRun(values);
     } catch (err) {
+      if (state.runTerminal) return;
       handleScriptFailure(err && err.message ? err.message : String(err || "Unknown error"));
     }
   }
 
-  function stubRun(values) {
-    return new Promise((resolve) => {
-      let i = 0;
-      const lines = [
-        `$ cd ${state.skillDir || "."} && ./run.sh`,
-        `[skill] launching with params: ${JSON.stringify(values)}`,
-        `[skill] step 1/3: setting up`,
-        `[skill] step 2/3: executing`,
-        `[skill] step 3/3: collecting outputs`,
-      ];
-      const tick = () => {
-        if (i < lines.length) {
-          appendLog(lines[i]);
-          i += 1;
-          setTimeout(tick, 280);
-          return;
-        }
-        // Demo: 80% success path. Real transport replaces this.
-        const failed = Math.random() < 0.2;
-        if (failed) {
-          appendLog("[skill] ERROR: selector .submit not found on page", "stderr");
-          resolve();
-          handleScriptFailure("Selector .submit not found on page");
-          return;
-        }
-        appendOutput("status", "ok");
-        appendOutput("rows_processed", 42);
-        finishScriptRun("done");
-        resolve();
-      };
-      setTimeout(tick, 200);
+  async function streamScriptRun(values) {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/skill/run/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ params: values }),
     });
+    if (!response.ok) {
+      const text = await response.text();
+      let detail = text;
+      try {
+        const data = JSON.parse(text);
+        detail = data && data.detail ? data.detail : text;
+      } catch { /* keep raw */ }
+      throw new Error(detail || `HTTP ${response.status}`);
+    }
+    if (!response.body) throw new Error("Run stream is unavailable in this browser.");
+    await consumeRunStream(response);
+  }
+
+  async function consumeRunStream(response) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const raw = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        for (const line of raw.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload) continue;
+          try {
+            handleRunEvent(JSON.parse(payload));
+          } catch {
+            appendLog(`[replay] ignored malformed stream event: ${payload}`, "stderr");
+          }
+        }
+      }
+    }
+    if (!state.runTerminal) {
+      throw new Error("Run stream ended before reporting status.");
+    }
+  }
+
+  function handleRunEvent(event) {
+    if (!event || typeof event !== "object") return;
+    if (state.runTerminal && event.event !== "stdout" && event.event !== "stderr") return;
+    if (event.event === "started") {
+      appendLog(`$ cd ${event.skill_dir || state.skillDir || "."} && ${event.command || "./run.sh"}`);
+    } else if (event.event === "stdout") {
+      appendLog(event.line || "", "stdout");
+    } else if (event.event === "stderr") {
+      appendLog(event.line || "", "stderr");
+    } else if (event.event === "output") {
+      appendOutput(event.key || "output", event.value);
+    } else if (event.event === "done") {
+      if (
+        event.outputs &&
+        typeof event.outputs === "object" &&
+        Object.keys(event.outputs).length &&
+        el.outputsPanel.querySelector(".empty")
+      ) {
+        appendOutput("final", event.outputs);
+      }
+      if (event.success) {
+        finishScriptRun("done");
+      } else {
+        const code = event.exit_code == null ? "unknown" : event.exit_code;
+        handleScriptFailure(`run.sh exited with code ${code}`);
+      }
+    } else if (event.event === "error") {
+      handleScriptFailure(event.message || "Run failed");
+    }
   }
 
   function finishScriptRun(kind) {
+    if (state.runTerminal) return;
+    state.runTerminal = true;
     state.runActive = false;
     if (kind === "done") {
-      el.runStatus.textContent = "Done";
+      el.runStatus.textContent = "Succeeded";
       el.runStatus.dataset.state = "done";
       setMode("script_done");
+      selectTab("outputs");
     }
     validateForm();
   }
 
   function handleScriptFailure(message) {
+    if (state.runTerminal) return;
+    state.runTerminal = true;
     state.runActive = false;
     el.runStatus.textContent = "Failed";
     el.runStatus.dataset.state = "failed";
@@ -441,6 +493,7 @@
   el.newRunBtn.addEventListener("click", () => {
     if (state.runActive && !confirm("A run is in flight. Discard it?")) return;
     state.runActive = false;
+    state.runTerminal = false;
     state.lastRunValues = null;
     el.runOutput.hidden = true;
     el.scriptSummary.hidden = true;

@@ -392,6 +392,7 @@
   color: #7a2417;
   font-size: 13px;
 }
+.failure-banner[hidden] { display: none; }
 .failure-spinner {
   width: 16px;
   height: 16px;
