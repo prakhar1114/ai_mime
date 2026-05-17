@@ -153,6 +153,17 @@ class FakeAdapter:
 
 
 class AgentRunnerTests(unittest.TestCase):
+    def test_agent_run_request_defaults_include_tmp_read_write(self) -> None:
+        request = AgentRunRequest(
+            provider="claude",
+            mode="general",
+            workflow_dir=Path("/workflows"),
+            workspace_dir=Path("/workflows"),
+        )
+
+        self.assertIn(Path("/tmp"), request.readable_roots)
+        self.assertIn(Path("/tmp"), request.writable_roots)
+
     def test_build_request_merges_user_read_hints_and_default_writes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             workflow_dir = Path(td)
@@ -162,6 +173,8 @@ class AgentRunnerTests(unittest.TestCase):
             request = build_agent_run_request(workflow_dir=workflow_dir, provider="claude")
 
         self.assertIn(Path("/Users/prakharjain/Desktop/expenses"), request.readable_roots)
+        self.assertIn(Path("/tmp"), request.readable_roots)
+        self.assertIn(Path("/tmp"), request.writable_roots)
         self.assertIn(workflow_dir / "outputs", request.writable_roots)
         self.assertIn(workflow_dir / "agent", request.writable_roots)
         self.assertIn(workflow_dir / "skills", request.writable_roots)
@@ -199,6 +212,8 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertIsNone(request.optimized_plan_path)
         self.assertEqual(request.workflow_dir.name, "workflows")
         self.assertEqual(request.workspace_dir, request.workflow_dir)
+        self.assertIn(Path("/tmp"), request.readable_roots)
+        self.assertIn(Path("/tmp"), request.writable_roots)
 
     def test_workflow_mode_rejects_missing_schema(self) -> None:
         with tempfile.TemporaryDirectory() as td:

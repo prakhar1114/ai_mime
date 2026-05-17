@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 AgentProvider = Literal["claude"]
 AgentRunMode = Literal["general", "execute_optimized_plan", "build_skill_chat"]
@@ -20,6 +20,9 @@ class FilesystemAccessEntry(BaseModel):
     path: Path
     reason: str
     approval_required: bool = False
+
+
+DEFAULT_TEMP_ROOT = Path("/tmp")
 
 
 class FilesystemAccess(BaseModel):
@@ -43,6 +46,14 @@ class AgentRunRequest(BaseModel):
     system_prompt: str | None = None
     allowed_tools: list[str] | None = None
     mcp_servers: dict[str, dict[str, Any]] | None = None
+
+    @model_validator(mode="after")
+    def _ensure_default_temp_roots(self) -> "AgentRunRequest":
+        if DEFAULT_TEMP_ROOT not in self.readable_roots:
+            self.readable_roots.append(DEFAULT_TEMP_ROOT)
+        if DEFAULT_TEMP_ROOT not in self.writable_roots:
+            self.writable_roots.append(DEFAULT_TEMP_ROOT)
+        return self
 
 
 class AgentRunResult(BaseModel):
