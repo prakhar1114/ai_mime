@@ -25,6 +25,15 @@
   let messages = [];
   let sending = false;
   let streamController = null;
+  let pendingReplayContext = "";
+
+  if (taskId && explicitPrefix && explicitPrefix.includes("/replay-agent")) {
+    try {
+      pendingReplayContext = sessionStorage.getItem(`replay:agent-context:${taskId}`) || "";
+    } catch {
+      pendingReplayContext = "";
+    }
+  }
 
   function escapeHtml(s) {
     return String(s == null ? "" : s)
@@ -423,6 +432,11 @@
 
   function handleStreamEvent(event, ctx) {
     if (!event || typeof event !== "object") return;
+    try {
+      window.dispatchEvent(new CustomEvent("agent-stream-event", { detail: event }));
+    } catch {
+      // ignore
+    }
     if (event.event === "text" && typeof event.text === "string") {
       const target = ensureAssistant(ctx);
       target.loading = false;
@@ -486,13 +500,7 @@
         setError(`${event.status}: ${event.error}`);
       }
     } else {
-      // Forward unknown event types so panel-specific scripts (e.g. skill build)
-      // can handle them. The detail is the raw event object.
-      try {
-        window.dispatchEvent(new CustomEvent("agent-stream-event", { detail: event }));
-      } catch {
-        // ignore
-      }
+      // Unknown event types are already forwarded above for panel-specific scripts.
     }
   }
 
@@ -525,6 +533,13 @@
 
   async function sendMessage(text) {
     setError("");
+    const outboundText = pendingReplayContext
+      ? `${pendingReplayContext}\n\nUser request:\n${text}`
+      : text;
+    if (pendingReplayContext) {
+      pendingReplayContext = "";
+      try { sessionStorage.removeItem(`replay:agent-context:${taskId}`); } catch { /* ignore */ }
+    }
     const assistantMsg = { role: "assistant", text: "", loading: true };
     messages.push({ role: "user", text });
     messages.push(assistantMsg);
@@ -536,7 +551,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: text,
+          message: outboundText,
           session_id: currentSessionId || null,
           model: el.modelSelect.value || null,
         }),

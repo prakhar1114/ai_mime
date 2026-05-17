@@ -117,18 +117,35 @@
       const paramLines = Object.entries(payload.params || {})
         .map(([k, v]) => `  ${k} = ${typeof v === "string" ? v : JSON.stringify(v)}`)
         .join("\n") || "  (no params)";
+      const stdout = payload.stdoutTail || "(no stdout captured)";
+      const stderr = payload.stderrTail || "(no stderr captured)";
       return [
-        `The skill at ${payload.skillDir || "(unknown skill dir)"} failed when run with params:`,
+        `The existing skill failed during replay and needs build_skill_chat healing.`,
+        ``,
+        `Skill directory: ${payload.skillDir || "(unknown skill dir)"}`,
+        ``,
+        `Params used:`,
         paramLines,
         ``,
+        `Exit code: ${payload.exitCode == null ? "(unknown)" : payload.exitCode}`,
         `Error: ${payload.error || "(no error message)"}`,
         ``,
-        `Last logs:`,
+        `Recent stdout:`,
+        "```",
+        stdout,
+        "```",
+        ``,
+        `Recent stderr:`,
+        "```",
+        stderr,
+        "```",
+        ``,
+        `Combined log tail:`,
         "```",
         payload.logsTail || "(no logs captured)",
         "```",
         ``,
-        `Please edit the skill (scripts/run.py / run.sh) to fix this. After editing, run the end-to-end check to verify.`,
+        `Please inspect and fix scripts/run.py / run.sh. After editing, run the end-to-end check to verify the skill.`,
       ].join("\n");
     }
 

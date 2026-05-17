@@ -192,20 +192,30 @@ def build_agent_run_request(
             *[entry.path for entry in access.readable_roots],
         ]
     )
-    writable_roots = _unique_paths(
-        [
-            agent_dir,
-            outputs_dir,
-            outputs_dir / "assets",
-            skills_dir,
-            # build_skill_chat needs to edit schema.json / optimized_plan.json
-            # when the user asks to tweak inputs. _within_roots matches file
-            # paths exactly, so this does NOT grant write access to the rest
-            # of workflow_dir.
-            schema_path,
-            optimized_plan_path,
-        ]
-    )
+    if mode == "replay_execution":
+        writable_roots = _unique_paths(
+            [
+                agent_dir,
+                outputs_dir,
+                outputs_dir / "assets",
+                *[entry.path for entry in access.writable_roots],
+            ]
+        )
+    else:
+        writable_roots = _unique_paths(
+            [
+                agent_dir,
+                outputs_dir,
+                outputs_dir / "assets",
+                skills_dir,
+                # build_skill_chat needs to edit schema.json / optimized_plan.json
+                # when the user asks to tweak inputs. _within_roots matches file
+                # paths exactly, so this does NOT grant write access to the rest
+                # of workflow_dir.
+                schema_path,
+                optimized_plan_path,
+            ]
+        )
 
     mcp_servers: dict | None = None
     if mode == "build_skill_chat":
@@ -296,7 +306,7 @@ Tools available to you in this environment:
 Internet & external services
 - When you're stuck on a website (missing selector, unknown DOM, undocumented flow), WebSearch the open web first — vendor docs, Stack Overflow, GitHub issues — before degrading to ui_agent. One quick search beats five blind clicks.
 - For repeated lookups, prefer a deterministic API over scraping. You may `npx`, `uvx`, or `pip install` an external CLI or MCP server **only if** it works with no user setup: no API key the end user must obtain, no account creation, no manual permissions. Free public APIs and zero-config MCP servers are fine; anything that prompts the user mid-run is not.
-- Treat external API keys as opportunistic: read from env (e.g. `GEMINI_API_KEY` for `ask_gemini`). On missing key, fall back to a user clarifying question or `ui_agent` — do NOT abort the build.
+- Treat external API keys as opportunistic: read from env (e.g. `GEMINI_API_KEY` for `ask_gemini`). On missing key, surface the limitation in chat and choose a deterministic fallback or `ui_agent` — do NOT abort the build.
 - Anything you install at build time must also be available when `run.sh` executes on the end user's machine. Either (a) `pip install` it as a script dep and document it in SKILL.md, (b) shell out to a globally-available tool (`curl`, `npx --yes`, `uvx`), or (c) inline the data you fetched. Do NOT leave the final skill depending on something that lived only in your build env.
 
 You can ask the user clarifying questions in chat at any time. Do NOT use osascript / native dialogs — the user is in the browser.
@@ -402,6 +412,53 @@ Readable roots:
 
 Writable roots:
 {json.dumps([str(p) for p in request.writable_roots], indent=2)}
+
+Existing memory:
+{memory}
+"""
+
+    if request.mode == "replay_execution":
+        skill_dir = _skill_dir_for_request(request)
+        replay_notes_path = request.workflow_dir / "agent" / "replay_notes.md"
+        domain_notes_path = request.workflow_dir / "agent" / "domain_notes.md"
+        existing_skill_files = sorted(
+            str(path.relative_to(skill_dir))
+            for path in skill_dir.rglob("*")
+            if skill_dir.exists() and path.is_file()
+        )
+        return f"""You are the AI Mime replay execution agent for this workflow.
+You are running in the Replay page chat. Your job is to help run an existing skill, validate inputs, and handle variants of the task using the skill context.
+
+Workflow directory: {request.workflow_dir}
+Skill directory: {skill_dir}
+Memory file: {memory_path}
+Replay notes file: {replay_notes_path}
+Domain notes file: {domain_notes_path}
+
+Core behavior:
+- Read and learn from the skill package: `SKILL.md`, `run.sh`, `scripts/run.py`, `inputs/inputs.example.json`, `inputs/inputs.template.json`, and `references/`.
+- Validate and normalize the user's inputs before running anything. If an input is ambiguous or unsafe to infer, ask a short clarifying question.
+- Prefer `./run.sh <inputs.json>` as the primary execution path. It is cheap, runs the task end-to-end, and emits rich stdout/stderr progress logs.
+- Use stdout, stderr, and JSON progress events (`step_start`, `step_done`, `step_failed`, `workflow_done`) to explain progress, results, and failures.
+- For task variants, use the script and skill context to automate the new task directly. You may create temporary input JSON files or run helper commands, but keep durable outputs under allowed output paths.
+- You may append durable domain findings to `{replay_notes_path}` or `{domain_notes_path}`. Keep these notes factual: selectors, URLs, payload shapes, input gotchas, and observed domain behavior.
+
+Hard boundaries:
+- Do NOT edit, overwrite, or patch the skill package in this mode: no edits to `run.sh`, `scripts/run.py`, `SKILL.md`, `inputs/`, or `references/`.
+- Do NOT edit `{request.schema_path}` or `{request.optimized_plan_path}`.
+- If the original skill run fails because the script appears stale or broken, stop. Tell the user it needs skill healing in build_skill mode and summarize the error and relevant logs. Do not attempt the repair here.
+- When the original skill run needs build_skill healing, end your response with exactly one single-line marker so the Replay UI can hand off automatically:
+  `AI_MIME_REPLAY_HANDOFF_TO_SKILL_BUILD {{"error":"<short error>","exitCode":<number or null>,"stdoutTail":"<recent stdout>","stderrTail":"<recent stderr>","logsTail":"<combined recent logs>"}}`
+- Variant failures should not trigger skill healing unless they prove the original script itself is stale.
+
+Readable roots:
+{json.dumps([str(p) for p in request.readable_roots], indent=2)}
+
+Writable roots:
+{json.dumps([str(p) for p in request.writable_roots], indent=2)}
+
+Existing skill files:
+{json.dumps(existing_skill_files, indent=2)}
 
 Existing memory:
 {memory}

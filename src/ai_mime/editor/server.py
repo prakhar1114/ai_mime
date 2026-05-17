@@ -728,6 +728,7 @@ def create_app(
     )
     agent_service = agent_chat_service or WorkspaceAgentChatService()
     task_agent_services: dict[str, WorkspaceAgentChatService] = {}
+    replay_agent_services: dict[str, WorkspaceAgentChatService] = {}
     skill_build_services: dict[str, WorkflowSkillBuildService] = {}
 
     app = FastAPI(title="AI Mime Workflow Editor", docs_url=None, redoc_url=None)
@@ -778,6 +779,26 @@ def create_app(
             return existing
         service = WorkspaceAgentChatService(workspace_dir=workspace)
         task_agent_services[task_id] = service
+        return service
+
+    def _replay_agent_service(task_id: str) -> WorkspaceAgentChatService:
+        row = task_runner.get_status(task_id)
+        workspace_raw = row.get("workflow_dir")
+        skill_dir_raw = row.get("skill_dir")
+        if not isinstance(workspace_raw, str) or not workspace_raw:
+            raise HTTPException(status_code=404, detail="Workflow directory not found for task")
+        if not isinstance(skill_dir_raw, str) or not skill_dir_raw:
+            raise HTTPException(status_code=404, detail="Skill is not built for this task yet")
+        workspace = Path(workspace_raw)
+        existing = replay_agent_services.get(task_id)
+        if existing is not None and existing.workspace_dir == workspace:
+            return existing
+        service = WorkspaceAgentChatService(
+            workspace_dir=workspace,
+            mode="replay_execution",
+            agent_dir=workspace / "agent" / "replay",
+        )
+        replay_agent_services[task_id] = service
         return service
 
     async def _agent_chat_stream_response(
@@ -965,6 +986,51 @@ def create_app(
     @app.post("/api/tasks/{task_id}/agent/chat")
     def api_task_agent_chat(task_id: str, payload: dict[str, Any] = Body(...)):
         return _agent_chat_response(_task_agent_service(task_id), payload)
+
+    @app.get("/api/tasks/{task_id}/replay-agent/sessions")
+    def api_replay_agent_sessions(task_id: str):
+        return _replay_agent_service(task_id).status()
+
+    @app.get("/api/tasks/{task_id}/replay-agent/models")
+    def api_replay_agent_models(task_id: str):
+        return _replay_agent_service(task_id).list_models()
+
+    @app.post("/api/tasks/{task_id}/replay-agent/sessions")
+    def api_replay_agent_create_session(task_id: str):
+        return _replay_agent_service(task_id).create_session()
+
+    @app.get("/api/tasks/{task_id}/replay-agent/sessions/{session_id}/messages")
+    def api_replay_agent_session_messages(task_id: str, session_id: str):
+        _validate_agent_session_id(session_id)
+        try:
+            return {"session_id": session_id, "messages": _replay_agent_service(task_id).load_messages(session_id)}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/tasks/{task_id}/replay-agent/chat/stream")
+    async def api_replay_agent_chat_stream(task_id: str, payload: dict[str, Any] = Body(...)):
+        return await _agent_chat_stream_response(_replay_agent_service(task_id), payload)
+
+    @app.post("/api/tasks/{task_id}/replay-agent/interrupt")
+    def api_replay_agent_interrupt(task_id: str):
+        return {"interrupted": _replay_agent_service(task_id).interrupt()}
+
+    @app.post("/api/tasks/{task_id}/replay-agent/permission")
+    def api_replay_agent_permission(task_id: str, payload: dict[str, Any] = Body(...)):
+        request_id = payload.get("request_id")
+        decision = payload.get("decision")
+        if not isinstance(request_id, str) or not request_id:
+            raise HTTPException(status_code=400, detail="request_id must be a non-empty string")
+        if decision not in ("allow", "allow_always", "deny"):
+            raise HTTPException(status_code=400, detail="decision must be allow, allow_always, or deny")
+        return {"resolved": _replay_agent_service(task_id).resolve_permission(request_id, decision)}
+
+    @app.post("/api/tasks/{task_id}/replay-agent/settings/bash_requires_approval")
+    def api_replay_agent_set_bash_requires_approval(task_id: str, payload: dict[str, Any] = Body(...)):
+        value = payload.get("value")
+        if not isinstance(value, bool):
+            raise HTTPException(status_code=400, detail="value must be boolean")
+        return {"bash_requires_approval": _replay_agent_service(task_id).set_bash_requires_approval(value)}
 
     def _skill_build_service(task_id: str) -> WorkflowSkillBuildService:
         row = task_runner.get_status(task_id)

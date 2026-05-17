@@ -153,16 +153,22 @@ class FakeAdapter:
 
 
 class AgentRunnerTests(unittest.TestCase):
-    def test_agent_run_request_defaults_include_tmp_read_write(self) -> None:
+    def test_agent_run_request_defaults_include_runtime_read_write_roots(self) -> None:
         request = AgentRunRequest(
             provider="claude",
             mode="general",
             workflow_dir=Path("/workflows"),
             workspace_dir=Path("/workflows"),
         )
+        domain_skills_root = (
+            Path(__file__).resolve().parents[1]
+            / "harness/browser-harness/agent-workspace/domain-skills"
+        )
 
         self.assertIn(Path("/tmp"), request.readable_roots)
         self.assertIn(Path("/tmp"), request.writable_roots)
+        self.assertIn(domain_skills_root, request.readable_roots)
+        self.assertIn(domain_skills_root, request.writable_roots)
 
     def test_build_request_merges_user_read_hints_and_default_writes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -171,10 +177,16 @@ class AgentRunnerTests(unittest.TestCase):
             (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
 
             request = build_agent_run_request(workflow_dir=workflow_dir, provider="claude")
+        domain_skills_root = (
+            Path(__file__).resolve().parents[1]
+            / "harness/browser-harness/agent-workspace/domain-skills"
+        )
 
         self.assertIn(Path("/Users/prakharjain/Desktop/expenses"), request.readable_roots)
         self.assertIn(Path("/tmp"), request.readable_roots)
         self.assertIn(Path("/tmp"), request.writable_roots)
+        self.assertIn(domain_skills_root, request.readable_roots)
+        self.assertIn(domain_skills_root, request.writable_roots)
         self.assertIn(workflow_dir / "outputs", request.writable_roots)
         self.assertIn(workflow_dir / "agent", request.writable_roots)
         self.assertIn(workflow_dir / "skills", request.writable_roots)
@@ -214,6 +226,27 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertEqual(request.workspace_dir, request.workflow_dir)
         self.assertIn(Path("/tmp"), request.readable_roots)
         self.assertIn(Path("/tmp"), request.writable_roots)
+        domain_skills_root = (
+            Path(__file__).resolve().parents[1]
+            / "harness/browser-harness/agent-workspace/domain-skills"
+        )
+        self.assertIn(domain_skills_root, request.readable_roots)
+        self.assertIn(domain_skills_root, request.writable_roots)
+
+    def test_workspace_chat_service_general_request_allows_agent_dir_read_write(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace_td, tempfile.TemporaryDirectory() as agent_td:
+            service = WorkspaceAgentChatService(
+                workspace_dir=Path(workspace_td),
+                agent_dir=Path(agent_td),
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            request = service._build_request(session_id=None, model="sonnet")
+
+        self.assertIn(Path(agent_td), request.readable_roots)
+        self.assertIn(Path(agent_td), request.writable_roots)
 
     def test_workflow_mode_rejects_missing_schema(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -279,6 +312,88 @@ class AgentRunnerTests(unittest.TestCase):
             writable = {str(p) for p in request.writable_roots}
             self.assertIn(str(workflow_dir / "schema.json"), writable)
             self.assertIn(str(workflow_dir / "optimized_plan.json"), writable)
+
+    def test_replay_execution_prompt_and_access_are_narrow(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            schema = _schema()
+            user_writable = workflow_dir / "expense-output"
+            plan = _optimized_plan()
+            plan["user_filesystem_access"]["writable_roots"] = [
+                {
+                    "path": str(user_writable),
+                    "reason": "Write the completed expense export.",
+                }
+            ]
+            (workflow_dir / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            skill_dir = workflow_dir / "skills" / "record-expenses-in-a-sheet"
+            _write_valid_skill_package(skill_dir, schema, plan)
+            request = build_agent_run_request(workflow_dir=workflow_dir, provider="claude", mode="replay_execution")
+            adapter = FakeAdapter()
+
+            run_agent_task(request, adapter)
+
+            self.assertEqual(request.mode, "replay_execution")
+            writable = {str(p) for p in request.writable_roots}
+            self.assertIn(str(workflow_dir / "agent"), writable)
+            self.assertIn(str(workflow_dir / "outputs"), writable)
+            self.assertIn(str(workflow_dir / "outputs" / "assets"), writable)
+            self.assertIn(str(user_writable), writable)
+            self.assertNotIn(str(workflow_dir / "skills"), writable)
+            self.assertNotIn(str(workflow_dir / "schema.json"), writable)
+            self.assertNotIn(str(workflow_dir / "optimized_plan.json"), writable)
+
+            prompt = adapter.prompt or ""
+            self.assertIn("replay execution agent", prompt)
+            self.assertIn("SKILL.md", prompt)
+            self.assertIn("run.sh", prompt)
+            self.assertIn("scripts/run.py", prompt)
+            self.assertIn("inputs/inputs.template.json", prompt)
+            self.assertIn("Validate and normalize", prompt)
+            self.assertIn("./run.sh <inputs.json>", prompt)
+            self.assertIn("task variants", prompt)
+            self.assertIn("replay_notes.md", prompt)
+            self.assertIn("domain_notes.md", prompt)
+            self.assertIn("Do NOT edit", prompt)
+            self.assertIn("needs skill healing", prompt)
+            self.assertIn("AI_MIME_REPLAY_HANDOFF_TO_SKILL_BUILD", prompt)
+
+    def test_workspace_chat_service_can_use_replay_execution_mode(self) -> None:
+        prompts: list[str] = []
+        modes: list[str] = []
+        system_prompts: list[str | None] = []
+
+        class ChatAdapter:
+            def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+                prompts.append(prompt)
+                modes.append(request.mode)
+                system_prompts.append(request.system_prompt)
+                return AgentRunResult(status="success", session_id="replay-session-1", summary="ok")
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            schema = _schema()
+            plan = _optimized_plan()
+            (workflow_dir / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            _write_valid_skill_package(workflow_dir / "skills" / "record-expenses-in-a-sheet", schema, plan)
+            service = WorkspaceAgentChatService(
+                workspace_dir=workflow_dir,
+                mode="replay_execution",
+                agent_dir=workflow_dir / "agent" / "replay",
+                adapter=ChatAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            result = service.chat(message="run it")
+
+            self.assertEqual(result["session_id"], "replay-session-1")
+            self.assertEqual(modes, ["replay_execution"])
+            self.assertEqual(prompts, ["run it"])
+            self.assertIn("replay execution agent", system_prompts[0] or "")
+            self.assertTrue((workflow_dir / "agent" / "replay" / "session_index.json").exists())
 
     def test_validate_skill_package_accepts_valid_package(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -28,7 +28,7 @@
           <div class="card-head">
             <div>
               <div class="card-title">Run the skill</div>
-              <div class="card-sub">Fill in the task params and run the deterministic script.</div>
+              <div class="card-sub">Fill in the task inputs and run the deterministic script.</div>
             </div>
             <button class="chevron-btn" id="expandFormBtn" type="button" hidden aria-label="Expand form">▾</button>
           </div>
@@ -143,8 +143,7 @@
       </div>
     </div>
 
-    <!-- agent.js is intentionally NOT loaded yet — the variation-agent
-         transport is a future task. replay.js stubs the chat surface. -->
+    <script src="/static/agent.js"></script>
     <script src="/static/replay.js"></script>
   </body>
 </html>

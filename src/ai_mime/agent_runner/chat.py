@@ -16,7 +16,7 @@ from ai_mime.agent_runner.adapters.claude_sdk import (
     stream_chat,
 )
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
-from ai_mime.agent_runner.runner import _build_prompt, _read_json, _write_json
+from ai_mime.agent_runner.runner import build_agent_run_request, _build_prompt, _read_json, _write_json
 from ai_mime.app_data import get_workflows_dir
 
 
@@ -67,13 +67,16 @@ class WorkspaceAgentChatService:
         self,
         *,
         workspace_dir: Path | None = None,
+        mode: str = "general",
+        agent_dir: Path | None = None,
         adapter: Any | None = None,
         session_lister: Callable[[Path], list[dict[str, Any]]] | None = None,
         message_loader: Callable[[str, Path], list[dict[str, Any]]] | None = None,
         bash_requires_approval: bool | None = None,
     ) -> None:
         self.workspace_dir = workspace_dir or get_workflows_dir()
-        self.agent_dir = self.workspace_dir / ".agent"
+        self.mode = mode
+        self.agent_dir = agent_dir or (self.workspace_dir / ".agent")
         self.adapter = adapter or ClaudeAgentSdkAdapter()
         self.session_lister = session_lister or list_claude_sessions
         self.message_loader = message_loader or load_claude_session_messages
@@ -164,7 +167,7 @@ class WorkspaceAgentChatService:
             raise AgentBusyError("Workspace agent is already responding")
         try:
             resume_id = session_id if session_id and not session_id.startswith("draft-") else None
-            request = self._build_general_request(session_id=resume_id, model=selected_model)
+            request = self._build_request(session_id=resume_id, model=selected_model)
             if resume_id is None:
                 system_prompt = _build_prompt(request)
                 request = request.model_copy(update={"system_prompt": system_prompt})
@@ -208,7 +211,7 @@ class WorkspaceAgentChatService:
             raise AgentBusyError("Workspace agent is already responding")
 
         resume_id = session_id if session_id and not session_id.startswith("draft-") else None
-        request = self._build_general_request(session_id=resume_id, model=selected_model)
+        request = self._build_request(session_id=resume_id, model=selected_model)
         if resume_id is None:
             request = request.model_copy(update={"system_prompt": _build_prompt(request)})
 
@@ -413,7 +416,15 @@ class WorkspaceAgentChatService:
                 continue
         return False
 
-    def _build_general_request(self, *, session_id: str | None, model: str | None) -> AgentRunRequest:
+    def _build_request(self, *, session_id: str | None, model: str | None) -> AgentRunRequest:
+        if self.mode != "general":
+            return build_agent_run_request(
+                workflow_dir=self.workspace_dir,
+                provider="claude",
+                mode=self.mode,  # type: ignore[arg-type]
+                model=model,
+                session_id=session_id,
+            )
         agent_dir = self.agent_dir
         return AgentRunRequest(
             provider="claude",
@@ -424,7 +435,7 @@ class WorkspaceAgentChatService:
             workspace_dir=self.workspace_dir,
             schema_path=None,
             optimized_plan_path=None,
-            readable_roots=[self.workspace_dir],
+            readable_roots=[self.workspace_dir, agent_dir],
             writable_roots=[agent_dir],
         )
 
@@ -447,7 +458,7 @@ class WorkspaceAgentChatService:
             "summary": existing.get("summary") or summary,
             "created_at": existing.get("created_at") or now,
             "updated_at": now,
-            "mode": "general",
+            "mode": self.mode,
             "model": model,
             "last_status": status,
             "last_error": error,

@@ -120,6 +120,25 @@ class SkillRunStreamTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400, response.text)
         self.assertIn("run.sh is not executable", response.text)
 
+    def test_replay_agent_sessions_endpoint_is_task_scoped(self) -> None:
+        (self.workflow / "optimized_plan.json").write_text(
+            json.dumps({"user_filesystem_access": {"readable_roots": [], "writable_roots": []}}),
+            encoding="utf-8",
+        )
+        (self.skill / "run.sh").write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+        (self.skill / "run.sh").chmod(
+            (self.skill / "run.sh").stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        )
+        client = self._client()
+
+        response = client.get(f"/api/tasks/{self.task_id}/replay-agent/sessions")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["workspace_dir"], str(self.workflow))
+        self.assertIn("models", data)
+        self.assertIn("sessions", data)
+
 
 if __name__ == "__main__":
     unittest.main()

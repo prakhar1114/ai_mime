@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 AgentProvider = Literal["claude"]
-AgentRunMode = Literal["general", "execute_optimized_plan", "build_skill_chat"]
+AgentRunMode = Literal["general", "execute_optimized_plan", "build_skill_chat", "replay_execution"]
 AgentRunStatus = Literal["success", "failed", "cancelled", "skill_ready", "skill_unbuildable"]
 
 
@@ -22,7 +22,19 @@ class FilesystemAccessEntry(BaseModel):
     approval_required: bool = False
 
 
-DEFAULT_TEMP_ROOT = Path("/tmp")
+DOMAIN_SKILLS_ROOT_FROM_REPO = Path("harness/browser-harness/agent-workspace/domain-skills")
+
+
+def _domain_skills_root() -> Path:
+    current_file = Path(__file__).resolve()
+    for parent in current_file.parents:
+        candidate = parent / DOMAIN_SKILLS_ROOT_FROM_REPO
+        if candidate.exists():
+            return candidate
+    return current_file.parents[3] / DOMAIN_SKILLS_ROOT_FROM_REPO
+
+
+DEFAULT_RUNTIME_ROOTS = (Path("/tmp"), _domain_skills_root())
 
 
 class FilesystemAccess(BaseModel):
@@ -48,11 +60,12 @@ class AgentRunRequest(BaseModel):
     mcp_servers: dict[str, dict[str, Any]] | None = None
 
     @model_validator(mode="after")
-    def _ensure_default_temp_roots(self) -> "AgentRunRequest":
-        if DEFAULT_TEMP_ROOT not in self.readable_roots:
-            self.readable_roots.append(DEFAULT_TEMP_ROOT)
-        if DEFAULT_TEMP_ROOT not in self.writable_roots:
-            self.writable_roots.append(DEFAULT_TEMP_ROOT)
+    def _ensure_default_runtime_roots(self) -> "AgentRunRequest":
+        for root in DEFAULT_RUNTIME_ROOTS:
+            if root not in self.readable_roots:
+                self.readable_roots.append(root)
+            if root not in self.writable_roots:
+                self.writable_roots.append(root)
         return self
 
 
