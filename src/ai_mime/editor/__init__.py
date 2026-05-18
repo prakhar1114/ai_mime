@@ -1,3 +1,3 @@
 """
-Local workflow editor (FastAPI + static HTML UI).
+Local task dashboard (FastAPI + static HTML UI).
 """

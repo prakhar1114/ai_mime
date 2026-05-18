@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import queue as thread_queue
-import re
 import shutil
 import signal
 import subprocess
@@ -25,19 +24,11 @@ from ai_mime.replay.engine import ReplayConfig, ReplayStopped, resolve_params, r
 from ai_mime.replay.grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
 from ai_mime.replay.os_executor import exec_computer_use_action
 from ai_mime.reflect.runner import run_reflect_and_compile_schema
-from ai_mime.reflect.schema_utils import (
-    available_upstream_extracts,
-    reindex_schema,
-    strip_details_in_schema,
-    validate_schema,
-)
 from ai_mime.screenshot import ScreenshotRecorder
 from ai_mime.user_config import ResolvedLLMConfig, ResolvedReflectConfig
 from ai_mime.debug_log import log
 from ai_mime.agent_runner import AgentBusyError, WorkflowSkillBuildService, WorkspaceAgentChatService
 
-_SINGLE_BRACE_PARAM_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
-_EXTRACT_NAME_RE = re.compile(r"^extract_[0-9]+$")
 EDITOR_SERVER_PORT = 58838
 
 
@@ -164,13 +155,6 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _write_json_atomic(path: Path, obj: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
-
-
 def _sse_event(obj: dict[str, Any]) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
@@ -183,78 +167,6 @@ def _parse_skill_progress_event(line: str) -> dict[str, Any] | None:
     if not isinstance(obj, dict) or not isinstance(obj.get("event"), str):
         return None
     return obj
-
-
-def _apply_deleted_param_examples(*, schema: dict[str, Any], deleted_param_examples: dict[str, str]) -> None:
-    """
-    If a param is referenced as {param} but is not declared in schema.task_params,
-    replace the reference with its last-known example value.
-
-    This lets users delete parameters without leaving broken templates behind.
-    """
-    declared: set[str] = set()
-    task_params = schema.get("task_params") or []
-    if isinstance(task_params, list):
-        for p in task_params:
-            if isinstance(p, dict):
-                name = p.get("name")
-                if isinstance(name, str) and name.strip():
-                    declared.add(name.strip())
-
-    # Only consider substitutions for params that are not declared.
-    subs: dict[str, str] = {
-        k: str(v) for k, v in (deleted_param_examples or {}).items() if isinstance(k, str) and k.strip() and k not in declared
-    }
-
-    def _subst_in_str(s: str, *, ctx: str) -> str:
-        needed = set(_SINGLE_BRACE_PARAM_RE.findall(s))
-        # `{extract_i}` placeholders are runtime-filled; they are not task_params and should not
-        # block saves even if not declared.
-        missing = sorted([k for k in needed if k not in declared and k not in subs and not _EXTRACT_NAME_RE.fullmatch(k)])
-        if missing:
-            raise ValueError(
-                f"Template references missing params {missing} in {ctx}. "
-                f"Either re-add them to task_params or delete/replace the {{param}} references."
-            )
-
-        def _repl(m: re.Match[str]) -> str:
-            k = m.group(1)
-            if k in subs:
-                return subs[k]
-            return m.group(0)
-
-        return _SINGLE_BRACE_PARAM_RE.sub(_repl, s)
-
-    # Apply to the common templated fields used by replay (and a few top-level strings).
-    if isinstance(schema.get("task_name"), str):
-        schema["task_name"] = _subst_in_str(schema["task_name"], ctx="task_name")
-    if isinstance(schema.get("detailed_task_description"), str):
-        schema["detailed_task_description"] = _subst_in_str(schema["detailed_task_description"], ctx="detailed_task_description")
-    if isinstance(schema.get("success_criteria"), str):
-        schema["success_criteria"] = _subst_in_str(schema["success_criteria"], ctx="success_criteria")
-
-    plan = schema.get("plan") or {}
-    subtasks = plan.get("subtasks") or []
-    if isinstance(subtasks, list):
-        for si, st in enumerate(subtasks):
-            if not isinstance(st, dict):
-                continue
-            if isinstance(st.get("text"), str):
-                st["text"] = _subst_in_str(st["text"], ctx=f"plan.subtasks[{si}].text")
-            steps = st.get("steps") or []
-            if not isinstance(steps, list):
-                continue
-            for li, step in enumerate(steps):
-                if not isinstance(step, dict):
-                    continue
-                av = step.get("action_value")
-                if isinstance(av, str):
-                    step["action_value"] = _subst_in_str(av, ctx=f"plan.subtasks[{si}].steps[{li}].action_value")
-                aa = step.get("additional_args")
-                if isinstance(aa, dict) and isinstance(aa.get("extract_query"), str):
-                    aa["extract_query"] = _subst_in_str(
-                        aa["extract_query"], ctx=f"plan.subtasks[{si}].steps[{li}].additional_args.extract_query"
-                    )
 
 
 def _emit(queue: Any | None, obj: dict[str, Any]) -> None:
@@ -521,7 +433,6 @@ class TaskRunner:
             "skill_dir": str(skill_dir) if skill_dir else None,
             "can_reflect": can_reflect,
             "can_replay": can_replay,
-            # "can_edit": bool(has_schema and not active),
             "can_delete": bool((has_recording or has_workflow) and not active),
             "workflow_dir": str(workflow_dir) if has_workflow else None,
             "recording_dir": str(recording_dir) if has_recording else None,
@@ -731,7 +642,7 @@ def create_app(
     replay_agent_services: dict[str, WorkspaceAgentChatService] = {}
     skill_build_services: dict[str, WorkflowSkillBuildService] = {}
 
-    app = FastAPI(title="AI Mime Workflow Editor", docs_url=None, redoc_url=None)
+    app = FastAPI(title="AI Mime Task Dashboard", docs_url=None, redoc_url=None)
 
     web_dir = Path(__file__).parent / "web"
     app.mount("/static", StaticFiles(directory=str(web_dir)), name="static")

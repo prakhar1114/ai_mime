@@ -81,7 +81,6 @@
       const reflectText = task.status === "failed_reflection" ? "Retry reflection" : "Reflect";
       const reflectDisabled = ACTIVE.has(task.status) ? "disabled" : "";
       const menuItems = [
-        // task.can_edit ? `<button class="menu-item" data-action="edit">Edit</button>` : "",
         task.can_reflect ? `<button class="menu-item" data-action="reflect" ${reflectDisabled}>${reflectText}</button>` : "",
         task.can_delete ? `<button class="menu-item danger" data-action="delete">Delete</button>` : "",
       ].filter(Boolean).join("");
@@ -150,10 +149,6 @@
   async function runAction(taskId, action) {
     const encoded = encodeURIComponent(taskId);
     try {
-      if (action === "edit") {
-        window.location.href = `/workflows/${encoded}`;
-        return;
-      }
       if (action === "delete") {
         if (!confirm(`Delete ${taskId}? This removes the workflow and recording folders when present.`)) return;
         await request(`/api/tasks/${encoded}`, { method: "DELETE" });
