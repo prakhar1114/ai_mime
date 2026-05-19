@@ -32,6 +32,9 @@ a = Analysis(
         (os.path.join(_repo, "user_config.yml"), "."),
         # Workflow-editor web assets
         (os.path.join(_src, "ai_mime", "editor", "web"), os.path.join("ai_mime", "editor", "web")),
+        # Bundled Claude skills linked into ~/.claude/skills during onboarding
+        (os.path.join(_repo, "resources", "claude-skills"), os.path.join("resources", "claude-skills")),
+        (os.path.join(_repo, "harness", "browser-harness", "SKILL.md"), os.path.join("harness", "browser-harness")),
         # Menubar icons (resolved at runtime via get_bundled_resource)
         (os.path.join(_repo, "docs", "logo", "icon32.png"), os.path.join("docs", "logo")),
         (os.path.join(_repo, "docs", "logo", "icon60.png"), os.path.join("docs", "logo")),

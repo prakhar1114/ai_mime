@@ -2,6 +2,7 @@ import rumps
 import multiprocessing
 from pathlib import Path
 import time
+import urllib.parse
 import urllib.request
 import webbrowser
 from lmnr import observe
@@ -315,6 +316,17 @@ class RecorderApp(rumps.App):
         except Exception as e:
             rumps.alert(f"Open Tasks failed: {e}")
 
+    def _open_skill_build_for_task(self, task_id: str) -> None:
+        try:
+            encoded = urllib.parse.quote(task_id, safe="")
+            url = f"http://127.0.0.1:{self.port}/skill-build/{encoded}"
+            ok = webbrowser.open(url, new=1)
+            if not ok:
+                raise RuntimeError(f"Failed to open browser for: {url}")
+        except Exception as e:
+            log(f"Open skill build failed: {e}", exc_info=True)
+            rumps.alert(f"Open Skill Build failed: {e}")
+
     def toggle_recording(self, sender):
         if not self.is_recording:
             self.start_recording()
@@ -475,6 +487,7 @@ class RecorderApp(rumps.App):
                     },
                 )
                 self.reflect_process.start()
+                self._open_skill_build_for_task(session_name)
                 log("Reflect subprocess started, showing notification")
                 rumps.notification(
                     title="Reflect started",

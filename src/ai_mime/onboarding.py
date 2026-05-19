@@ -1,4 +1,4 @@
-"""4-step AppKit onboarding wizard (first-launch only).
+"""5-step AppKit onboarding wizard (first-launch only).
 
 Runs a blocking ``NSApplication.run()`` loop.  Call ``run_onboarding()``
 before ``rumps.App.run()``; the NSApplication singleton is shared and
@@ -7,6 +7,9 @@ before ``rumps.App.run()``; the NSApplication singleton is shared and
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+from pathlib import Path
 
 import objc
 from Foundation import NSObject, NSTimer, NSMakeRect, NSNotificationCenter
@@ -41,8 +44,11 @@ _W = 560          # window width
 _H = 480          # window height
 _M = 40           # side margin
 _CW = _W - 2 * _M  # content width
-_STEPS = ("Welcome", "Permissions", "API Key", "Done")
+_STEPS = ("Welcome", "Permissions", "Claude", "Skills", "Done")
 _CENTER = 1       # NSTextAlignmentCenter
+_ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
+_BROWSER_HARNESS_SKILL_REL = "harness/browser-harness"
+_HERMES_SKILL_REL = "resources/claude-skills/macos-computer-use"
 
 # ---------------------------------------------------------------------------
 # Permission definitions
@@ -63,8 +69,115 @@ _PERMS = [
 ]
 
 
+def _merge_env_var(env_path: Path, key: str, value: str) -> None:
+    """Set one dotenv-style key while preserving unrelated lines."""
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    value = value.strip()
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+
+    prefix = f"{key}="
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        if not replaced and line.startswith(prefix):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+
+    env_path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+
+
+def _detect_local_claude(
+    *,
+    which=shutil.which,
+    run=subprocess.run,
+    timeout: float = 3.0,
+) -> tuple[bool, str]:
+    """Return whether Claude Code is locally reachable and a display message."""
+    exe = which("claude")
+    if not exe:
+        return False, "Claude Code not found on PATH."
+
+    try:
+        proc = run(
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception as e:
+        return False, f"Found claude, but version check failed: {e}"
+
+    output = (proc.stdout or proc.stderr or "").strip().splitlines()
+    detail = output[0] if output else str(exe)
+    if proc.returncode == 0:
+        return True, f"Local Claude Code detected: {detail}"
+    return False, f"Found claude, but version check exited {proc.returncode}: {detail}"
+
+
+def _claude_skills_dir(home: Path | None = None) -> Path:
+    return (home or Path.home()) / ".claude" / "skills"
+
+
+def _browser_harness_skill_dir() -> Path:
+    return get_bundled_resource(_BROWSER_HARNESS_SKILL_REL)
+
+
+def _bundled_hermes_skill_dir() -> Path:
+    return get_bundled_resource(_HERMES_SKILL_REL)
+
+
+def _ensure_symlink(link_path: Path, target_path: Path) -> None:
+    target_path = target_path.expanduser().resolve()
+    if not target_path.exists() or not target_path.is_dir():
+        raise FileNotFoundError(f"Skill source not found: {target_path}")
+
+    if link_path.is_symlink():
+        if link_path.resolve() == target_path:
+            return
+        link_path.unlink()
+    elif link_path.exists():
+        raise FileExistsError(f"Cannot replace existing non-symlink: {link_path}")
+
+    link_path.symlink_to(target_path, target_is_directory=True)
+
+
+def _install_claude_skills(
+    *,
+    skills_dir: Path | None = None,
+    browser_harness_skill_dir: Path | None = None,
+    hermes_skill_dir: Path | None = None,
+) -> dict[str, Path]:
+    """Install AI Mime's Claude skills by linking bundled/repo sources."""
+    skills_root = skills_dir or _claude_skills_dir()
+    browser_source = browser_harness_skill_dir or _browser_harness_skill_dir()
+    hermes_source = hermes_skill_dir or _bundled_hermes_skill_dir()
+
+    skills_root.mkdir(parents=True, exist_ok=True)
+
+    _ensure_symlink(skills_root / "browser-harness", browser_source)
+    _ensure_symlink(skills_root / "macos-computer-use", hermes_source)
+
+    return {
+        "browser-harness": skills_root / "browser-harness",
+        "macos-computer-use": skills_root / "macos-computer-use",
+    }
+
+
+def _skill_link_ok(skills_dir: Path, name: str, target: Path) -> bool:
+    link = skills_dir / name
+    try:
+        return link.is_symlink() and link.resolve() == target.expanduser().resolve()
+    except Exception:
+        return False
+
+
 class _OnboardingWizard(NSObject):
-    """Window controller + view builder for the 4-step wizard."""
+    """Window controller + view builder for the 5-step wizard."""
 
     # ------------------------------------------------------------------
     # Init
@@ -75,7 +188,12 @@ class _OnboardingWizard(NSObject):
         self._window = None
         self._content = None
         self._continue_btn = None
-        self._api_key_field = None
+        self._claude_key_field = None
+        self._claude_detected = False
+        self._claude_status_label = None
+        self._install_btn = None
+        self._skill_rows = {}
+        self._skills_error_label = None
         self._perm_timer = None
         self._perm_rows = {}   # key → {"indicator": NSView, "check": NSTextField, "granted": bool}
         self._stopped = False
@@ -128,7 +246,11 @@ class _OnboardingWizard(NSObject):
         for v in list(self._content.subviews() or []):
             v.removeFromSuperview()
         self._continue_btn = None
-        self._api_key_field = None
+        self._claude_key_field = None
+        self._claude_status_label = None
+        self._install_btn = None
+        self._skill_rows = {}
+        self._skills_error_label = None
         self._perm_rows = {}
 
     def _render(self):
@@ -137,7 +259,8 @@ class _OnboardingWizard(NSObject):
         (
             self._render_welcome,
             self._render_permissions,
-            self._render_api_key,
+            self._render_claude_setup,
+            self._render_skills_setup,
             self._render_done,
         )[self._step]()
 
@@ -355,47 +478,191 @@ class _OnboardingWizard(NSObject):
             row["check"].setHidden_(True)
 
     # ------------------------------------------------------------------
-    # Step 2 – API Key
+    # Step 2 – Claude Setup
     # ------------------------------------------------------------------
-    def _render_api_key(self):
+    def _render_claude_setup(self):
         if self._perm_timer is not None:
             self._perm_timer.invalidate()
             self._perm_timer = None
 
-        self._add_label("Gemini API Key",
+        self._claude_detected, claude_msg = _detect_local_claude()
+
+        self._add_label("Claude Setup",
                         x=0, y=_H - 86, w=_W, h=34,
                         size=24, bold=True, align=_CENTER)
         self._add_label(
-            "Paste your Google Gemini API key below.\n"
-            "Get one free at  aistudio.google.com",
-            x=0, y=_H - 154, w=_W, h=50,
+            "Connect AI Mime with Claude. Use your local Claude Code\n"
+            "installation, or paste an Anthropic API key below.",
+            x=0, y=_H - 150, w=_W, h=48,
             size=15, align=_CENTER, color=NSColor.secondaryLabelColor(),
         )
 
-        # Input field
-        self._api_key_field = NSTextField.alloc().initWithFrame_(NSMakeRect(_M, _H - 220, _CW, 36))
-        self._api_key_field.setPlaceholderString_("AIza\u2026")
-        self._api_key_field.setFont_(NSFont.systemFontOfSize_(15))
-        self._content.addSubview_(self._api_key_field)
-        self._window.makeFirstResponder_(self._api_key_field)
+        self._claude_status_label = self._add_label(
+            claude_msg,
+            x=_M, y=_H - 200, w=_CW, h=24,
+            size=13, align=_CENTER,
+            color=NSColor.systemGreenColor() if self._claude_detected else NSColor.secondaryLabelColor(),
+        )
+
+        refresh_btn_w, refresh_btn_h = 150, 30
+        refresh_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect((_W - refresh_btn_w) / 2, _H - 244, refresh_btn_w, refresh_btn_h)
+        )
+        refresh_btn.setTitle_("Check Claude Code")
+        refresh_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        refresh_btn.setTarget_(self)
+        refresh_btn.setAction_("checkClaudeCode:")
+        refresh_btn.setBezelStyle_(1)
+        refresh_btn.setFont_(NSFont.systemFontOfSize_(12))
+        self._content.addSubview_(refresh_btn)
+
+        self._add_label(
+            "Anthropic API key",
+            x=_M, y=_H - 295, w=_CW, h=18,
+            size=12, bold=True, color=NSColor.secondaryLabelColor(),
+        )
+        self._claude_key_field = NSTextField.alloc().initWithFrame_(NSMakeRect(_M, _H - 335, _CW, 36))
+        self._claude_key_field.setPlaceholderString_("sk-ant-...")
+        self._claude_key_field.setFont_(NSFont.systemFontOfSize_(15))
+        self._content.addSubview_(self._claude_key_field)
+        if not self._claude_detected:
+            self._window.makeFirstResponder_(self._claude_key_field)
 
         NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
             self,
-            "apiKeyChanged:",
+            "claudeKeyChanged:",
             NSControlTextDidChangeNotification,
-            self._api_key_field,
+            self._claude_key_field,
         )
 
-        self._add_continue("Continue", enabled=False)
+        self._add_continue("Continue", enabled=self._claude_detected)
 
-    # Cocoa selector  apiKeyChanged:
-    def apiKeyChanged_(self, notification):
-        val = (self._api_key_field.stringValue() or "").strip()
+    # Cocoa selector  checkClaudeCode:
+    def checkClaudeCode_(self, sender):
+        self._claude_detected, msg = _detect_local_claude()
+        if self._claude_status_label is not None:
+            self._claude_status_label.setStringValue_(msg)
+            self._claude_status_label.setTextColor_(
+                NSColor.systemGreenColor() if self._claude_detected else NSColor.secondaryLabelColor()
+            )
+        self._update_claude_continue()
+
+    # Cocoa selector  claudeKeyChanged:
+    def claudeKeyChanged_(self, notification):
+        self._update_claude_continue()
+
+    def _update_claude_continue(self):
+        val = (self._claude_key_field.stringValue() or "").strip() if self._claude_key_field is not None else ""
         if self._continue_btn is not None:
-            self._continue_btn.setEnabled_(len(val) > 0)
+            self._continue_btn.setEnabled_(self._claude_detected or len(val) > 0)
 
     # ------------------------------------------------------------------
-    # Step 3 – Done
+    # Step 3 – Skills Setup
+    # ------------------------------------------------------------------
+    def _render_skills_setup(self):
+        self._add_label("Install Claude Skills",
+                        x=0, y=_H - 86, w=_W, h=34,
+                        size=24, bold=True, align=_CENTER)
+        self._add_label(
+            "AI Mime links two skills into Claude Code so replay agents\n"
+            "can use browser and macOS automation when needed.",
+            x=0, y=_H - 150, w=_W, h=48,
+            size=15, align=_CENTER, color=NSColor.secondaryLabelColor(),
+        )
+
+        self._add_skill_row("browser-harness", "Repo browser-harness skill", _H - 230)
+        self._add_skill_row("macos-computer-use", "Bundled Hermes macOS computer-use skill", _H - 300)
+
+        install_btn_w, install_btn_h = 150, 34
+        self._install_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect((_W - install_btn_w) / 2, _H - 365, install_btn_w, install_btn_h)
+        )
+        self._install_btn.setTitle_("Install Skills")
+        self._install_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        self._install_btn.setTarget_(self)
+        self._install_btn.setAction_("installSkills:")
+        self._install_btn.setBezelStyle_(1)
+        self._install_btn.setFont_(NSFont.systemFontOfSize_(13))
+        self._content.addSubview_(self._install_btn)
+
+        self._skills_error_label = self._add_label(
+            "",
+            x=_M, y=100, w=_CW, h=38,
+            size=12, align=_CENTER, color=NSColor.systemRedColor(),
+        )
+        self._add_continue("Continue", enabled=False)
+        self._refresh_skill_status()
+
+    def _add_skill_row(self, name, detail, y):
+        ind_d = 22
+        indicator = NSView.alloc().initWithFrame_(NSMakeRect(_M, y, ind_d, ind_d))
+        indicator.setWantsLayer_(True)
+        indicator.layer().setCornerRadius_(ind_d / 2)
+        indicator.layer().setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.78, 1.0).CGColor)
+        self._content.addSubview_(indicator)
+
+        check = NSTextField.alloc().initWithFrame_(NSMakeRect(_M, y + 2, ind_d, ind_d - 6))
+        check.setStringValue_("\u2713")
+        check.setBezeled_(False)
+        check.setDrawsBackground_(False)
+        check.setEditable_(False)
+        check.setSelectable_(False)
+        check.setFont_(NSFont.boldSystemFontOfSize_(13))
+        check.setAlignment_(_CENTER)
+        check.setTextColor_(NSColor.whiteColor())
+        check.setHidden_(True)
+        self._content.addSubview_(check)
+
+        text_x = _M + ind_d + 12
+        self._add_label(name, x=text_x, y=y + 6, w=210, h=18, size=14, bold=True)
+        self._add_label(
+            detail,
+            x=text_x, y=y - 14, w=300, h=16,
+            size=11, color=NSColor.secondaryLabelColor(),
+        )
+        status = self._add_label(
+            "Not installed",
+            x=_W - _M - 140, y=y + 2, w=140, h=18,
+            size=12, color=NSColor.secondaryLabelColor(),
+        )
+        self._skill_rows[name] = {"indicator": indicator, "check": check, "status": status}
+
+    def _set_skill_status(self, name, installed, status_text):
+        row = self._skill_rows.get(name)
+        if row is None:
+            return
+        row["status"].setStringValue_(status_text)
+        if installed:
+            row["indicator"].layer().setBackgroundColor_(NSColor.systemGreenColor().CGColor)
+            row["check"].setHidden_(False)
+            row["status"].setTextColor_(NSColor.systemGreenColor())
+        else:
+            row["indicator"].layer().setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.78, 1.0).CGColor)
+            row["check"].setHidden_(True)
+            row["status"].setTextColor_(NSColor.secondaryLabelColor())
+
+    def _refresh_skill_status(self):
+        skills_root = _claude_skills_dir()
+        browser_ok = _skill_link_ok(skills_root, "browser-harness", _browser_harness_skill_dir())
+        hermes_ok = _skill_link_ok(skills_root, "macos-computer-use", _bundled_hermes_skill_dir())
+        self._set_skill_status("browser-harness", browser_ok, "Installed" if browser_ok else "Not installed")
+        self._set_skill_status("macos-computer-use", hermes_ok, "Installed" if hermes_ok else "Not installed")
+        if self._continue_btn is not None:
+            self._continue_btn.setEnabled_(browser_ok and hermes_ok)
+
+    # Cocoa selector  installSkills:
+    def installSkills_(self, sender):
+        if self._skills_error_label is not None:
+            self._skills_error_label.setStringValue_("")
+        try:
+            _install_claude_skills()
+        except Exception as e:
+            if self._skills_error_label is not None:
+                self._skills_error_label.setStringValue_(str(e))
+        self._refresh_skill_status()
+
+    # ------------------------------------------------------------------
+    # Step 4 – Done
     # ------------------------------------------------------------------
     def _render_done(self):
         # Smaller logo
@@ -475,12 +742,12 @@ class _OnboardingWizard(NSObject):
     # ------------------------------------------------------------------
     # Cocoa selector  onContinue:
     def onContinue_(self, sender):
-        # --- Persist API key before advancing past step 2 ---
+        # --- Persist Anthropic API key before advancing past step 2 ---
         if self._step == 2:
-            key = (self._api_key_field.stringValue() or "").strip()
+            key = (self._claude_key_field.stringValue() or "").strip() if self._claude_key_field is not None else ""
             if key:
-                get_env_path().write_text(f"GEMINI_API_KEY={key}\n", encoding="utf-8")
-                os.environ["GEMINI_API_KEY"] = key
+                _merge_env_var(get_env_path(), _ANTHROPIC_API_KEY_ENV, key)
+                os.environ[_ANTHROPIC_API_KEY_ENV] = key
 
         self._step += 1
 

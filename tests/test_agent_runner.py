@@ -565,6 +565,29 @@ class AgentRunnerTests(unittest.TestCase):
             pre = hooks.get("PreToolUse") or []
             self.assertEqual(len(pre), 1)
 
+    def test_options_kwargs_enables_claude_auto_compaction(self) -> None:
+        from claude_agent_sdk import ClaudeAgentOptions
+
+        from ai_mime.agent_runner.adapters.claude_sdk import (
+            AUTO_COMPACT_TOKEN_THRESHOLD,
+            _options_kwargs_for,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            request = AgentRunRequest(
+                provider="claude",
+                mode="build_skill_chat",
+                workflow_dir=workflow_dir,
+                workspace_dir=workflow_dir,
+            )
+            kwargs = _options_kwargs_for(request, None)
+            settings = json.loads(kwargs["settings"])
+
+            self.assertIs(settings["autoCompactEnabled"], True)
+            self.assertEqual(settings["autoCompactWindow"], AUTO_COMPACT_TOKEN_THRESHOLD)
+            ClaudeAgentOptions(**kwargs)
+
     def test_build_skill_chat_request_has_empty_mcp_servers_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             workflow_dir = Path(td)

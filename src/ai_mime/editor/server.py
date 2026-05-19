@@ -383,7 +383,7 @@ class TaskRunner:
             if not root.exists() or not root.is_dir():
                 continue
             for p in root.iterdir():
-                if p.is_dir():
+                if p.is_dir() and p.name != ".agent":
                     task_ids.add(p.name)
         task_ids.update(self._states.keys())
         for task_id in self._external_reflecting_locked():
@@ -396,15 +396,16 @@ class TaskRunner:
         has_workflow = workflow_dir.exists() and workflow_dir.is_dir()
         has_recording = recording_dir.exists() and recording_dir.is_dir()
         has_recording_manifest = has_recording and (recording_dir / "manifest.jsonl").exists()
-        has_schema = has_workflow and (workflow_dir / "schema.json").exists()
+        has_schema = has_workflow and (workflow_dir / "skills").exists()
         meta = _read_json(workflow_dir / "metadata.json") if has_workflow else _read_json(recording_dir / "metadata.json")
         display_name = str(meta.get("name") or task_id).strip() if isinstance(meta, dict) else task_id
         state = dict(self._states.get(task_id) or {})
         external_reflecting = self._external_reflecting_locked()
         if task_id in external_reflecting and task_id not in self._reflect_processes:
             phase = str(external_reflecting.get(task_id) or "reflecting")
+            status = "reflecting" if phase == "reflecting" else "compiling"
             state = {
-                "status": phase,
+                "status": status,
                 "phase": phase,
                 "error": None,
                 "progress": self._progress_from_phase(phase),
@@ -997,7 +998,15 @@ def create_app(
     @app.get("/skill-build/{task_id}", response_class=HTMLResponse)
     def skill_build_page(task_id: str):
         _safe_task_id(task_id)
-        task_runner.get_status(task_id)
+        row = task_runner.get_status(task_id)
+        workflow_dir_raw = row.get("workflow_dir")
+        workflow_dir = Path(workflow_dir_raw) if isinstance(workflow_dir_raw, str) and workflow_dir_raw else None
+        if row.get("status") != "ready" or workflow_dir is None or not (workflow_dir / "optimized_plan.json").exists():
+            index_path = web_dir / "reflect.html"
+            if not index_path.exists():
+                raise HTTPException(status_code=500, detail="Reflect UI not found")
+            html = index_path.read_text(encoding="utf-8").replace("__TASK_ID__", task_id)
+            return HTMLResponse(content=html)
         index_path = web_dir / "skill_build.html"
         if not index_path.exists():
             raise HTTPException(status_code=500, detail="Skill build UI not found")

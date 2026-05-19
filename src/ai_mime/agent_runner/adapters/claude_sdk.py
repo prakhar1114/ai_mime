@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
@@ -27,6 +28,7 @@ DEFAULT_ALLOWED_TOOLS = [
     "WebFetch", "WebSearch",
 ]
 DEFAULT_SETTING_SOURCES = ["user", "project", "local"]
+AUTO_COMPACT_TOKEN_THRESHOLD = 175_000
 
 CanUseToolCallback = Callable[[str, dict[str, Any], Any], Awaitable[dict[str, Any]]]
 
@@ -194,6 +196,12 @@ def _options_kwargs_for(
         "cwd": str(request.workspace_dir),
         "tools": available,
         "allowed_tools": list(auto_allow_tools) if auto_allow_tools is not None else list(available),
+        "settings": json.dumps(
+            {
+                "autoCompactEnabled": True,
+                "autoCompactWindow": AUTO_COMPACT_TOKEN_THRESHOLD,
+            }
+        ),
     }
     if request.mcp_servers:
         kwargs["mcp_servers"] = dict(request.mcp_servers)
