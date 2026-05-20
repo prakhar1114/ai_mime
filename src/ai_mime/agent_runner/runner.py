@@ -193,11 +193,13 @@ def build_agent_run_request(
         ]
     )
     if mode == "replay_execution":
+        skill_dir = _skill_dir_for(workflow_dir_p, schema)
         writable_roots = _unique_paths(
             [
                 agent_dir,
                 outputs_dir,
                 outputs_dir / "assets",
+                skill_dir,
                 *[entry.path for entry in access.writable_roots],
             ]
         )
@@ -472,20 +474,20 @@ Replay notes file: {replay_notes_path}
 Domain notes file: {domain_notes_path}
 
 Core behavior:
-- Read and learn from the skill package: `SKILL.md`, `run.sh`, `scripts/run.py`, `inputs/inputs.example.json`, `inputs/inputs.template.json`, and `references/`.
+- Read and learn from the complete skill package before deciding how to recover or run: `SKILL.md`, `run.sh`, `scripts/run.py`, `inputs/inputs.example.json`, `inputs/inputs.template.json`, every file under `references/`, and especially `references/fallback_plan.md`.
 - Validate and normalize the user's inputs before running anything. If an input is ambiguous or unsafe to infer, ask a short clarifying question.
 - Prefer `./run.sh <inputs.json>` as the primary execution path. It is cheap, runs the task end-to-end, and emits rich stdout/stderr progress logs.
 - Use stdout, stderr, and JSON progress events (`step_start`, `step_done`, `step_failed`, `workflow_done`) to explain progress, results, and failures.
 - For task variants, use the script and skill context to automate the new task directly. You may create temporary input JSON files or run helper commands, but keep durable outputs under allowed output paths.
+- If `./run.sh` fails or cannot cover the remaining task, triage before editing: classify the failure as likely environment/user-state issue, input issue, transient UI issue, or skill defect. Closed tabs, missing windows, changed focus, logged-out browser state, interrupted app state, and one-off UI disruption are recovery work, not skill repair.
+- Decide from the logs, script, skill docs, and `references/fallback_plan.md` how to complete the task. You may continue manually, restore expected UI state, rerun only the remaining work, or complete the task directly from the fallback plan.
+- Use the `macos-computer-use` skill as the UI-agent fallback for unknown UI-only parts. Prefer script/browser approaches when they are clear, but do not stop just because the original script failed.
 - You may append durable domain findings to `{replay_notes_path}` or `{domain_notes_path}`. Keep these notes factual: selectors, URLs, payload shapes, input gotchas, and observed domain behavior.
 
 Hard boundaries:
-- Do NOT edit, overwrite, or patch the skill package in this mode: no edits to `run.sh`, `scripts/run.py`, `SKILL.md`, `inputs/`, or `references/`.
+- Targeted edits inside `{skill_dir}` are allowed only when there is clear evidence from `run.sh`, logs, `scripts/run.py`, or repeated deterministic failure that the skill package itself is stale, incomplete, or wrong. Only edit the skill when needed; do not rewrite `run.sh` or `scripts/run.py` just because the first run failed.
 - Do NOT edit `{request.schema_path}` or `{request.optimized_plan_path}`.
-- If the original skill run fails because the script appears stale or broken, stop. Tell the user it needs skill healing in build_skill mode and summarize the error and relevant logs. Do not attempt the repair here.
-- When the original skill run needs build_skill healing, end your response with exactly one single-line marker so the Replay UI can hand off automatically:
-  `AI_MIME_REPLAY_HANDOFF_TO_SKILL_BUILD {{"error":"<short error>","exitCode":<number or null>,"stdoutTail":"<recent stdout>","stderrTail":"<recent stderr>","logsTail":"<combined recent logs>"}}`
-- Variant failures should not trigger skill healing unless they prove the original script itself is stale.
+- If completion is impossible with the available logs, skill, fallback plan, and UI-agent fallback, explain the concrete blocker and what user action is needed.
 
 Readable roots:
 {json.dumps([str(p) for p in request.readable_roots], indent=2)}

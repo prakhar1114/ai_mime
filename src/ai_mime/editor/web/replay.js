@@ -48,8 +48,7 @@
     lastExitCode: null,
     agentPromptSeeded: false,
     agentContextPrompt: "",
-    agentHandoffBuffer: "",
-    agentHandoffStarted: false,
+    agentFallbackStarted: false,
   };
 
   // ---------- helpers ----------
@@ -77,8 +76,6 @@
 
   function setMode(next) {
     if (state.mode === next) return;
-    // Disallow exiting a terminal failure state via focus changes —
-    // we navigate away to skill-build automatically.
     const prev = state.mode;
     state.mode = next;
     shell.dataset.mode = next;
@@ -163,25 +160,31 @@
   function paramFromTemplateEntry(name, raw, path) {
     if (Array.isArray(raw)) {
       const sample = raw.length ? raw[0] : "";
+      const item = paramFromTemplateEntry(singularize(name), sample, [...path, 0]);
       return {
         name,
         path,
         type: "array",
         required: true,
-        default: raw,
-        item: paramFromTemplateEntry(singularize(name), sample, [...path, 0]),
+        default: raw.length ? raw.map((itemRaw, index) => (
+          defaultValueForNode(paramFromTemplateEntry(singularize(name), itemRaw, [...path, index]))
+        )) : [defaultValueForNode(item)],
+        item,
       };
     }
     if (raw && typeof raw === "object") {
+      const fields = Object.entries(raw).map(([childName, childRaw]) => (
+        paramFromTemplateEntry(childName, childRaw, [...path, childName])
+      ));
+      const defaults = {};
+      for (const child of fields) defaults[child.name] = defaultValueForNode(child);
       return {
         name,
         path,
         type: "object",
         required: true,
-        default: raw,
-        fields: Object.entries(raw).map(([childName, childRaw]) => (
-          paramFromTemplateEntry(childName, childRaw, [...path, childName])
-        )),
+        default: defaults,
+        fields,
       };
     }
 
@@ -189,7 +192,7 @@
     let description = "";
     let defaultVal = "";
     let required = true;
-    const m = value.match(/^<\s*FILL IN\s*:\s*([\s\S]*?)\s*>\s*$/i);
+    const m = fillInHintMatch(value);
     if (m) {
       description = m[1].trim();
     } else if (value === "<FILL IN>" || /^<\s*FILL IN\s*>$/i.test(value)) {
@@ -206,6 +209,16 @@
       required,
       default: defaultVal,
     };
+  }
+
+  function fillInHintMatch(value) {
+    if (typeof value !== "string") return null;
+    return value.match(/^<\s*FILL IN\s*:\s*([\s\S]*?)\s*>\s*$/i);
+  }
+
+  function isFillInHintValue(value) {
+    if (typeof value !== "string") return false;
+    return Boolean(fillInHintMatch(value) || /^<\s*FILL IN\s*>\s*$/i.test(value));
   }
 
   function singularize(name) {
@@ -408,7 +421,7 @@
       } else if (type === "number" || type === "integer") {
         setPathValue(values, path, input.value === "" ? null : Number(input.value));
       } else {
-        setPathValue(values, path, input.value);
+        setPathValue(values, path, isFillInHintValue(input.value) ? "" : input.value);
       }
     }
     return values;
@@ -423,7 +436,7 @@
       const v = type === "number" || type === "integer"
         ? (input.value === "" ? null : Number(input.value))
         : input.value;
-      if (v === "" || v == null || (typeof v === "number" && Number.isNaN(v))) ok = false;
+      if (v === "" || v == null || isFillInHintValue(v) || (typeof v === "number" && Number.isNaN(v))) ok = false;
     }
     el.runBtn.disabled = !ok || state.runActive;
     return ok;
@@ -605,7 +618,6 @@
     el.failureBanner.hidden = false;
     setMode("script_failed");
 
-    // Auto-handover to skill-build for healing.
     const payload = {
       taskId,
       error: message,
@@ -617,14 +629,7 @@
       skillDir: state.skillDir,
       at: new Date().toISOString(),
     };
-    try {
-      sessionStorage.setItem(`replay:handover:${taskId}`, JSON.stringify(payload));
-    } catch { /* sessionStorage may be unavailable */ }
-
-    // Small delay so the user sees what happened before we navigate.
-    setTimeout(() => {
-      window.location.assign(`/skill-build/${encodeURIComponent(taskId)}`);
-    }, 1400);
+    startUiAgentFallback(payload);
   }
 
   function tailLogs(maxLines) {
@@ -685,6 +690,13 @@
     if (state.mode === "idle" || state.mode === "agent_typing") {
       setMode("script_typing");
     }
+  });
+  el.paramFields.addEventListener("focusin", (e) => {
+    const input = e.target && e.target.closest ? e.target.closest("input") : null;
+    if (!input || input.type === "checkbox") return;
+    if (!isFillInHintValue(input.value)) return;
+    input.value = "";
+    validateForm();
   });
   el.paramFields.addEventListener("focusout", (e) => {
     // If no field within paramFields holds focus and we're typing, return to idle.
@@ -769,9 +781,88 @@
       ``,
       `First validate or normalize the inputs. Prefer running ./run.sh with an inputs JSON file because it is cheap, end-to-end, and emits rich progress logs. Use the logs to report progress and results.`,
       ``,
-      `If the original script itself fails because the skill appears stale or broken, do not heal it in replay mode. Say it needs skill-build healing and summarize the error and relevant logs.`,
-      `End that failure response with the AI_MIME_REPLAY_HANDOFF_TO_SKILL_BUILD marker so Replay can switch to build-skill automatically.`,
+      `If ./run.sh fails, read the complete skill package including references/fallback_plan.md, use the macos-computer-use UI agent skill for unknown UI-only parts, and decide from the logs and skill context how to complete the task.`,
     ].join("\n");
+  }
+
+  function buildUiAgentFallbackPrompt(payload) {
+    const params = payload.params || {};
+    const stdout = payload.stdoutTail || "(no stdout captured)";
+    const stderr = payload.stderrTail || "(no stderr captured)";
+    const logs = payload.logsTail || "(no combined logs captured)";
+    return [
+      `The deterministic replay script failed. Stay in replay execution mode and complete this task now.`,
+      ``,
+      `Skill directory: ${payload.skillDir || "(unknown skill dir)"}`,
+      ``,
+      `Inputs used:`,
+      "```json",
+      JSON.stringify(params, null, 2),
+      "```",
+      ``,
+      `Exit code: ${payload.exitCode == null ? "(unknown)" : payload.exitCode}`,
+      `Error: ${payload.error || "(no error message)"}`,
+      ``,
+      `Recent stdout:`,
+      "```",
+      stdout,
+      "```",
+      ``,
+      `Recent stderr:`,
+      "```",
+      stderr,
+      "```",
+      ``,
+      `Combined log tail:`,
+      "```",
+      logs,
+      "```",
+      ``,
+      `Read the complete skill package before deciding what to do: SKILL.md, run.sh, scripts/run.py, inputs/inputs.example.json, inputs/inputs.template.json, all files under references/, and especially references/fallback_plan.md.`,
+      `First triage the failure before editing anything: decide whether this is an environment/user-state issue, input issue, transient UI issue, or actual skill defect. Closed tabs, missing windows, changed focus, logged-out browser state, interrupted app state, and one-off UI disruption should be recovered from without repairing the skill.`,
+      `Use the macos-computer-use UI agent skill for unknown UI-only parts. Restore or continue the expected UI state first and complete the task from the fallback plan and logs when possible.`,
+      `Only rewrite run.sh, scripts/run.py, or other skill files if the logs/script show a real skill defect that would likely fail again from a normal starting state. Prioritize completing this run and reporting the final result.`,
+    ].join("\n");
+  }
+
+  function submitAgentPrompt(prompt) {
+    if (!el.messageInput || !el.chatForm) return false;
+    el.messageInput.value = prompt;
+    el.messageInput.dispatchEvent(new Event("input", { bubbles: true }));
+    setTimeout(() => {
+      if (typeof el.chatForm.requestSubmit === "function") {
+        el.chatForm.requestSubmit();
+      } else {
+        el.chatForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      }
+    }, 80);
+    return true;
+  }
+
+  function startUiAgentFallback(payload) {
+    if (state.agentFallbackStarted) return;
+    state.agentFallbackStarted = true;
+    state.agentPromptSeeded = true;
+    state.agentContextPrompt = buildUiAgentFallbackPrompt(payload);
+    try {
+      sessionStorage.setItem(`replay:agent-context:${taskId}`, state.agentContextPrompt);
+    } catch { /* sessionStorage may be unavailable */ }
+
+    if (el.failureBanner) {
+      el.failureBanner.innerHTML = `
+        <div class="failure-text">
+          Script failed. Handing off to the UI agent to complete the task…
+        </div>
+        <div class="failure-spinner" aria-hidden="true"></div>
+      `;
+    }
+    setMode("agent_active");
+
+    function trySubmit() {
+      if (submitAgentPrompt(state.agentContextPrompt)) return;
+      setTimeout(trySubmit, 120);
+    }
+    setTimeout(trySubmit, 0);
   }
 
   function prepareReplayAgentContext() {
@@ -788,46 +879,6 @@
   el.messageInput.addEventListener("focus", () => {
     setMode("agent_typing");
   });
-
-  window.addEventListener("agent-stream-event", (e) => {
-    const event = e && e.detail ? e.detail : null;
-    if (!event || event.event !== "text" || typeof event.text !== "string") return;
-    maybeHandleReplayAgentHandoff(event.text);
-  });
-
-  function maybeHandleReplayAgentHandoff(chunk) {
-    if (state.agentHandoffStarted) return;
-    state.agentHandoffBuffer = (state.agentHandoffBuffer + chunk).slice(-12000);
-    const marker = "AI_MIME_REPLAY_HANDOFF_TO_SKILL_BUILD";
-    const markerIdx = state.agentHandoffBuffer.indexOf(marker);
-    if (markerIdx === -1) return;
-    const afterMarker = state.agentHandoffBuffer.slice(markerIdx + marker.length);
-    const jsonMatch = afterMarker.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return;
-    let handoff = {};
-    try {
-      handoff = JSON.parse(jsonMatch[0]);
-    } catch {
-      return;
-    }
-    state.agentHandoffStarted = true;
-    const payload = {
-      taskId,
-      error: handoff.error || "Replay agent reported that the original script failed.",
-      exitCode: handoff.exitCode == null ? null : handoff.exitCode,
-      params: state.lastRunValues || (validateForm() ? readParamValues() : {}),
-      logsTail: handoff.logsTail || tailLogs(120),
-      stdoutTail: handoff.stdoutTail || "",
-      stderrTail: handoff.stderrTail || "",
-      skillDir: state.skillDir,
-      at: new Date().toISOString(),
-      source: "replay_agent",
-    };
-    try {
-      sessionStorage.setItem(`replay:handover:${taskId}`, JSON.stringify(payload));
-    } catch { /* sessionStorage may be unavailable */ }
-    window.location.assign(`/skill-build/${encodeURIComponent(taskId)}`);
-  }
 
   bootstrap();
 })();

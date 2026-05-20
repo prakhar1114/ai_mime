@@ -22,7 +22,7 @@ class FilesystemAccessEntry(BaseModel):
     approval_required: bool = False
 
 
-DOMAIN_SKILLS_ROOT_FROM_REPO = Path("harness/browser-harness/agent-workspace/domain-skills")
+DOMAIN_SKILLS_ROOT_FROM_REPO = Path("harness/browser-harness")
 
 
 def _domain_skills_root() -> Path:
