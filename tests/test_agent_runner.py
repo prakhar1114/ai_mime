@@ -141,10 +141,15 @@ class FakeAdapter:
     def __init__(self) -> None:
         self.request: AgentRunRequest | None = None
         self.prompt: str | None = None
+        self.runtime_env: dict[str, str | None] = {}
 
     def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
         self.request = request
         self.prompt = prompt
+        self.runtime_env = {
+            "AI_MIME_PYTHON_PATH": os.environ.get("AI_MIME_PYTHON_PATH"),
+            "AI_MIME_UV_PATH": os.environ.get("AI_MIME_UV_PATH"),
+        }
         return AgentRunResult(
             status="success",
             session_id=request.session_id or "",
@@ -216,6 +221,8 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(adapter.request.session_id, "existing-session")
             self.assertIsNotNone(adapter.request.temp_dir)
             self.assertIn("optimized_plan.json", adapter.prompt or "")
+            self.assertIsNotNone(adapter.runtime_env["AI_MIME_PYTHON_PATH"])
+            self.assertIsNotNone(adapter.runtime_env["AI_MIME_UV_PATH"])
 
     def test_general_mode_uses_workflows_workspace_and_allows_missing_schema(self) -> None:
         request = build_agent_run_request(workflow_dir=Path("/tmp/ignored"), provider="claude", mode="general")
@@ -310,6 +317,19 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertIn("uvx", prompt)
             self.assertIn("npx", prompt)
             self.assertIn("no user setup", prompt)
+            self.assertIn("AI_MIME_PYTHON_PATH", prompt)
+            self.assertIn("AI_MIME_UV_PATH", prompt)
+            self.assertIn("requirements.txt", prompt)
+            self.assertIn(".venv/bin/python", prompt)
+            self.assertIn("SKILL.md` `## Run` must document the Python runtime contract", prompt)
+            self.assertIn("skill `.venv/bin/python`", prompt)
+            self.assertIn("workflow `.venv/bin/python`", prompt)
+            self.assertIn('"$AI_MIME_UV_PATH" venv .venv --python "$AI_MIME_PYTHON_PATH"', prompt)
+            self.assertIn(
+                '"$AI_MIME_UV_PATH" pip install -r requirements.txt --python .venv/bin/python',
+                prompt,
+            )
+            self.assertIn("Runtime does not create or repair `.venv`", prompt)
             # Structured log contract
             self.assertIn("step_start", prompt)
             self.assertIn("step_done", prompt)
@@ -322,6 +342,42 @@ class AgentRunnerTests(unittest.TestCase):
             writable = {str(p) for p in request.writable_roots}
             self.assertIn(str(workflow_dir / "schema.json"), writable)
             self.assertIn(str(workflow_dir / "optimized_plan.json"), writable)
+
+    def test_run_skill_e2e_exports_runtime_env_and_run_sh_prefers_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "skill"
+            schema = _schema()
+            plan = _optimized_plan()
+            _write_valid_skill_package(skill_dir, schema, plan)
+            venv_python = skill_dir / ".venv" / "bin" / "python"
+            venv_python.parent.mkdir(parents=True)
+            venv_python.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo \"venv-python:$1\"\n"
+                "echo \"env-python:${AI_MIME_PYTHON_PATH:-}\"\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            venv_python.chmod(0o755)
+            (skill_dir / "run.sh").write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "HERE=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
+                "INPUTS=\"${1:-$HERE/inputs/inputs.example.json}\"\n"
+                "PYTHON=\"${AI_MIME_PYTHON_PATH:-python3}\"\n"
+                "if [[ -x \"$HERE/.venv/bin/python\" ]]; then\n"
+                "  PYTHON=\"$HERE/.venv/bin/python\"\n"
+                "fi\n"
+                "exec \"$PYTHON\" \"$HERE/scripts/run.py\" --inputs-json \"$INPUTS\"\n",
+                encoding="utf-8",
+            )
+            (skill_dir / "run.sh").chmod(0o755)
+
+            result = run_skill_e2e_test(skill_dir, plan)
+
+            self.assertEqual(result.status, "success")
+            self.assertIn("venv-python:", result.summary)
+            self.assertIn(f"env-python:{venv_python}", result.summary)
 
     def test_replay_execution_prompt_and_access_are_narrow(self) -> None:
         with tempfile.TemporaryDirectory() as td:

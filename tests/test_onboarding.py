@@ -109,6 +109,59 @@ class OnboardingHelperTests(unittest.TestCase):
                     hermes_skill_dir=hermes_dir,
                 )
 
+    def test_install_managed_python_builds_uv_command(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            uv = root / "bin" / "uv"
+            uv.parent.mkdir()
+            uv.write_text("#!/bin/sh\n", encoding="utf-8")
+            calls: list[list[str]] = []
+
+            def fake_run(args, **kwargs):
+                calls.append(args)
+                return SimpleNamespace(returncode=0, stdout="already installed\n", stderr="")
+
+            ok, message = onboarding._install_managed_python(
+                uv_path=uv,
+                install_dir=root / "python",
+                run=fake_run,
+            )
+
+            self.assertTrue(ok)
+            self.assertIn("already installed", message)
+            self.assertEqual(
+                calls,
+                [[str(uv), "python", "install", "3.12", "--install-dir", str(root / "python")]],
+            )
+
+    def test_install_managed_python_reports_missing_uv(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ok, message = onboarding._install_managed_python(
+                uv_path=Path(td) / "missing-uv",
+                install_dir=Path(td) / "python",
+            )
+
+            self.assertFalse(ok)
+            self.assertIn("uv not found", message)
+
+    def test_install_managed_python_reports_failed_install(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            uv = root / "uv"
+            uv.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            def fake_run(args, **kwargs):
+                return SimpleNamespace(returncode=2, stdout="", stderr="network unavailable\n")
+
+            ok, message = onboarding._install_managed_python(
+                uv_path=uv,
+                install_dir=root / "python",
+                run=fake_run,
+            )
+
+            self.assertFalse(ok)
+            self.assertIn("network unavailable", message)
+
 
 if __name__ == "__main__":
     unittest.main()

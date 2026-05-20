@@ -6,6 +6,7 @@ import path helpers from here.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -77,6 +78,79 @@ def get_bundled_resource(rel: str) -> Path:
     if is_frozen():
         return Path(sys._MEIPASS) / rel  # type: ignore[attr-defined]
     return _repo_root() / rel
+
+
+def get_uv_path() -> Path:
+    """Resolve uv for app-managed Python/workflow environments.
+
+    Frozen builds use the uv binary bundled by PyInstaller. Development uses
+    the developer's PATH so local runs keep using the existing toolchain.
+    """
+    if is_frozen():
+        return get_bundled_resource("bin/uv")
+    found = shutil.which("uv")
+    if found:
+        return Path(found)
+    return Path("uv")
+
+
+def get_managed_python_install_dir() -> Path:
+    """Directory where packaged onboarding installs uv-managed Python."""
+    return APP_DATA_DIR / "python"
+
+
+def _find_managed_python(install_dir: Path | None = None) -> Path | None:
+    root = install_dir or get_managed_python_install_dir()
+    candidates: list[Path] = []
+    for pattern in (
+        "*/bin/python3.12",
+        "*/bin/python3",
+        "*/bin/python",
+        "bin/python3.12",
+        "bin/python3",
+        "bin/python",
+    ):
+        candidates.extend(root.glob(pattern))
+    for candidate in sorted(candidates):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def get_python_path(workflow_dir: str | os.PathLike[str] | None = None) -> Path:
+    """Resolve the Python executable for workflow scripts.
+
+    Existing workflow/skill virtualenvs take precedence. In frozen builds,
+    fall back to the app-managed Python installed during onboarding. In
+    development, use the current/system interpreter instead of managed Python.
+    """
+    if workflow_dir is not None:
+        venv_python = Path(workflow_dir) / ".venv" / "bin" / "python"
+        if venv_python.is_file() and os.access(venv_python, os.X_OK):
+            return venv_python
+
+    if is_frozen():
+        managed = _find_managed_python()
+        if managed is not None:
+            return managed
+        return get_managed_python_install_dir() / "bin" / "python3.12"
+
+    executable = Path(sys.executable)
+    if executable.is_file():
+        return executable
+    found = shutil.which("python3") or shutil.which("python")
+    if found:
+        return Path(found)
+    return Path("python3")
+
+
+def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> dict[str, str]:
+    """Environment entries exported to generated workflow scripts."""
+    return {
+        "AI_MIME_UV_PATH": str(get_uv_path()),
+        "AI_MIME_PYTHON_PATH": str(get_python_path(workflow_dir)),
+        "UV_PYTHON_INSTALL_DIR": str(get_managed_python_install_dir()),
+    }
 
 
 # ---------------------------------------------------------------------------

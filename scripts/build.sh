@@ -39,6 +39,13 @@ DMG_PATH="$REPO_ROOT/dist/$APP_NAME.dmg"
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 HERMES_SKILL="$REPO_ROOT/resources/claude-skills/macos-computer-use/SKILL.md"
 BROWSER_HARNESS_SKILL="$REPO_ROOT/harness/browser-harness/SKILL.md"
+UV_BINARY_PATH="$(command -v uv || true)"
+
+if [[ -z "$UV_BINARY_PATH" ]]; then
+  echo "ERROR: uv binary not found on PATH; install uv before building the app."
+  exit 1
+fi
+export UV_BINARY_PATH
 
 # ---------------------------------------------------------------------------
 # 0. Validate bundled onboarding resources

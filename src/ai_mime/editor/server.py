@@ -28,6 +28,7 @@ from ai_mime.screenshot import ScreenshotRecorder
 from ai_mime.user_config import ResolvedLLMConfig, ResolvedReflectConfig
 from ai_mime.debug_log import log
 from ai_mime.agent_runner import AgentBusyError, WorkflowSkillBuildService, WorkspaceAgentChatService
+from ai_mime.app_data import workflow_runtime_env
 
 EDITOR_SERVER_PORT = 58838
 
@@ -1110,6 +1111,7 @@ def create_app(
                     proc = subprocess.Popen(
                         cmd,
                         cwd=str(skill_dir),
+                        env={**os.environ, **workflow_runtime_env(workflow_dir)},
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,

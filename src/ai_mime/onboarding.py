@@ -35,7 +35,15 @@ from AppKit import (
     NSEventModifierFlagCommand,
 )
 
-from ai_mime.app_data import get_env_path, get_onboarding_done_path, get_bundled_resource
+from ai_mime.app_data import (
+    get_env_path,
+    get_managed_python_install_dir,
+    get_onboarding_done_path,
+    get_bundled_resource,
+    get_python_path,
+    get_uv_path,
+    is_frozen,
+)
 
 # ---------------------------------------------------------------------------
 # Layout constants
@@ -49,6 +57,7 @@ _CENTER = 1       # NSTextAlignmentCenter
 _ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 _BROWSER_HARNESS_SKILL_REL = "harness/browser-harness"
 _HERMES_SKILL_REL = "resources/claude-skills/macos-computer-use"
+_PYTHON_VERSION = "3.12"
 
 # ---------------------------------------------------------------------------
 # Permission definitions
@@ -166,6 +175,41 @@ def _install_claude_skills(
         "browser-harness": skills_root / "browser-harness",
         "macos-computer-use": skills_root / "macos-computer-use",
     }
+
+
+def _install_managed_python(
+    *,
+    uv_path: Path | None = None,
+    install_dir: Path | None = None,
+    run=subprocess.run,
+    timeout: float = 900.0,
+) -> tuple[bool, str]:
+    """Install the packaged app's managed Python with bundled uv."""
+    uv = uv_path or get_uv_path()
+    target = install_dir or get_managed_python_install_dir()
+    if not uv.exists():
+        return False, f"uv not found at {uv}"
+
+    target.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(uv),
+        "python",
+        "install",
+        _PYTHON_VERSION,
+        "--install-dir",
+        str(target),
+    ]
+    try:
+        proc = run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except Exception as e:
+        return False, f"Python {_PYTHON_VERSION} install failed: {e}"
+
+    output = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode == 0:
+        detail = output.splitlines()[-1] if output else f"Python {_PYTHON_VERSION} is installed."
+        return True, detail
+    detail = output.splitlines()[-1] if output else f"uv exited {proc.returncode}"
+    return False, f"Python {_PYTHON_VERSION} install failed: {detail}"
 
 
 def _skill_link_ok(skills_dir: Path, name: str, target: Path) -> bool:
@@ -564,20 +608,22 @@ class _OnboardingWizard(NSObject):
                         x=0, y=_H - 86, w=_W, h=34,
                         size=24, bold=True, align=_CENTER)
         self._add_label(
-            "AI Mime links two skills into Claude Code so replay agents\n"
-            "can use browser and macOS automation when needed.",
+            "AI Mime links automation skills into Claude Code and prepares\n"
+            "Python for workflow scripts when running the packaged app.",
             x=0, y=_H - 150, w=_W, h=48,
             size=15, align=_CENTER, color=NSColor.secondaryLabelColor(),
         )
 
         self._add_skill_row("browser-harness", "Repo browser-harness skill", _H - 230)
         self._add_skill_row("macos-computer-use", "Bundled Hermes macOS computer-use skill", _H - 300)
+        if is_frozen():
+            self._add_skill_row("python-3.12", "Managed Python for workflow virtualenvs", _H - 350)
 
         install_btn_w, install_btn_h = 150, 34
         self._install_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect((_W - install_btn_w) / 2, _H - 365, install_btn_w, install_btn_h)
+            NSMakeRect((_W - install_btn_w) / 2, _H - 398, install_btn_w, install_btn_h)
         )
-        self._install_btn.setTitle_("Install Skills")
+        self._install_btn.setTitle_("Install")
         self._install_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
         self._install_btn.setTarget_(self)
         self._install_btn.setAction_("installSkills:")
@@ -587,7 +633,7 @@ class _OnboardingWizard(NSObject):
 
         self._skills_error_label = self._add_label(
             "",
-            x=_M, y=100, w=_CW, h=38,
+            x=_M, y=92, w=_CW, h=48,
             size=12, align=_CENTER, color=NSColor.systemRedColor(),
         )
         self._add_continue("Continue", enabled=False)
@@ -645,10 +691,13 @@ class _OnboardingWizard(NSObject):
         skills_root = _claude_skills_dir()
         browser_ok = _skill_link_ok(skills_root, "browser-harness", _browser_harness_skill_dir())
         hermes_ok = _skill_link_ok(skills_root, "macos-computer-use", _bundled_hermes_skill_dir())
+        python_ok = (not is_frozen()) or get_python_path().exists()
         self._set_skill_status("browser-harness", browser_ok, "Installed" if browser_ok else "Not installed")
         self._set_skill_status("macos-computer-use", hermes_ok, "Installed" if hermes_ok else "Not installed")
+        if is_frozen():
+            self._set_skill_status("python-3.12", python_ok, "Installed" if python_ok else "Not installed")
         if self._continue_btn is not None:
-            self._continue_btn.setEnabled_(browser_ok and hermes_ok)
+            self._continue_btn.setEnabled_(browser_ok and hermes_ok and python_ok)
 
     # Cocoa selector  installSkills:
     def installSkills_(self, sender):
@@ -656,6 +705,10 @@ class _OnboardingWizard(NSObject):
             self._skills_error_label.setStringValue_("")
         try:
             _install_claude_skills()
+            if is_frozen():
+                ok, msg = _install_managed_python()
+                if not ok:
+                    raise RuntimeError(msg)
         except Exception as e:
             if self._skills_error_label is not None:
                 self._skills_error_label.setStringValue_(str(e))

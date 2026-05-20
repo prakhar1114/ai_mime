@@ -18,7 +18,7 @@ from ai_mime.agent_runner.models import (
     FilesystemAccess,
     FilesystemAccessEntry,
 )
-from ai_mime.app_data import get_workflows_dir
+from ai_mime.app_data import get_python_path, get_uv_path, get_workflows_dir, workflow_runtime_env
 
 
 class AgentAdapter(Protocol):
@@ -278,6 +278,8 @@ Existing memory:
 
     if request.mode == "build_skill_chat":
         skill_dir = _skill_dir_for_request(request)
+        default_python_path = get_python_path(request.workflow_dir)
+        uv_path = get_uv_path()
         existing_skill_files = sorted(
             str(path.relative_to(skill_dir))
             for path in skill_dir.rglob("*")
@@ -302,6 +304,14 @@ Tools available to you in this environment:
 - Cua-driver skill — drives native macOS apps via screenshot+click. Slowest; use sparingly.
 - WebSearch / WebFetch — the open web. Use these BEFORE degrading to ui_agent.
 - Read / Write / Edit / MultiEdit / Glob / Grep — file ops, scoped to readable/writable roots.
+
+Python runtime contract:
+- The app exports `AI_MIME_PYTHON_PATH` and `AI_MIME_UV_PATH` when it runs or validates a skill.
+- Current resolved default Python: `{default_python_path}`.
+- Current resolved uv: `{uv_path}`.
+- Generated skills may require `requirements.txt` only.
+- You decide whether dependencies require a virtualenv. If they do, create `.venv` in the skill directory (preferred) or workflow directory using `"$AI_MIME_UV_PATH" venv .venv --python "$AI_MIME_PYTHON_PATH"` and install with `"$AI_MIME_UV_PATH" pip install -r requirements.txt --python .venv/bin/python`.
+- Runtime must not create a virtualenv from scratch. `run.sh` should use an existing `.venv/bin/python` when present, then fall back to `$AI_MIME_PYTHON_PATH`, then `python3`.
 
 Internet & external services
 - When you're stuck on a website (missing selector, unknown DOM, undocumented flow), WebSearch the open web first — vendor docs, Stack Overflow, GitHub issues — before degrading to ui_agent. One quick search beats five blind clicks.
@@ -376,16 +386,32 @@ Phase D — Package as a standard skill
 
 1. Invoke the `skill-creator` skill to scaffold `SKILL.md`. It MUST have YAML frontmatter (non-empty `name`, `description`) and these sections (titles exact): `## Inputs`, `## Run`, `## Outputs`, `## Progress log format`, `## Fallback`, `## ask_gemini decision points`, `## References`.
 
+   `SKILL.md` `## Run` must document the Python runtime contract:
+   - `run.sh` uses the first available interpreter in this order: skill `.venv/bin/python`, workflow `.venv/bin/python`, `$AI_MIME_PYTHON_PATH`, then `python3`.
+   - If `requirements.txt` exists, include these exact build/repair commands:
+       ```bash
+       "$AI_MIME_UV_PATH" venv .venv --python "$AI_MIME_PYTHON_PATH"
+       "$AI_MIME_UV_PATH" pip install -r requirements.txt --python .venv/bin/python
+       ```
+   - State clearly that the install commands are for skill build or manual repair. Runtime does not create or repair `.venv`.
+
 2. Write the final layout at `{skill_dir}/`. Required files (validated by `validate_skill_package`):
    - `SKILL.md`                       — skill-creator format, sections above.
    - `scripts/run.py`                 — from Phase C.
+   - `requirements.txt`               — optional, only when `scripts/run.py` needs third-party Python packages. If present, you must create `.venv` and install it during skill build before signalling.
    - `run.sh`                         — one-click wrapper, `chmod +x`. Body:
        ```bash
        #!/usr/bin/env bash
        set -euo pipefail
        HERE="$(cd "$(dirname "$0")" && pwd)"
        INPUTS="${{1:-$HERE/inputs/inputs.example.json}}"
-       exec python3 "$HERE/scripts/run.py" --inputs-json "$INPUTS"
+       PYTHON="${{AI_MIME_PYTHON_PATH:-python3}}"
+       if [[ -x "$HERE/.venv/bin/python" ]]; then
+         PYTHON="$HERE/.venv/bin/python"
+       elif [[ -x "$HERE/../../.venv/bin/python" ]]; then
+         PYTHON="$HERE/../../.venv/bin/python"
+       fi
+       exec "$PYTHON" "$HERE/scripts/run.py" --inputs-json "$INPUTS"
        ```
    - `inputs/inputs.example.json`     — copy of `agent/confirmed_inputs.json`. Re-runnable as-is.
    - `inputs/inputs.template.json`    — same keys as example, but each value is `"<FILL IN: <one-line description>>"` (or the input's recorded default).
@@ -395,7 +421,7 @@ Phase D — Package as a standard skill
 
 4. Do NOT copy `schema.json` or `optimized_plan.json` into the skill. They're builder-only artifacts.
 
-   Reproducibility: any external tool / MCP server / API you relied on during the build must also be reachable when `run.sh` runs on the end user's machine. If you used `uvx some-cli`, list the exact invocation in SKILL.md `## Run` and call it the same way in `scripts/run.py` (e.g. `subprocess.run(["uvx", "some-cli", ...])`). Do NOT assume the end user has anything pre-installed beyond `python3`, `bash`, `curl`, `npx`, `uvx`.
+   Reproducibility: any external tool / MCP server / API you relied on during the build must also be reachable when `run.sh` runs on the end user's machine. If Python packages are needed, list them in `requirements.txt`, create `.venv`, install them with uv during skill build, and document that `run.sh` will use the existing `.venv`. If you used `uvx some-cli`, list the exact invocation in SKILL.md `## Run` and call it the same way in `scripts/run.py` (e.g. `subprocess.run(["uvx", "some-cli", ...])`). Do NOT assume the end user has anything pre-installed beyond `bash`, `curl`, `npx`, `uvx`, `$AI_MIME_PYTHON_PATH`, and an already-created `.venv` when needed.
 
 5. `scripts/run.py` MUST emit one JSON-line per step transition on stderr so a downstream agent (or human) can read partial progress on failure and resume from the right subtask:
    - `{{"event":"step_start","id":"<step_id>","title":"…"}}`
@@ -418,6 +444,10 @@ Readable roots:
 
 Writable roots:
 {json.dumps([str(p) for p in request.writable_roots], indent=2)}
+
+
+All the access that you need is present in the above directories. DO NOT try to read/write into files outside the above directories.
+Do NOT bypass these limits using bash.
 
 Existing memory:
 {memory}
@@ -462,6 +492,8 @@ Readable roots:
 
 Writable roots:
 {json.dumps([str(p) for p in request.writable_roots], indent=2)}
+
+All the access that you need is present in the above directories. DO NOT try to read/write into files outside the above directories.
 
 Existing skill files:
 {json.dumps(existing_skill_files, indent=2)}
@@ -512,7 +544,17 @@ def run_agent_task(request: AgentRunRequest, adapter: AgentAdapter, prompt: str 
 
     with tempfile.TemporaryDirectory(prefix="ai-mime-agent-") as td:
         request = request.model_copy(update={"temp_dir": Path(td)})
-        result = adapter.run(request, prompt or _build_prompt(request))
+        runtime_env = workflow_runtime_env(request.workflow_dir)
+        old_env = {key: os.environ.get(key) for key in runtime_env}
+        os.environ.update(runtime_env)
+        try:
+            result = adapter.run(request, prompt or _build_prompt(request))
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     final_session_id = result.session_id or session_id
     result = result.model_copy(update={"session_id": final_session_id})
@@ -695,6 +737,7 @@ def run_skill_e2e_test(
     skill_dir_p = Path(skill_dir)
     run_sh = skill_dir_p / "run.sh"
     run_script = skill_dir_p / "scripts" / "run.py"
+    runtime_root = skill_dir_p.parent.parent if skill_dir_p.parent.name == "skills" else skill_dir_p
 
     inputs_path, synthesized_inputs, early = _resolve_e2e_inputs(
         skill_dir_p, optimized_plan, confirmed_inputs_path
@@ -711,6 +754,7 @@ def run_skill_e2e_test(
             proc = subprocess.run(
                 cmd,
                 cwd=str(skill_dir_p),
+                env={**os.environ, **workflow_runtime_env(runtime_root)},
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
