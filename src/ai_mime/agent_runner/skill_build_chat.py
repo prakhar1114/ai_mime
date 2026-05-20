@@ -70,20 +70,20 @@ class WorkflowSkillBuildService:
         self._terminal_status: str | None = None
 
     def status(self) -> dict[str, Any]:
-        # Intentionally do NOT surface skill_build_active.json's session_id here.
-        # Each time the user opens /skill-build/<task_id> they should land on a
-        # fresh draft session; resuming a previous chat must require an explicit
-        # click in the sidebar. (agent.js auto-resumes from `active_session_id`
-        # when present, so withholding it is what enforces the new-session default.)
+        active = self._read_active()
+        active_session_id = active.get("session_id") if isinstance(active.get("session_id"), str) else None
+        skill_dir = self._skill_dir_hint()
         return {
             "workflow_dir": str(self.workflow_dir),
-            "active_session_id": None,
+            "active_session_id": active_session_id,
             "sessions": self.list_sessions(),
             "models": self.model_options,
             "default_model": self.default_model,
             "bash_requires_approval": self.bash_requires_approval,
             "terminal_status": self._terminal_status,
-            "skill_dir": str(self._skill_dir_hint()),
+            "skill_dir": str(skill_dir),
+            "has_skill": self._has_runnable_skill(skill_dir),
+            "has_optimized_plan": (self.workflow_dir / "optimized_plan.json").exists(),
         }
 
     def set_bash_requires_approval(self, value: bool) -> bool:
@@ -488,6 +488,11 @@ class WorkflowSkillBuildService:
         except Exception:
             schema = {}
         return _skill_dir_for(self.workflow_dir, schema)
+
+    @staticmethod
+    def _has_runnable_skill(skill_dir: Path) -> bool:
+        run_sh = skill_dir / "run.sh"
+        return run_sh.is_file() and os.access(run_sh, os.X_OK)
 
     def _record_session(
         self,

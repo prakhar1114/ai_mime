@@ -309,7 +309,7 @@ Internet & external services
 - Treat external API keys as opportunistic: read from env (e.g. `GEMINI_API_KEY` for `ask_gemini`). On missing key, surface the limitation in chat and choose a deterministic fallback or `ui_agent` — do NOT abort the build.
 - Anything you install at build time must also be available when `run.sh` executes on the end user's machine. Either (a) `pip install` it as a script dep and document it in SKILL.md, (b) shell out to a globally-available tool (`curl`, `npx --yes`, `uvx`), or (c) inline the data you fetched. Do NOT leave the final skill depending on something that lived only in your build env.
 
-You can ask the user clarifying questions in chat at any time. Do NOT use osascript / native dialogs — the user is in the browser.
+You can ask the user clarifying questions in chat when the answer affects whether the automation can be built correctly. Do NOT use osascript / native dialogs — the user is in the browser.
 
 Executor model — each step in `optimized_plan.steps[].executor` is one of:
 - `script`: pure deterministic Python (file IO, HTTP, parsing, library calls, shelling out via subprocess). No UI. May call `ask_gemini` for stochastic JSON-schema decisions. **This is the preferred path.**
@@ -320,38 +320,44 @@ Executor model — each step in `optimized_plan.steps[].executor` is one of:
 
 The `executor` field defines **what `scripts/run.py` should look like for that step in the final synthesized package**, not just what tool to use while exploring. During exploration, use whatever tool lets you learn fastest. During synthesis, the executor dictates the code shape.
 
-If Pass C chose a smarter path different from the original recording, the `goal` field will say so (e.g. "reads PDF text directly via pdfplumber instead of opening Preview", "uses URL scheme to skip wizard", "calls X CLI instead of clicking through Settings"). When you encounter such a step, verify that shortcut actually works in the user's environment before committing to it. If it turns out to be blocked, missing credentials, or otherwise non-viable, surface that in chat and propose downgrading the executor (`script` → `browser_harness` → `ui_agent`) together with the user, then update both `optimized_plan.json` and `schema.json` accordingly.
+If Pass C chose a smarter path different from the original recording, the `goal` field will say so (e.g. "reads PDF text directly via pdfplumber instead of opening Preview", "uses URL scheme to skip wizard", "calls X CLI instead of clicking through Settings"). When you encounter such a step, verify that shortcut actually works in the user's environment before committing to it. If it turns out to be blocked, missing credentials, or otherwise non-viable, surface that in chat as a simple user-facing limitation, choose the best fallback when one is safe, and update both `optimized_plan.json` and `schema.json` accordingly. Only ask the user to choose when the tradeoff changes the task's input, output, permissions, or reliability in a meaningful way.
 
 Conversation style — keep user-facing messages BRIEF.
-The user has three roles in this chat: (A) validate / edit inputs, (B) approve each optimized step in one line after you've already verified it works, (C) approve the final e2e script before the skill is created. Do NOT narrate selectors, screenshots, or tool calls unless the user asks. Expand only when the user asks for more detail. If the user proposes a different implementation approach, take their suggestion — don't argue.
+The end user is not technical and only has task context. Their roles in this chat are: (A) validate or edit the task inputs, (B) confirm the expected outputs, (C) understand the very high-level idea of how the automation will run, and (D) understand why automation cannot be built if you reach that conclusion. Ask only important questions that affect correctness, permissions, side effects, feasibility, or the final result. Do NOT ask for confirmation before each step or before moving to the next phase. Do NOT narrate selectors, DOM structure, screenshots, scripts, executor names, or tool calls unless the user asks. Expand only when the user asks for more detail. If the user proposes a different implementation approach, take their suggestion when it is compatible with a reliable automation — don't argue.
+
+Progress updates
+- Send short progress updates at meaningful milestones or blockers, in plain language a non-technical user can understand.
+- Explain decisions as outcomes: what input is needed, what output will be produced, what the automation will do at a high level, or what is blocking it.
+- If automation is blocked, explain the reason simply and offer concrete options or suggested changes. Avoid implementation jargon.
 
 Strong preference for `browser_harness` over `ui_agent` whenever the target is in a browser. browser-harness is very powerful: compositor-level clicks pass through iframes/shadow DOM, raw CDP for anything helpers miss, parallel HTTP (see harness/browser-harness/SKILL.md). Only fall back to `ui_agent` if CDP genuinely cannot survive replay.
 
-Protocol — four phases, advance only after explicit user OK:
+Protocol — four phases, work autonomously unless an important user decision is required:
 
-Phase A — Confirm and finalize inputs
-1. Read `{request.schema_path}` and `{request.optimized_plan_path}`. Show the inputs from `optimized_plan.inputs[]` as a compact list (name — default — one-line description). Ask, in one short message: "Inputs OK? Add / edit / remove anything?" Then wait.
-2. Treat user-proposed *additional* inputs as first-class — don't push back unless they conflict with the recorded behavior.
-3. For any change (edit, add, remove, rename), update BOTH files atomically:
+Phase A — Confirm and finalize inputs and outputs
+1. Read `{request.schema_path}` and `{request.optimized_plan_path}`. Show the inputs from `optimized_plan.inputs[]` and expected outputs from `optimized_plan.steps[].outputs` as a compact plain-language summary. Also include one very high-level sentence describing how the automation will run.
+2. Ask for confirmation only if the inputs or outputs are missing, ambiguous, likely wrong, or require the user's values before validation can proceed. If they are clear enough to test with recorded defaults, say so briefly and continue.
+3. Treat user-proposed *additional* inputs as first-class — don't push back unless they conflict with the recorded behavior.
+4. For any change (edit, add, remove, rename), update BOTH files atomically:
    - `{request.optimized_plan_path}` — `inputs[]`.
    - `{request.schema_path}` — matching `task_params[]` entry (and any `{{placeholder}}` in `plan.subtasks[].text` if relevant).
    Read each file back; confirm in one line before continuing.
-4. Do NOT modify `task_name` unless the user explicitly asks — the skill directory slug derives from it.
-5. Persist final confirmed values to `agent/confirmed_inputs.json`. These are what `scripts/run.py --inputs-json` will receive at validation time.
+5. Do NOT modify `task_name` unless the user explicitly asks — the skill directory slug derives from it.
+6. Persist final confirmed values to `agent/confirmed_inputs.json`. These are what `scripts/run.py --inputs-json` will receive at validation time.
 
 Phase B — Execute optimized_plan steps one at a time
-For each `optimized_plan.steps[i]` in order. Work silently except for the per-step checkpoint at the end.
+For each `optimized_plan.steps[i]` in order. Work autonomously, verify internally, and send only brief plain-language milestone updates or blocker messages.
 1. Look up matching `schema.plan.subtasks[].steps[]` via `source_subtask_ids` for fine-grained intent. `step.goal` may describe a smarter path than the recording (API / CLI / file / URL-scheme); honor it.
 2. Match `step.executor` to the execution shape:
    - `script` → Python via Bash (subprocess / requests / pdfplumber / file IO). `ask_gemini` for stochastic JSON decisions.
    - `browser_harness` → Chrome via the `browser` skill / `browser-harness -c '…'`. `ask_gemini` for in-page judgment.
    - `ui_agent` → `macos-computer-use` skill (screenshot + click).
-   If you swap `ui_agent` → `browser_harness` because browser-harness can handle the target, update `optimized_plan.json` step's `executor` to match and mention the swap in the per-step checkpoint.
+   If you swap `ui_agent` → `browser_harness` because browser-harness can handle the target, update `optimized_plan.json` step's `executor` to match. Mention the user-visible effect only if it matters, e.g. "I found a more reliable way to do this in the browser."
 3. Execute against the live environment using `agent/confirmed_inputs.json`. Verify success (screenshots / page_info / shell output) before declaring the step done.
 4. Append durable findings to `agent/learned_notes.md` — selectors, URLs, payload shapes, traps. Map, not diary.
-5. Side effects: after any non-idempotent change, append a one-liner to `agent/side_effects.md` (what was created, how to undo). Before retrying a step or re-running from earlier, stop and ask the user to clear the prior side effect — cite the specific ledger entry; wait for explicit "cleared".
-6. If the step can't be made to work: first do ONE WebSearch for the failure mode / selector / API — many "hostile DOM" problems have a documented workaround. Only after that, surface it briefly, propose options (relax/tighten the step, swap executor, declare unbuildable), pick one with the user.
-7. Per-step checkpoint — one line. Example: "Step <id> ✓ — <one-line summary or decision made>. Continue?" Mention an executor swap or `ask_gemini` decision point in a phrase, not a paragraph. Wait. Do not batch steps.
+5. Side effects: after any non-idempotent change, append a one-liner to `agent/side_effects.md` (what was created, how to undo). Before retrying a step or re-running from earlier, stop and ask the user to clear the prior side effect — cite the specific ledger entry in plain language; wait for explicit "cleared".
+6. If the step can't be made to work: first do ONE WebSearch for the failure mode / selector / API — many "hostile DOM" problems have a documented workaround. Only after that, surface it briefly in non-technical language, propose options (change inputs, change expected output, use a less reliable fallback, or declare unbuildable), and ask the user only when the choice affects their task.
+7. Do not pause after successful individual steps. Continue to the next step on your own.
 
 After the last step verifies, announce in one line: "All <N> steps complete end-to-end."
 
@@ -364,7 +370,7 @@ Phase C — Synthesize and validate `scripts/run.py`
 3. Clear any Phase-B side effects before testing. One-line ask to confirm `agent/side_effects.md` entries are cleared.
 4. Run the assembled script end-to-end against `agent/confirmed_inputs.json`. Verify the same end state Phase B reached.
 5. If it fails: diagnose, patch `scripts/run.py`, ask the user to clear new side effects, re-run. Loop until clean.
-6. Phase-C checkpoint — one short message: "e2e script ran clean. Ready to package and create the skill?" Wait for explicit yes. Do NOT package without it. The user may ask to change implementation here — take the suggestion.
+6. When the e2e script runs clean, do not ask for packaging approval. Send one short progress update such as "The full automation ran successfully. I'm turning it into a reusable skill now." Then continue to Phase D. The user may ask to change implementation here — take the suggestion if it is compatible with a reliable automation.
 
 Phase D — Package as a standard skill
 
@@ -402,7 +408,7 @@ Phase D — Package as a standard skill
 
 7. Write `{signal_path}` with `{{"status":"skill_ready","summary":"<one line>"}}` and stop. The service runs `validate_skill_package` + `run_skill_e2e_test` and surfaces the result in the UI.
 
-8. Unbuildable escape (only reachable from Phase B or C after collaborating with the user to relax/tighten parameters): write `{signal_path}` with `{{"status":"skill_unbuildable","reason":"<concrete reason>","suggested_changes":["<bullet>","..."]}}` and stop.
+8. Unbuildable escape (only reachable from Phase B or C after trying safe fallbacks and asking any necessary task-level questions): write `{signal_path}` with `{{"status":"skill_unbuildable","reason":"<plain-language concrete reason>","suggested_changes":["<plain-language suggested change>","..."]}}` and stop.
 
 Existing skill files at {skill_dir}:
 {json.dumps(existing_skill_files, indent=2)}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +31,29 @@ class TaskDashboardTests(unittest.TestCase):
         wf.mkdir(parents=True)
         (wf / "metadata.json").write_text(json.dumps({"name": name}), encoding="utf-8")
         (wf / "schema.json").write_text(json.dumps({"task_name": name, "plan": {"subtasks": []}}), encoding="utf-8")
+        (wf / "optimized_plan.json").write_text(json.dumps({"version": 1, "steps": []}), encoding="utf-8")
+        skill_dir = wf / "skills" / "ready-task"
+        skill_dir.mkdir(parents=True)
+        run_sh = skill_dir / "run.sh"
+        run_sh.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        run_sh.chmod(run_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        return wf
+
+    def _optimized_workflow_without_skill(self, task_id: str, name: str = "Optimized Task") -> Path:
+        wf = self.workflows / task_id
+        wf.mkdir(parents=True)
+        (wf / "metadata.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+        (wf / "schema.json").write_text(json.dumps({"task_name": name, "plan": {"subtasks": []}}), encoding="utf-8")
+        (wf / "optimized_plan.json").write_text(json.dumps({"version": 1, "steps": []}), encoding="utf-8")
+        return wf
+
+    def _workflow_with_incomplete_skill_dir(self, task_id: str, *, run_sh: bool = False) -> Path:
+        wf = self._optimized_workflow_without_skill(task_id)
+        skill_dir = wf / "skills" / "incomplete-task"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Incomplete\n", encoding="utf-8")
+        if run_sh:
+            (skill_dir / "run.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         return wf
 
     def _recording(self, task_id: str) -> Path:
@@ -47,6 +71,7 @@ class TaskDashboardTests(unittest.TestCase):
     def test_inventory_marks_ready_and_pending_tasks(self) -> None:
         self._ready_workflow("20260513T000000Z-ready")
         self._ready_workflow("20260513T000050Z-workflow-only")
+        self._optimized_workflow_without_skill("20260513T000075Z-optimized")
         self._recording("20260513T000000Z-ready")
         self._recording("20260513T000100Z-pending")
         self._broken_workflow("20260513T000200Z-broken")
@@ -60,11 +85,18 @@ class TaskDashboardTests(unittest.TestCase):
         rows = {row["id"]: row for row in runner.list_tasks()}
 
         self.assertTrue(rows["20260513T000000Z-ready"]["can_replay"])
+        self.assertTrue(rows["20260513T000000Z-ready"]["has_skill"])
+        self.assertIsNotNone(rows["20260513T000000Z-ready"]["skill_dir"])
         # self.assertTrue(rows["20260513T000000Z-ready"]["can_edit"])
         self.assertTrue(rows["20260513T000000Z-ready"]["can_reflect"])
         self.assertEqual(rows["20260513T000000Z-ready"]["status"], "ready")
         self.assertTrue(rows["20260513T000050Z-workflow-only"]["can_reflect"])
         self.assertEqual(rows["20260513T000050Z-workflow-only"]["status"], "ready")
+        self.assertEqual(rows["20260513T000075Z-optimized"]["status"], "ready")
+        self.assertTrue(rows["20260513T000075Z-optimized"]["has_schema"])
+        self.assertTrue(rows["20260513T000075Z-optimized"]["has_optimized_plan"])
+        self.assertFalse(rows["20260513T000075Z-optimized"]["has_skill"])
+        self.assertFalse(rows["20260513T000075Z-optimized"]["can_replay"])
         self.assertTrue(rows["20260513T000100Z-pending"]["can_reflect"])
         self.assertEqual(rows["20260513T000100Z-pending"]["status"], "pending_reflection")
         self.assertFalse(rows["20260513T000200Z-broken"]["can_reflect"])
@@ -140,6 +172,7 @@ class TaskDashboardTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(FakeProcess.instances[-1].args[0], str(workflow.resolve()))
+        self.assertFalse(FakeProcess.instances[-1].kwargs["force"])
         self.assertTrue(FakeProcess.instances[-1].started)
 
     def test_reflect_rejects_task_without_recording_manifest_or_schema(self) -> None:
@@ -258,6 +291,54 @@ class TaskDashboardTests(unittest.TestCase):
         ready_agent = client.get("/api/tasks/20260513T000000Z-ready/agent/sessions")
         self.assertEqual(ready_agent.status_code, 200, ready_agent.text)
         self.assertEqual(ready_agent.json()["workspace_dir"], str(self.workflows / "20260513T000000Z-ready"))
+
+    def test_skill_build_page_available_with_optimized_plan_without_skill(self) -> None:
+        task_id = "20260513T000075Z-optimized"
+        self._optimized_workflow_without_skill(task_id)
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        page = client.get(f"/skill-build/{task_id}")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("Build Skill", page.text)
+        self.assertNotIn("Type <code>begin</code> to start", page.text)
+
+        status = client.get(f"/api/tasks/{task_id}/skill-build/sessions")
+        self.assertEqual(status.status_code, 200, status.text)
+        data = status.json()
+        self.assertTrue(data["has_optimized_plan"])
+        self.assertFalse(data["has_skill"])
+
+    def test_incomplete_skill_folder_does_not_count_as_built_skill(self) -> None:
+        for task_id, has_run_sh in (
+            ("20260513T000080Z-bare-skill-dir", False),
+            ("20260513T000081Z-non-executable-run-sh", True),
+        ):
+            with self.subTest(task_id=task_id):
+                self._workflow_with_incomplete_skill_dir(task_id, run_sh=has_run_sh)
+                app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+                client = TestClient(app)
+
+                row = client.get(f"/api/tasks/{task_id}/reflect/status").json()
+                self.assertTrue(row["has_optimized_plan"])
+                self.assertFalse(row["has_skill"])
+                self.assertIsNone(row["skill_dir"])
+                self.assertFalse(row["can_replay"])
+
+                status = client.get(f"/api/tasks/{task_id}/skill-build/sessions")
+                self.assertEqual(status.status_code, 200, status.text)
+                data = status.json()
+                self.assertTrue(data["has_optimized_plan"])
+                self.assertFalse(data["has_skill"])
+
+    def test_reflect_js_does_not_force_rereflect(self) -> None:
+        reflect_js = Path("src/ai_mime/editor/web/reflect.js").read_text(encoding="utf-8")
+        tasks_js = Path("src/ai_mime/editor/web/tasks.js").read_text(encoding="utf-8")
+
+        self.assertNotIn("force: true", reflect_js)
+        self.assertNotIn("force: true", tasks_js)
+        self.assertIn("force: false", reflect_js)
+        self.assertIn("force: false", tasks_js)
 
     def test_agent_page_and_api_chat(self) -> None:
         seen_models: list[str | None] = []

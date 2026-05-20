@@ -131,7 +131,8 @@ def _safe_recording_dir(recordings_root: Path, task_id: str) -> Path:
 def _find_skill_dir(workflow_dir: Path) -> Path | None:
     """Return the per-task skill dir if a built skill is present.
 
-    A skill is considered built when workflow_dir/skills/<slug>/run.sh exists.
+    A skill is considered built when workflow_dir/skills/<slug>/run.sh exists
+    and is executable.
     There is typically a single subdirectory; if there are multiple, prefer the
     most recently modified.
     """
@@ -140,12 +141,21 @@ def _find_skill_dir(workflow_dir: Path) -> Path | None:
         return None
     candidates: list[Path] = []
     for child in skills_root.iterdir():
-        if child.is_dir() and (child / "run.sh").exists():
+        run_sh = child / "run.sh"
+        if child.is_dir() and run_sh.is_file() and os.access(run_sh, os.X_OK):
             candidates.append(child)
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def _has_reflected_schema(workflow_dir: Path) -> bool:
+    return (workflow_dir / "schema.json").exists()
+
+
+def _has_optimized_plan(workflow_dir: Path) -> bool:
+    return (workflow_dir / "optimized_plan.json").exists()
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -396,7 +406,8 @@ class TaskRunner:
         has_workflow = workflow_dir.exists() and workflow_dir.is_dir()
         has_recording = recording_dir.exists() and recording_dir.is_dir()
         has_recording_manifest = has_recording and (recording_dir / "manifest.jsonl").exists()
-        has_schema = has_workflow and (workflow_dir / "skills").exists()
+        has_schema = has_workflow and _has_reflected_schema(workflow_dir)
+        has_optimized_plan = has_workflow and _has_optimized_plan(workflow_dir)
         meta = _read_json(workflow_dir / "metadata.json") if has_workflow else _read_json(recording_dir / "metadata.json")
         display_name = str(meta.get("name") or task_id).strip() if isinstance(meta, dict) else task_id
         state = dict(self._states.get(task_id) or {})
@@ -412,7 +423,7 @@ class TaskRunner:
             }
         status = str(state.get("status") or "")
         if not status or status in {"ready", "pending_reflection"}:
-            status = "ready" if has_schema else "pending_reflection"
+            status = "ready" if (has_schema or has_optimized_plan) else "pending_reflection"
         if status == "reflecting" and state.get("phase") == "compiling":
             status = "compiling"
         active = status in {"reflecting", "compiling", "replaying", "deleting"}
@@ -430,6 +441,7 @@ class TaskRunner:
             "has_recording": has_recording,
             "has_workflow": has_workflow,
             "has_schema": has_schema,
+            "has_optimized_plan": has_optimized_plan,
             "has_skill": has_skill,
             "skill_dir": str(skill_dir) if skill_dir else None,
             "can_reflect": can_reflect,
@@ -1001,7 +1013,7 @@ def create_app(
         row = task_runner.get_status(task_id)
         workflow_dir_raw = row.get("workflow_dir")
         workflow_dir = Path(workflow_dir_raw) if isinstance(workflow_dir_raw, str) and workflow_dir_raw else None
-        if row.get("status") != "ready" or workflow_dir is None or not (workflow_dir / "optimized_plan.json").exists():
+        if workflow_dir is None or not _has_optimized_plan(workflow_dir):
             index_path = web_dir / "reflect.html"
             if not index_path.exists():
                 raise HTTPException(status_code=500, detail="Reflect UI not found")

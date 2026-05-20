@@ -280,8 +280,18 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertIn("Phase B", prompt)
             self.assertIn("Phase C", prompt)
             self.assertIn("Phase D", prompt)
-            # Final approval gate before packaging
-            self.assertIn("create the skill", prompt)
+            # Non-technical, autonomy-first chat behavior
+            self.assertIn("The end user is not technical", prompt)
+            self.assertIn("Ask only important questions", prompt)
+            self.assertIn("Do NOT ask for confirmation before each step", prompt)
+            self.assertIn("plain-language", prompt)
+            self.assertIn("expected outputs", prompt)
+            self.assertIn("very high-level", prompt)
+            self.assertIn("do not ask for packaging approval", prompt)
+            self.assertIn("Do not pause after successful individual steps", prompt)
+            self.assertNotIn("Continue?", prompt)
+            self.assertNotIn("Ready to package and create the skill", prompt)
+            self.assertNotIn("advance only after explicit user OK", prompt)
             # Inputs editing
             self.assertIn("task_params", prompt)
             self.assertIn("inputs[]", prompt)

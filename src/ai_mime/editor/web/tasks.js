@@ -156,7 +156,7 @@
         await request(`/api/tasks/${encoded}/reflect`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ force: true }),
+          body: JSON.stringify({ force: false }),
         });
         window.location.href = `/reflect/${encoded}`;
         return;

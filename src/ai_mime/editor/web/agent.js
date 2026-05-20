@@ -2,6 +2,9 @@
   const shell = document.querySelector(".agent-shell");
   const taskId = shell && shell.dataset ? shell.dataset.taskId : "";
   const explicitPrefix = shell && shell.dataset ? shell.dataset.apiPrefix : "";
+  const emptyMessage = shell && shell.dataset && shell.dataset.emptyMessage
+    ? shell.dataset.emptyMessage
+    : "Start a new workspace debugging chat.";
   const apiPrefix = explicitPrefix
     ? explicitPrefix
     : (taskId ? `/api/tasks/${encodeURIComponent(taskId)}/agent` : "/api/agent");
@@ -333,7 +336,7 @@
       message.loading || message.role === "tool" || message.role === "permission" || isVisibleMessage(message)
     );
     if (!visible.length) {
-      el.messages.innerHTML = `<div class="empty-state">Start a new workspace debugging chat.</div>`;
+      el.messages.innerHTML = `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
       return;
     }
     el.messages.innerHTML = visible.map((message) => {
@@ -384,6 +387,13 @@
       }
       renderSessions();
       renderHeader();
+      try {
+        window.dispatchEvent(new CustomEvent("agent-sessions-loaded", {
+          detail: { active_session_id: currentSessionId, sessions },
+        }));
+      } catch {
+        // ignore
+      }
     } catch (e) {
       setError(e.message || String(e));
     }

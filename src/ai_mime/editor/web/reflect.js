@@ -113,7 +113,7 @@
       const task = await request(`/api/tasks/${encodeURIComponent(taskId)}/reflect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force: true }),
+        body: JSON.stringify({ force: false }),
       });
       renderStatus(task);
     } catch (e) {

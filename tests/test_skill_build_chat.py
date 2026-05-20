@@ -112,6 +112,51 @@ def _write_signal(workflow_dir: Path, payload: dict) -> None:
 
 
 class WorkflowSkillBuildServiceTests(unittest.TestCase):
+    def test_status_returns_active_session_and_skill_state(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            (workflow_dir / "agent").mkdir(exist_ok=True)
+            (workflow_dir / "agent" / "skill_build_active.json").write_text(
+                json.dumps({"session_id": "session-active", "model": "sonnet"}),
+                encoding="utf-8",
+            )
+            service = _build_service(workflow_dir)
+
+            status = service.status()
+
+            self.assertEqual(status["active_session_id"], "session-active")
+            self.assertTrue(status["has_optimized_plan"])
+            self.assertTrue(status["has_skill"])
+
+    def test_status_requires_executable_run_sh_for_built_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
+            skill_dir = workflow_dir / "skills" / "record-expenses-in-a-sheet"
+            skill_dir.mkdir(parents=True)
+            service = _build_service(workflow_dir)
+
+            status_without_run_sh = service.status()
+
+            self.assertEqual(status_without_run_sh["skill_dir"], str(skill_dir))
+            self.assertFalse(status_without_run_sh["has_skill"])
+
+            run_sh = skill_dir / "run.sh"
+            run_sh.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            run_sh.chmod(run_sh.stat().st_mode & ~(stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+
+            status_with_non_executable_run_sh = service.status()
+
+            self.assertFalse(status_with_non_executable_run_sh["has_skill"])
+
+            run_sh.chmod(run_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+            status_with_executable_run_sh = service.status()
+
+            self.assertTrue(status_with_executable_run_sh["has_skill"])
+
     def test_skill_ready_signal_runs_validate_and_e2e_and_emits_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             workflow_dir = Path(td)

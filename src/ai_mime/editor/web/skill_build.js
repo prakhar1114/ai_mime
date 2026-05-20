@@ -3,6 +3,12 @@
   const taskId = shell && shell.dataset ? shell.dataset.taskId : "";
   const banner = document.getElementById("terminalBanner");
   if (!banner) return;
+  const startPanel = document.getElementById("skillBuildStart");
+  const startTitle = document.getElementById("skillBuildStartTitle");
+  const startCopy = document.getElementById("skillBuildStartCopy");
+  const primaryBtn = document.getElementById("skillBuildPrimaryBtn");
+  const newSessionBtn = document.getElementById("newSkillBuildSessionBtn");
+  let agentSessionsLoaded = false;
 
   function escapeHtml(s) {
     return String(s == null ? "" : s)
@@ -72,6 +78,92 @@
     `;
   }
 
+  function setStartButtonsDisabled(disabled) {
+    if (primaryBtn) primaryBtn.disabled = !!disabled;
+    if (newSessionBtn) newSessionBtn.disabled = !!disabled;
+  }
+
+  function hideStartPanel() {
+    if (startPanel) startPanel.hidden = true;
+  }
+
+  function submitAgentPrompt(prompt) {
+    const messageInput = document.getElementById("messageInput");
+    const chatForm = document.getElementById("chatForm");
+    if (!messageInput || !chatForm) return;
+    messageInput.value = prompt;
+    messageInput.dispatchEvent(new Event("input", { bubbles: true }));
+    if (typeof chatForm.requestSubmit === "function") {
+      chatForm.requestSubmit();
+    } else {
+      chatForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    }
+  }
+
+  function renderStartPanel(data) {
+    if (!startPanel || !primaryBtn || !newSessionBtn) return;
+    const hasSkill = !!(data && data.has_skill);
+    const hasPlan = data && data.has_optimized_plan !== false;
+    if (!hasPlan) {
+      startPanel.hidden = true;
+      return;
+    }
+    startPanel.hidden = false;
+    if (startTitle) {
+      startTitle.textContent = hasSkill ? "Improve the existing skill" : "Continue building this skill";
+    }
+    if (startCopy) {
+      startCopy.textContent = hasSkill
+        ? "Resume the active build session and continue improving the existing skill package."
+        : "Resume the active build session from the optimized workflow plan.";
+    }
+    primaryBtn.textContent = hasSkill ? "Improve the skill" : "Continue";
+    primaryBtn.dataset.prompt = hasSkill
+      ? "continue improving this skill"
+      : "continue";
+    primaryBtn.dataset.resetTerminal = (hasSkill || data.terminal_status) ? "1" : "";
+    setStartButtonsDisabled(!agentSessionsLoaded);
+  }
+
+  window.addEventListener("agent-sessions-loaded", () => {
+    agentSessionsLoaded = true;
+    setStartButtonsDisabled(false);
+  });
+  setTimeout(() => {
+    agentSessionsLoaded = true;
+    setStartButtonsDisabled(false);
+  }, 1000);
+
+  if (primaryBtn) {
+    primaryBtn.addEventListener("click", async () => {
+      if (!agentSessionsLoaded) return;
+      primaryBtn.disabled = true;
+      hideStartPanel();
+      if (primaryBtn.dataset.resetTerminal) {
+        try {
+          await fetch(`/api/tasks/${encodeURIComponent(taskId)}/skill-build/reset`, { method: "POST" });
+          banner.hidden = true;
+          banner.innerHTML = "";
+        } catch {
+          if (startPanel) startPanel.hidden = false;
+          primaryBtn.disabled = false;
+          return;
+        }
+      }
+      submitAgentPrompt(primaryBtn.dataset.prompt || "continue");
+    });
+  }
+
+  if (newSessionBtn) {
+    newSessionBtn.addEventListener("click", () => {
+      hideStartPanel();
+      const newChatBtn = document.getElementById("newChatBtn");
+      try { newChatBtn && newChatBtn.click(); } catch { /* ignore */ }
+      const input = document.getElementById("messageInput");
+      if (input) input.focus();
+    });
+  }
+
   window.addEventListener("agent-stream-event", (e) => {
     const event = e && e.detail ? e.detail : null;
     if (!event) return;
@@ -94,6 +186,7 @@
       } else if (data && data.terminal_status === "skill_unbuildable") {
         renderUnbuildable({ reason: "Previously declared unbuildable.", suggested_changes: [] });
       }
+      renderStartPanel(data);
     } catch {
       // ignore
     }

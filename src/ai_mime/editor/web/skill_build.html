@@ -12,6 +12,7 @@
       class="agent-shell"
       data-task-id="__TASK_ID__"
       data-api-prefix="/api/tasks/__TASK_ID__/skill-build"
+      data-empty-message="Resume the build session or start a new one. The agent will continue from the reflected workflow plan."
     >
       <aside class="sidebar">
         <div class="side-top">
@@ -34,12 +35,24 @@
         </header>
 
         <div id="terminalBanner" class="terminal-banner" hidden></div>
+        <section class="skill-build-start" id="skillBuildStart" hidden>
+          <div>
+            <div class="skill-build-start-title" id="skillBuildStartTitle">Continue building this skill</div>
+            <div class="skill-build-start-copy" id="skillBuildStartCopy">
+              Resume the active build session and keep iterating from the current workflow plan.
+            </div>
+          </div>
+          <div class="skill-build-start-actions">
+            <button id="skillBuildPrimaryBtn" type="button">Continue</button>
+            <button id="newSkillBuildSessionBtn" type="button">New skill-build session</button>
+          </div>
+        </section>
 
         <section class="messages" id="messages">
           <div class="empty-state">
-            Type <code>begin</code> to start. The agent will walk the workflow step by step,
-            confirm inputs with you, learn the environment, and finish by producing a
-            one-shot <code>scripts/run.py</code> in the workflow's <code>skills/</code> directory.
+            Resume the build session or start a new one. The agent will continue from
+            the reflected workflow plan and produce a one-shot <code>scripts/run.py</code>
+            in the workflow's <code>skills/</code> directory.
           </div>
         </section>
 
