@@ -22,7 +22,13 @@ from ai_mime.agent_runner.models import (
     resolved_macos_computer_use_skill_name,
     resolved_macos_computer_use_skill_path,
 )
-from ai_mime.app_data import get_python_path, get_uv_path, get_workflows_dir, workflow_runtime_env
+from ai_mime.app_data import (
+    get_managed_browser_harness_path,
+    get_python_path,
+    get_uv_path,
+    get_workflows_dir,
+    workflow_runtime_env,
+)
 
 
 class AgentAdapter(Protocol):
@@ -305,6 +311,7 @@ Existing memory:
         )
         signal_path = request.workflow_dir / "agent" / BUILD_SIGNAL_FILENAME
         learned_path = request.workflow_dir / "agent" / "learned_notes.md"
+        browser_harness_bin = get_managed_browser_harness_path()
         return f"""You are the AI Mime iterative skill-builder agent for this workflow.
 You are running inside a chat panel — the human user is on the other end of every message and is collaborating with you to produce a deterministic, reusable skill package for this workflow.
 
@@ -317,32 +324,34 @@ Skill directory to create or refine: {skill_dir}
 Terminal signal file: {signal_path}
 
 Tools available to you in this environment:
-- Bash — for shelling out (e.g. `browser-harness -c '…'`, plus any CLI you want to call).
+- Bash — for shelling out through app-managed tools only (e.g. `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`).
 - Browser Skill — invoke installed Claude skill `{resolved_browser_skill_name()}`. It drives Chrome via CDP; docs are at {resolved_browser_skill_path()}.
 - Cua-driver skill — use `{resolved_macos_computer_use_skill_name()}` at {resolved_macos_computer_use_skill_path()} for native macOS apps. Slowest; use sparingly.
 - WebSearch / WebFetch — the open web. Use these BEFORE degrading to ui_agent.
 - Read / Write / Edit / MultiEdit / Glob / Grep — file ops, scoped to readable/writable roots.
 
 Python runtime contract:
-- The app exports `AI_MIME_PYTHON_PATH` and `AI_MIME_UV_PATH` when it runs or validates a skill.
+- The app exports `AI_MIME_PYTHON_PATH`, `AI_MIME_UV_PATH`, and `AI_MIME_BROWSER_HARNESS_BIN` when it runs or validates a skill.
 - The app exports `AI_MIME_BROWSER_SKILL_PATH` for browser-harness resources. Use it for files under the harness repo; never hardcode a developer checkout path such as `/Users/prakharjain/code/...`.
 - Current resolved default Python: `{default_python_path}`.
 - Current resolved uv: `{uv_path}`.
+- Current resolved browser-harness binary: `{browser_harness_bin}`.
 - Generated skills may require `requirements.txt` only.
 - You decide whether dependencies require a virtualenv. If they do, create `.venv` in the skill directory (preferred) or workflow directory using `"$AI_MIME_UV_PATH" venv .venv --python "$AI_MIME_PYTHON_PATH"` and install with `"$AI_MIME_UV_PATH" pip install -r requirements.txt --python .venv/bin/python`.
-- Runtime must not create a virtualenv from scratch. `run.sh` should use an existing `.venv/bin/python` when present, then fall back to `$AI_MIME_PYTHON_PATH`, then `python3`.
+- Runtime must not create a virtualenv from scratch. `run.sh` should use an existing `.venv/bin/python` when present, then fall back to required `$AI_MIME_PYTHON_PATH`.
+- Use `"$AI_MIME_UV_PATH"` instead of bare `uv`, `"$AI_MIME_BROWSER_HARNESS_BIN"` instead of bare `browser-harness`, and `"$AI_MIME_PYTHON_PATH"` instead of bare `python3`.
 
 Internet & external services
 - When you're stuck on a website (missing selector, unknown DOM, undocumented flow), WebSearch the open web first — vendor docs, Stack Overflow, GitHub issues — before degrading to ui_agent. One quick search beats five blind clicks.
-- For repeated lookups, prefer a deterministic API over scraping. You may `npx`, `uvx`, or `pip install` an external CLI or MCP server **only if** it works with no user setup: no API key the end user must obtain, no account creation, no manual permissions. Free public APIs and zero-config MCP servers are fine; anything that prompts the user mid-run is not.
+- For repeated lookups, prefer a deterministic API over scraping. Python dependencies must go in `requirements.txt` and be installed with `"$AI_MIME_UV_PATH"`. Do not depend on `uvx`, `npx`, or globally-installed CLIs for packaged skills unless the user explicitly approves that external dependency.
 - Treat external API keys as opportunistic: read from env (e.g. `GEMINI_API_KEY` for `ask_gemini`). On missing key, surface the limitation in chat and choose a deterministic fallback or `ui_agent` — do NOT abort the build.
-- Anything you install at build time must also be available when `run.sh` executes on the end user's machine. Either (a) `pip install` it as a script dep and document it in SKILL.md, (b) shell out to a globally-available tool (`curl`, `npx --yes`, `uvx`), or (c) inline the data you fetched. Do NOT leave the final skill depending on something that lived only in your build env.
+- Anything you install at build time must also be available when `run.sh` executes on the end user's machine. Either (a) list it in `requirements.txt` and install it into an existing `.venv` with `"$AI_MIME_UV_PATH"`, (b) use a macOS system tool from `/usr/bin` or `/bin`, or (c) inline the data you fetched. Do NOT leave the final skill depending on something that lived only in your build env.
 
 You can ask the user clarifying questions in chat when the answer affects whether the automation can be built correctly. Do NOT use osascript / native dialogs — the user is in the browser.
 
 Executor model — each step in `optimized_plan.steps[].executor` is one of:
 - `script`: pure deterministic Python (file IO, HTTP, parsing, library calls, shelling out via subprocess). No UI. May call `ask_gemini` for stochastic JSON-schema decisions. **This is the preferred path.**
-- `browser_harness`: composable Chrome CDP script via the `{resolved_browser_skill_name()}` skill / `browser-harness -c '…'`. May also call `ask_gemini` for in-page judgment.
+- `browser_harness`: composable Chrome CDP script via the `{resolved_browser_skill_name()}` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. May also call `ask_gemini` for in-page judgment.
 - `ui_agent`: screenshot+click loop via `{resolved_macos_computer_use_skill_name()}`. Last resort for native UIs or hostile DOMs.
 
 `ask_gemini` (`from browser_harness.helpers import ask_gemini`) is the stochasticity escape hatch for *both* `script` and `browser_harness` steps — do not push a step to `ui_agent` just because it has one fuzzy decision. Give `ask_gemini` an explicit JSON schema and branch deterministically on its output.
@@ -379,7 +388,7 @@ For each `optimized_plan.steps[i]` in order. Work autonomously, verify internall
 1. Look up matching `schema.plan.subtasks[].steps[]` via `source_subtask_ids` for fine-grained intent. `step.goal` may describe a smarter path than the recording (API / CLI / file / URL-scheme); honor it.
 2. Match `step.executor` to the execution shape:
    - `script` → Python via Bash (subprocess / requests / pdfplumber / file IO). `ask_gemini` for stochastic JSON decisions.
-   - `browser_harness` → Chrome via the `{resolved_browser_skill_name()}` skill / `browser-harness -c '…'`. `ask_gemini` for in-page judgment.
+   - `browser_harness` → Chrome via the `{resolved_browser_skill_name()}` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. `ask_gemini` for in-page judgment.
    - `ui_agent` → `{resolved_macos_computer_use_skill_name()}` skill (screenshot + click).
    If you swap `ui_agent` → `browser_harness` because browser-harness can handle the target, update `optimized_plan.json` step's `executor` to match. Mention the user-visible effect only if it matters, e.g. "I found a more reliable way to do this in the browser."
 3. Execute against the live environment using `agent/confirmed_inputs.json`. Verify success (screenshots / page_info / shell output) before declaring the step done.
@@ -391,9 +400,9 @@ For each `optimized_plan.steps[i]` in order. Work autonomously, verify internall
 After the last step verifies, announce in one line: "All <N> steps complete end-to-end."
 
 Phase C — Synthesize and validate `scripts/run.py`
-1. Synthesize `{skill_dir}/scripts/run.py` from `agent/learned_notes.md`. Per-step code shape matches its `executor`: `script` → inline Python; `browser_harness` → shell out to `browser-harness -c '…'` (or import helpers directly); `ui_agent` → drive `{resolved_macos_computer_use_skill_name()}`.
+1. Synthesize `{skill_dir}/scripts/run.py` from `agent/learned_notes.md`. Per-step code shape matches its `executor`: `script` → inline Python; `browser_harness` → shell out to `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'` (or import helpers directly); `ui_agent` → drive `{resolved_macos_computer_use_skill_name()}`.
 2. Contract:
-   - Invocation: `python scripts/run.py --inputs-json /path/to/inputs.json`. Read all inputs up front, no prompts.
+   - Invocation: `"$AI_MIME_PYTHON_PATH" scripts/run.py --inputs-json /path/to/inputs.json` or `./run.sh /path/to/inputs.json`. Read all inputs up front, no prompts.
    - For irreducible judgment, call `ask_gemini` with an explicit JSON schema. Pattern: `from browser_harness.helpers import ask_gemini; pick = ask_gemini(prompt, schema={{"type":"object","properties":{{"id":{{"type":["string","null"]}},"reason":{{"type":"string"}}}},"required":["id","reason"]}})`. Branch deterministically on the returned dict. Document each call site in `SKILL.md`.
    - Emit progress logs continuously (step id + title). Exit non-zero with diagnostic logs on failure.
 3. Clear any Phase-B side effects before testing. One-line ask to confirm `agent/side_effects.md` entries are cleared.
@@ -406,7 +415,7 @@ Phase D — Package as a standard skill
 1. Invoke the `skill-creator` skill to scaffold `SKILL.md`. It MUST have YAML frontmatter (non-empty `name`, `description`) and these sections (titles exact): `## Inputs`, `## Run`, `## Outputs`, `## Progress log format`, `## Fallback`, `## ask_gemini decision points`, `## References`.
 
    `SKILL.md` `## Run` must document the Python runtime contract:
-   - `run.sh` uses the first available interpreter in this order: skill `.venv/bin/python`, workflow `.venv/bin/python`, `$AI_MIME_PYTHON_PATH`, then `python3`.
+   - `run.sh` uses the first available interpreter in this order: skill `.venv/bin/python`, workflow `.venv/bin/python`, then required `$AI_MIME_PYTHON_PATH`.
    - If `requirements.txt` exists, include these exact build/repair commands:
        ```bash
        "$AI_MIME_UV_PATH" venv .venv --python "$AI_MIME_PYTHON_PATH"
@@ -424,7 +433,7 @@ Phase D — Package as a standard skill
        set -euo pipefail
        HERE="$(cd "$(dirname "$0")" && pwd)"
        INPUTS="${{1:-$HERE/inputs/inputs.example.json}}"
-       PYTHON="${{AI_MIME_PYTHON_PATH:-python3}}"
+       PYTHON="${{AI_MIME_PYTHON_PATH:?AI_MIME_PYTHON_PATH is required}}"
        if [[ -x "$HERE/.venv/bin/python" ]]; then
          PYTHON="$HERE/.venv/bin/python"
        elif [[ -x "$HERE/../../.venv/bin/python" ]]; then
@@ -440,7 +449,7 @@ Phase D — Package as a standard skill
 
 4. Do NOT copy `schema.json` or `optimized_plan.json` into the skill. They're builder-only artifacts.
 
-   Reproducibility: any external tool / MCP server / API you relied on during the build must also be reachable when `run.sh` runs on the end user's machine. `browser-harness` is available in the AI Mime workflow runtime; use `$AI_MIME_BROWSER_SKILL_PATH` for harness resource files. If Python packages are needed, list them in `requirements.txt`, create `.venv`, install them with uv during skill build, and document that `run.sh` will use the existing `.venv`. If you used `uvx some-cli`, list the exact invocation in SKILL.md `## Run` and call it the same way in `scripts/run.py` (e.g. `subprocess.run(["uvx", "some-cli", ...])`). Do NOT assume the end user has anything pre-installed beyond `bash`, `curl`, `npx`, `uvx`, `browser-harness`, `$AI_MIME_PYTHON_PATH`, and an already-created `.venv` when needed.
+   Reproducibility: any external tool / MCP server / API you relied on during the build must also be reachable when `run.sh` runs on the end user's machine. Browser-harness is available in the AI Mime workflow runtime as `$AI_MIME_BROWSER_HARNESS_BIN`; use `$AI_MIME_BROWSER_SKILL_PATH` for harness resource files. If Python packages are needed, list them in `requirements.txt`, create `.venv`, install them with `"$AI_MIME_UV_PATH"` during skill build, and document that `run.sh` will use the existing `.venv`. Do NOT assume the end user has anything pre-installed beyond `bash`, macOS system tools, `$AI_MIME_UV_PATH`, `$AI_MIME_BROWSER_HARNESS_BIN`, `$AI_MIME_PYTHON_PATH`, and an already-created `.venv` when needed.
 
 5. `scripts/run.py` MUST emit one JSON-line per step transition on stderr so a downstream agent (or human) can read partial progress on failure and resume from the right subtask:
    - `{{"event":"step_start","id":"<step_id>","title":"…"}}`
@@ -449,7 +458,7 @@ Phase D — Package as a standard skill
    - `{{"event":"workflow_done","outputs":{{…}}}}`
    Free-form human logs may be interleaved. Exit non-zero on `step_failed`. Document this contract in `SKILL.md` under `## Progress log format`.
 
-6. Verify `./run.sh` runs clean against `inputs/inputs.example.json` (this is the published one-click command, so this is what gets tested — not just `python scripts/run.py`).
+6. Verify `./run.sh` runs clean against `inputs/inputs.example.json` (this is the published one-click command, so this is what gets tested — not just direct `scripts/run.py` execution).
 
 7. Write `{signal_path}` with `{{"status":"skill_ready","summary":"<one line>"}}` and stop. The service runs `validate_skill_package` + `run_skill_e2e_test` and surfaces the result in the UI.
 
@@ -569,17 +578,10 @@ def run_agent_task(request: AgentRunRequest, adapter: AgentAdapter, prompt: str 
 
     with tempfile.TemporaryDirectory(prefix="ai-mime-agent-") as td:
         request = request.model_copy(update={"temp_dir": Path(td)})
-        runtime_env = workflow_runtime_env(request.workflow_dir)
-        old_env = {key: os.environ.get(key) for key in runtime_env}
-        os.environ.update(runtime_env)
-        try:
-            result = adapter.run(request, prompt or _build_prompt(request))
-        finally:
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
+        # The app-managed runtime env is injected into the SDK run via
+        # ClaudeAgentOptions.env (see _options_kwargs_for), so no global
+        # os.environ mutation is needed here.
+        result = adapter.run(request, prompt or _build_prompt(request))
 
     final_session_id = result.session_id or session_id
     result = result.model_copy(update={"session_id": final_session_id})

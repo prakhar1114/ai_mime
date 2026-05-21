@@ -141,7 +141,13 @@ def _write_valid_skill_package(skill_dir: Path, schema: dict, optimized_plan: di
         'set -euo pipefail\n'
         'HERE="$(cd "$(dirname "$0")" && pwd)"\n'
         'INPUTS="${1:-$HERE/inputs/inputs.example.json}"\n'
-        'exec python3 "$HERE/scripts/run.py" --inputs-json "$INPUTS"\n',
+        'PYTHON="${AI_MIME_PYTHON_PATH:?AI_MIME_PYTHON_PATH is required}"\n'
+        'if [[ -x "$HERE/.venv/bin/python" ]]; then\n'
+        '  PYTHON="$HERE/.venv/bin/python"\n'
+        'elif [[ -x "$HERE/../../.venv/bin/python" ]]; then\n'
+        '  PYTHON="$HERE/../../.venv/bin/python"\n'
+        'fi\n'
+        'exec "$PYTHON" "$HERE/scripts/run.py" --inputs-json "$INPUTS"\n',
         encoding="utf-8",
     )
     run_sh.chmod(run_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -156,10 +162,13 @@ class FakeAdapter:
     def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
         self.request = request
         self.prompt = prompt
-        self.runtime_env = {
-            "AI_MIME_PYTHON_PATH": os.environ.get("AI_MIME_PYTHON_PATH"),
-            "AI_MIME_UV_PATH": os.environ.get("AI_MIME_UV_PATH"),
-        }
+        # The real SDK adapter derives the runtime env from the request's
+        # workflow_dir and passes it via ClaudeAgentOptions.env (see
+        # _options_kwargs_for); mirror that here so the test reflects the
+        # current injection path rather than a global os.environ mutation.
+        from ai_mime.app_data import workflow_runtime_env
+
+        self.runtime_env = dict(workflow_runtime_env(request.workflow_dir))
         return AgentRunResult(
             status="success",
             session_id=request.session_id or "",
@@ -349,21 +358,25 @@ class AgentRunnerTests(unittest.TestCase):
             # Internet & external services guidance
             self.assertIn("WebSearch", prompt)
             self.assertIn("WebFetch", prompt)
-            self.assertIn("uvx", prompt)
-            self.assertIn("npx", prompt)
-            self.assertIn("no user setup", prompt)
+            self.assertIn("Do not depend on `uvx`, `npx`", prompt)
+            self.assertNotIn("npx --yes", prompt)
             self.assertIn("AI_MIME_PYTHON_PATH", prompt)
             self.assertIn("AI_MIME_UV_PATH", prompt)
+            self.assertIn("AI_MIME_BROWSER_HARNESS_BIN", prompt)
+            self.assertIn('"$AI_MIME_BROWSER_HARNESS_BIN" -c', prompt)
             self.assertIn("requirements.txt", prompt)
             self.assertIn(".venv/bin/python", prompt)
             self.assertIn("SKILL.md` `## Run` must document the Python runtime contract", prompt)
             self.assertIn("skill `.venv/bin/python`", prompt)
             self.assertIn("workflow `.venv/bin/python`", prompt)
+            self.assertIn("then required `$AI_MIME_PYTHON_PATH`", prompt)
             self.assertIn('"$AI_MIME_UV_PATH" venv .venv --python "$AI_MIME_PYTHON_PATH"', prompt)
             self.assertIn(
                 '"$AI_MIME_UV_PATH" pip install -r requirements.txt --python .venv/bin/python',
                 prompt,
             )
+            self.assertIn('PYTHON="${AI_MIME_PYTHON_PATH:?AI_MIME_PYTHON_PATH is required}"', prompt)
+            self.assertNotIn('PYTHON="${AI_MIME_PYTHON_PATH:-python3}"', prompt)
             self.assertIn("Runtime does not create or repair `.venv`", prompt)
             # Structured log contract
             self.assertIn("step_start", prompt)
@@ -399,7 +412,7 @@ class AgentRunnerTests(unittest.TestCase):
                 "set -euo pipefail\n"
                 "HERE=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
                 "INPUTS=\"${1:-$HERE/inputs/inputs.example.json}\"\n"
-                "PYTHON=\"${AI_MIME_PYTHON_PATH:-python3}\"\n"
+                "PYTHON=\"${AI_MIME_PYTHON_PATH:?AI_MIME_PYTHON_PATH is required}\"\n"
                 "if [[ -x \"$HERE/.venv/bin/python\" ]]; then\n"
                 "  PYTHON=\"$HERE/.venv/bin/python\"\n"
                 "fi\n"
@@ -676,6 +689,81 @@ class AgentRunnerTests(unittest.TestCase):
             hooks = kwargs.get("hooks") or {}
             pre = hooks.get("PreToolUse") or []
             self.assertEqual(len(pre), 1)
+
+    def test_packaged_bash_guard_blocks_bare_host_tools(self) -> None:
+        import asyncio as _asyncio
+
+        from ai_mime.agent_runner.adapters import claude_sdk
+
+        with patch.object(claude_sdk, "is_frozen", return_value=True):
+            hook = claude_sdk._build_packaged_bash_guard_hook()
+        assert hook is not None
+
+        async def _call(command: str) -> dict:
+            return await hook({"tool_name": "Bash", "tool_input": {"command": command}}, "tid", None)
+
+        for command in (
+            "uv --version",
+            "python3 scripts/run.py",
+            "browser-harness -c 'print(1)'",
+            "uvx some-tool",
+            "npx some-tool",
+            "/opt/homebrew/bin/uv --version",
+            "/usr/local/bin/python3 --version",
+        ):
+            out = _asyncio.get_event_loop().run_until_complete(_call(command))
+            self.assertEqual(out.get("decision"), "block", command)
+            self.assertIn("packaged mode", out.get("reason", "") + " packaged mode")
+
+    def test_packaged_bash_guard_allows_explicit_app_tools_and_venv(self) -> None:
+        import asyncio as _asyncio
+
+        from ai_mime.agent_runner.adapters import claude_sdk
+
+        with patch.object(claude_sdk, "is_frozen", return_value=True):
+            hook = claude_sdk._build_packaged_bash_guard_hook()
+        assert hook is not None
+
+        async def _call(command: str) -> dict:
+            return await hook({"tool_name": "Bash", "tool_input": {"command": command}}, "tid", None)
+
+        for command in (
+            '"$AI_MIME_UV_PATH" --version',
+            '"$AI_MIME_BROWSER_HARNESS_BIN" -c "print(1)"',
+            '"$AI_MIME_PYTHON_PATH" scripts/run.py',
+            './.venv/bin/python scripts/run.py',
+            'cd /tmp && "$AI_MIME_UV_PATH" --version',
+            # Host paths mentioned only inside a string arg must not be blocked.
+            '"$AI_MIME_PYTHON_PATH" -c "print(\'/usr/local/lib\')"',
+            'echo "see /opt/homebrew/bin" && "$AI_MIME_UV_PATH" --version',
+        ):
+            out = _asyncio.get_event_loop().run_until_complete(_call(command))
+            self.assertEqual(out, {}, command)
+
+    def test_options_kwargs_installs_packaged_bash_guard_when_frozen(self) -> None:
+        from ai_mime.agent_runner.adapters import claude_sdk
+        from ai_mime.agent_runner.adapters.claude_sdk import _options_kwargs_for
+        from ai_mime.agent_runner.models import FilesystemAccess
+
+        with tempfile.TemporaryDirectory() as td, patch.object(claude_sdk, "is_frozen", return_value=True):
+            workflow_dir = Path(td)
+            request = AgentRunRequest(
+                provider="claude",
+                mode="build_skill_chat",
+                workflow_dir=workflow_dir,
+                workspace_dir=workflow_dir,
+                readable_roots=[workflow_dir],
+                writable_roots=[workflow_dir],
+                user_filesystem_access=FilesystemAccess(),
+            )
+            kwargs = _options_kwargs_for(request, None)
+            hooks = kwargs.get("hooks") or {}
+            pre = hooks.get("PreToolUse") or []
+            self.assertEqual(len(pre), 2)
+            # The app-managed runtime env must be wired onto the SDK options so the
+            # Bash tool resolves $AI_MIME_* in both run and stream_chat paths.
+            self.assertIn("AI_MIME_PYTHON_PATH", kwargs.get("env") or {})
+            self.assertIn("AI_MIME_UV_PATH", kwargs.get("env") or {})
 
     def test_options_kwargs_enables_claude_auto_compaction(self) -> None:
         from claude_agent_sdk import ClaudeAgentOptions

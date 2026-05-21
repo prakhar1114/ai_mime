@@ -76,16 +76,28 @@ class AppDataPathTests(unittest.TestCase):
 
             self.assertEqual(env["AI_MIME_PYTHON_PATH"], str(venv_python))
             self.assertIn("AI_MIME_UV_PATH", env)
+            self.assertIn("AI_MIME_BROWSER_HARNESS_BIN", env)
             self.assertIn("UV_PYTHON_INSTALL_DIR", env)
+            # uv isolation vars and PATH sanitization are frozen-only — in dev
+            # (APP_DATA_DIR == repo root) they would pollute the working tree.
+            self.assertNotIn("UV_TOOL_DIR", env)
+            self.assertNotIn("UV_TOOL_BIN_DIR", env)
+            self.assertNotIn("UV_CACHE_DIR", env)
+            self.assertNotIn("UV_NO_CONFIG", env)
+            self.assertNotIn("PATH", env)
 
-    def test_frozen_workflow_runtime_env_prepends_tool_bin(self) -> None:
-        with tempfile.TemporaryDirectory() as td, patch.dict("os.environ", {"PATH": "/usr/bin:/bin"}):
+    def test_frozen_workflow_runtime_env_sanitizes_path_and_exports_app_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as td, patch.dict(
+            "os.environ", {"PATH": "/opt/homebrew/bin:/usr/local/bin:/Users/tester/.local/bin:/usr/bin:/bin"}
+        ):
             root = Path(td)
             managed_python = root / "python" / "cpython-3.12.0-macos-aarch64-none" / "bin" / "python3.12"
             managed_python.parent.mkdir(parents=True)
             managed_python.write_text("#!/bin/sh\n", encoding="utf-8")
             managed_python.chmod(0o755)
             bundle = root / "bundle"
+            bundled_bin = bundle / "bin"
+            bundled_bin.mkdir(parents=True)
             browser_harness = bundle / "harness" / "browser-harness"
             browser_harness.mkdir(parents=True)
 
@@ -102,10 +114,17 @@ class AppDataPathTests(unittest.TestCase):
                 else:
                     sys._MEIPASS = old_meipass  # type: ignore[attr-defined]
 
-            self.assertEqual(env["PATH"], f"{root / 'bin'}:/usr/bin:/bin")
+            self.assertEqual(env["PATH"], f"{root / 'bin'}:{bundled_bin}:/usr/bin:/bin:/usr/sbin:/sbin")
+            self.assertNotIn("/opt/homebrew/bin", env["PATH"])
+            self.assertNotIn("/usr/local/bin", env["PATH"])
+            self.assertNotIn("/Users/tester/.local/bin", env["PATH"])
             self.assertEqual(env["AI_MIME_BROWSER_SKILL_NAME"], "browser")
             self.assertEqual(env["AI_MIME_BROWSER_SKILL_PATH"], str(browser_harness))
-            self.assertNotIn("AI_MIME_BROWSER_HARNESS_BIN", env)
+            self.assertEqual(env["AI_MIME_BROWSER_HARNESS_BIN"], str(root / "bin" / "browser-harness"))
+            self.assertEqual(env["UV_TOOL_DIR"], str(root / "tools"))
+            self.assertEqual(env["UV_TOOL_BIN_DIR"], str(root / "bin"))
+            self.assertEqual(env["UV_CACHE_DIR"], str(root / "uv-cache"))
+            self.assertEqual(env["UV_NO_CONFIG"], "1")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,12 @@ import sys
 from pathlib import Path
 
 _BROWSER_HARNESS_REL = "harness/browser-harness"
+_FROZEN_SYSTEM_PATHS = (
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +117,11 @@ def get_tool_bin_dir() -> Path:
     return APP_DATA_DIR / "bin"
 
 
+def get_uv_cache_dir() -> Path:
+    """Directory where app-owned uv cache data lives."""
+    return APP_DATA_DIR / "uv-cache"
+
+
 def get_managed_browser_harness_path() -> Path:
     """Path to the packaged browser-harness console script."""
     return get_tool_bin_dir() / "browser-harness"
@@ -171,12 +182,20 @@ def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> 
     env = {
         "AI_MIME_UV_PATH": str(get_uv_path()),
         "AI_MIME_PYTHON_PATH": str(get_python_path(workflow_dir)),
+        "AI_MIME_BROWSER_HARNESS_BIN": str(get_managed_browser_harness_path()),
         "UV_PYTHON_INSTALL_DIR": str(get_managed_python_install_dir()),
     }
     if is_frozen():
-        current_path = os.environ.get("PATH", "")
+        # uv isolation (tool/cache dirs, no user config) and the sanitized PATH only
+        # apply in the packaged app. In dev, APP_DATA_DIR is the repo root, so
+        # redirecting these would pollute the working tree and the dev's uv cache.
+        env["UV_TOOL_DIR"] = str(get_tool_dir())
+        env["UV_TOOL_BIN_DIR"] = str(get_tool_bin_dir())
+        env["UV_CACHE_DIR"] = str(get_uv_cache_dir())
+        env["UV_NO_CONFIG"] = "1"
         tool_bin = str(get_tool_bin_dir())
-        env["PATH"] = tool_bin if not current_path else f"{tool_bin}{os.pathsep}{current_path}"
+        bundled_bin = str(get_bundled_resource("bin"))
+        env["PATH"] = os.pathsep.join([tool_bin, bundled_bin, *_FROZEN_SYSTEM_PATHS])
         env["AI_MIME_BROWSER_SKILL_NAME"] = "browser"
         env["AI_MIME_BROWSER_SKILL_PATH"] = str(get_bundled_browser_harness_dir())
     return env

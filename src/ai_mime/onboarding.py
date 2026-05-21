@@ -37,6 +37,7 @@ from AppKit import (
     NSEventModifierFlagCommand,
     NSProgressIndicator,
     NSProgressIndicatorBarStyle,
+    NSProgressIndicatorSpinningStyle,
 )
 
 from ai_mime.app_data import (
@@ -49,6 +50,7 @@ from ai_mime.app_data import (
     get_python_path,
     get_tool_bin_dir,
     get_tool_dir,
+    get_uv_cache_dir,
     get_uv_path,
     is_frozen,
 )
@@ -441,6 +443,10 @@ def _install_browser_harness(
                 **os.environ,
                 "UV_TOOL_DIR": str(tool_dir),
                 "UV_TOOL_BIN_DIR": str(tool_bin_dir),
+                # Install into the same app-owned cache the runtime uses and ignore
+                # the user's uv config, matching workflow_runtime_env() isolation.
+                "UV_CACHE_DIR": str(get_uv_cache_dir()),
+                "UV_NO_CONFIG": "1",
             },
         )
     except Exception as e:
@@ -477,6 +483,10 @@ class _OnboardingWizard(NSObject):
         self._installing = False
         self._install_progress = None
         self._install_progress_label = None
+        self._starting = False
+        self._start_progress = None
+        self._start_status_label = None
+        self._start_timer = None
         self._skill_rows = {}
         self._skills_error_label = None
         self._perm_timer = None
@@ -516,6 +526,9 @@ class _OnboardingWizard(NSObject):
         if self._perm_timer is not None:
             self._perm_timer.invalidate()
             self._perm_timer = None
+        if self._start_timer is not None:
+            self._start_timer.invalidate()
+            self._start_timer = None
         NSApplication.sharedApplication().stop_(None)
 
     # ---------------------------------------------------------------
@@ -536,6 +549,9 @@ class _OnboardingWizard(NSObject):
         self._install_btn = None
         self._install_progress = None
         self._install_progress_label = None
+        self._starting = False
+        self._start_progress = None
+        self._start_status_label = None
         self._skill_rows = {}
         self._skills_error_label = None
         self._perm_rows = {}
@@ -1100,6 +1116,23 @@ class _OnboardingWizard(NSObject):
 
         self._add_primary_button("Start")
 
+        spinner_size = 20
+        self._start_progress = NSProgressIndicator.alloc().initWithFrame_(
+            NSMakeRect((_W - spinner_size) / 2, 106, spinner_size, spinner_size)
+        )
+        self._start_progress.setStyle_(NSProgressIndicatorSpinningStyle)
+        self._start_progress.setIndeterminate_(True)
+        self._start_progress.setDisplayedWhenStopped_(False)
+        self._start_progress.setHidden_(True)
+        self._content.addSubview_(self._start_progress)
+
+        self._start_status_label = self._add_label(
+            "Starting AI Mime...",
+            x=_M, y=128, w=_CW, h=18,
+            size=12, align=_CENTER, color=NSColor.secondaryLabelColor(),
+        )
+        self._start_status_label.setHidden_(True)
+
     # ------------------------------------------------------------------
     # Shared widget helpers
     # ------------------------------------------------------------------
@@ -1154,6 +1187,10 @@ class _OnboardingWizard(NSObject):
     # ------------------------------------------------------------------
     # Cocoa selector  onContinue:
     def onContinue_(self, sender):
+        if self._step == len(_STEPS) - 1:
+            self._begin_onboarding_start()
+            return
+
         # --- Persist Anthropic API key before advancing past step 2 ---
         if self._step == 2:
             key = (self._claude_key_field.stringValue() or "").strip() if self._claude_key_field is not None else ""
@@ -1173,6 +1210,35 @@ class _OnboardingWizard(NSObject):
             return
 
         self._render()
+
+    def _begin_onboarding_start(self):
+        if self._starting:
+            return
+        self._starting = True
+        if self._continue_btn is not None:
+            self._continue_btn.setTitle_("Starting...")
+            self._continue_btn.setEnabled_(False)
+        if self._start_progress is not None:
+            self._start_progress.setHidden_(False)
+            self._start_progress.startAnimation_(self)
+        if self._start_status_label is not None:
+            self._start_status_label.setHidden_(False)
+        if self._content is not None:
+            self._content.setNeedsDisplay_(True)
+
+        self._start_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.1, self, "finishOnboardingStart:", None, False
+        )
+
+    # Cocoa selector  finishOnboardingStart:
+    def finishOnboardingStart_(self, timer):
+        self._start_timer = None
+        # All steps done — write sentinel and exit run loop.
+        get_onboarding_done_path().touch()
+        if self._window is not None:
+            self._window.close()  # triggers windowWillClose_ → _stop_loop
+        else:
+            self._stop_loop()
 
 
 # ---------------------------------------------------------------------------

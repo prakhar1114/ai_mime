@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
@@ -22,6 +24,7 @@ from claude_agent_sdk import (
 )
 
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
+from ai_mime.app_data import is_frozen, workflow_runtime_env
 from ai_mime.debug_log import log as debug_log
 
 DEFAULT_ALLOWED_TOOLS = [
@@ -37,7 +40,19 @@ CanUseToolCallback = Callable[[str, dict[str, Any], Any], Awaitable[dict[str, An
 _READ_FILE_TOOLS = {"Read", "NotebookRead", "Glob", "Grep"}
 _WRITE_FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 _SANDBOX_MATCHER = "Read|NotebookRead|Glob|Grep|Write|Edit|MultiEdit|NotebookEdit"
+_BASH_MATCHER = "Bash"
 _CLAUDE_SDK_STDERR_PREFIX = "[ai-mime claude-sdk stderr]"
+_PACKAGED_FORBIDDEN_BARE_COMMANDS = {
+    "uv": "$AI_MIME_UV_PATH",
+    "python": "$AI_MIME_PYTHON_PATH",
+    "python3": "$AI_MIME_PYTHON_PATH",
+    "browser-harness": "$AI_MIME_BROWSER_HARNESS_BIN",
+    "uvx": "$AI_MIME_UV_PATH",
+    "npx": "app-managed Python or a documented bundled tool",
+}
+_SHELL_SEPARATORS = {"&&", "||", ";", "|", "&"}
+_SHELL_COMMAND_PREFIXES = {"command", "exec", "env", "time", "nohup"}
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 
 
 def _log_claude_sdk_stderr(data: str) -> None:
@@ -77,6 +92,42 @@ def _extract_tool_paths(tool_input: dict[str, Any]) -> list[str]:
     return paths
 
 
+def _packaged_bash_block_reason(command: str) -> str | None:
+    """Return a block reason for obvious host-tool Bash invocations.
+
+    Only flags tokens in command position (the first word of the command or of a
+    pipeline/list segment). A Homebrew/usr-local path that appears merely as a
+    string literal or argument is not blocked.
+    """
+    if not command.strip():
+        return None
+
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = re.findall(r"[^\s]+", command)
+
+    expect_command = True
+    for token in tokens:
+        if token in _SHELL_SEPARATORS:
+            expect_command = True
+            continue
+        if not expect_command:
+            continue
+        if _ENV_ASSIGNMENT_RE.match(token):
+            continue
+        if token in _SHELL_COMMAND_PREFIXES:
+            expect_command = True
+            continue
+        if token.startswith("/opt/homebrew/") or token.startswith("/usr/local/"):
+            return f"Bash command uses host tool path {token}; use app-managed tool env vars instead."
+        replacement = _PACKAGED_FORBIDDEN_BARE_COMMANDS.get(token)
+        if replacement is not None:
+            return f"Bash command uses bare `{token}` in packaged mode; use `{replacement}` instead."
+        expect_command = False
+    return None
+
+
 def _build_filesystem_sandbox_hook(request: AgentRunRequest):
     """PreToolUse hook that denies file ops outside the request's roots.
 
@@ -111,6 +162,27 @@ def _build_filesystem_sandbox_hook(request: AgentRunRequest):
                 ),
             }
         return {}
+
+    return _hook
+
+
+def _build_packaged_bash_guard_hook():
+    """PreToolUse hook that blocks obvious host tool usage in frozen builds."""
+    if not is_frozen():
+        return None
+
+    async def _hook(input_data, _tool_use_id, _context):  # type: ignore[no-untyped-def]
+        tool_name = input_data.get("tool_name") or ""
+        if tool_name != "Bash":
+            return {}
+        tool_input = input_data.get("tool_input") or {}
+        command = tool_input.get("command")
+        if not isinstance(command, str):
+            return {}
+        reason = _packaged_bash_block_reason(command)
+        if reason is None:
+            return {}
+        return {"decision": "block", "reason": reason}
 
     return _hook
 
@@ -232,14 +304,29 @@ def _options_kwargs_for(
     if can_use_tool is not None:
         kwargs["can_use_tool"] = can_use_tool
         kwargs["permission_mode"] = "default"
+    # Export the app-managed runtime env (app Python/uv/browser-harness paths and,
+    # when frozen, the sanitized PATH) to the CLI and its Bash subprocess. The SDK
+    # merges this over the inherited os.environ, so these win. This is what makes
+    # the bash guard's `$AI_MIME_*` replacements actually resolve — for both
+    # ClaudeAgentSdkAdapter.run and the interactive stream_chat paths.
+    kwargs["env"] = dict(workflow_runtime_env(request.workflow_dir))
+
     sandbox_hook = _build_filesystem_sandbox_hook(request)
-    if sandbox_hook is not None:
-        existing_hooks = kwargs.get("hooks") or {}
-        pre_tool_use = list(existing_hooks.get("PreToolUse") or [])
-        pre_tool_use.append(HookMatcher(matcher=_SANDBOX_MATCHER, hooks=[sandbox_hook]))
-        existing_hooks["PreToolUse"] = pre_tool_use
-        kwargs["hooks"] = existing_hooks
+    bash_guard_hook = _build_packaged_bash_guard_hook()
+    _add_pre_tool_use_hook(kwargs, _SANDBOX_MATCHER, sandbox_hook)
+    _add_pre_tool_use_hook(kwargs, _BASH_MATCHER, bash_guard_hook)
     return kwargs
+
+
+def _add_pre_tool_use_hook(kwargs: dict[str, Any], matcher: str, hook) -> None:
+    """Append a PreToolUse HookMatcher to the options kwargs, no-op if hook is None."""
+    if hook is None:
+        return
+    existing_hooks = kwargs.get("hooks") or {}
+    pre_tool_use = list(existing_hooks.get("PreToolUse") or [])
+    pre_tool_use.append(HookMatcher(matcher=matcher, hooks=[hook]))
+    existing_hooks["PreToolUse"] = pre_tool_use
+    kwargs["hooks"] = existing_hooks
 
 
 def _block_text(block: Any) -> str:
