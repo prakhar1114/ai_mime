@@ -9,11 +9,13 @@
 #
 # Flags:
 #   --skip-notarize     Build + sign only; skip upload + staple.
+#   --skip-sign         Build unsigned; faster for local testing.
 #
 # Usage:
 #   export CODESIGN_IDENTITY="Developer ID Application: …"
 #   bash scripts/build.sh                # full release build
 #   bash scripts/build.sh --skip-notarize # local test build
+#   bash scripts/build.sh --skip-sign --skip-notarize # fastest local test build
 
 set -euo pipefail
 
@@ -21,9 +23,11 @@ set -euo pipefail
 # Flags
 # ---------------------------------------------------------------------------
 SKIP_NOTARIZE=false
+SKIP_SIGN=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-notarize) SKIP_NOTARIZE=true; shift ;;
+    --skip-sign)     SKIP_SIGN=true; shift ;;
     *)               echo "Unknown flag: $1"; exit 1 ;;
   esac
 done
@@ -79,7 +83,9 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Code-sign (deep)
 # ---------------------------------------------------------------------------
-if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
+if $SKIP_SIGN; then
+  echo "==> Code-signing skipped (--skip-sign)."
+elif [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
   echo "WARN: CODESIGN_IDENTITY not set — skipping code signing."
 else
   echo "==> Deep-signing …"
@@ -141,7 +147,7 @@ create-dmg \
 # ---------------------------------------------------------------------------
 # 5. Sign the DMG itself
 # ---------------------------------------------------------------------------
-if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+if ! $SKIP_SIGN && [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
   echo "==> Signing DMG …"
   codesign --force --sign "$CODESIGN_IDENTITY" --timestamp "$DMG_PATH"
 fi
@@ -153,6 +159,11 @@ if $SKIP_NOTARIZE; then
   echo "==> Notarization skipped (--skip-notarize)."
   echo "==> Done.  DMG at: $DMG_PATH"
   exit 0
+fi
+
+if $SKIP_SIGN || [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
+  echo "ERROR: Notarization requires a signed app. Re-run without --skip-sign and set CODESIGN_IDENTITY, or add --skip-notarize for a local test build."
+  exit 1
 fi
 
 # Validate required env vars for notarization.

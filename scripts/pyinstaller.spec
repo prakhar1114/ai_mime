@@ -33,7 +33,7 @@ a = Analysis(
     scripts=[os.path.join(_src, "ai_mime", "cli.py")],
     pathex=[_src],
     binaries=[
-        (_uv_binary, os.path.join("bin", "uv")),
+        (_uv_binary, "bin"),
     ],
     datas=[
         # user_config.yml → bundle root (sys._MEIPASS root)

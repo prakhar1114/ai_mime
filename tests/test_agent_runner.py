@@ -6,6 +6,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ai_mime.agent_runner import (
     AgentRunRequest,
@@ -16,6 +17,15 @@ from ai_mime.agent_runner import (
     run_skill_e2e_test,
     validate_skill_package,
 )
+from ai_mime.app_data import get_bundled_resource
+
+
+def _default_browser_skill_root() -> Path:
+    return get_bundled_resource("harness/browser-harness")
+
+
+def _default_macos_skill_root() -> Path:
+    return get_bundled_resource("resources/claude-skills/macos-computer-use")
 
 
 def _schema() -> dict:
@@ -165,15 +175,13 @@ class AgentRunnerTests(unittest.TestCase):
             workflow_dir=Path("/workflows"),
             workspace_dir=Path("/workflows"),
         )
-        domain_skills_root = (
-            Path(__file__).resolve().parents[1]
-            / "harness/browser-harness/agent-workspace/domain-skills"
-        )
 
         self.assertIn(Path("/tmp"), request.readable_roots)
         self.assertIn(Path("/tmp"), request.writable_roots)
-        self.assertIn(domain_skills_root, request.readable_roots)
-        self.assertIn(domain_skills_root, request.writable_roots)
+        self.assertIn(_default_browser_skill_root(), request.readable_roots)
+        self.assertIn(_default_macos_skill_root(), request.readable_roots)
+        self.assertNotIn(_default_browser_skill_root(), request.writable_roots)
+        self.assertNotIn(_default_macos_skill_root(), request.writable_roots)
 
     def test_build_request_merges_user_read_hints_and_default_writes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -182,16 +190,14 @@ class AgentRunnerTests(unittest.TestCase):
             (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
 
             request = build_agent_run_request(workflow_dir=workflow_dir, provider="claude")
-        domain_skills_root = (
-            Path(__file__).resolve().parents[1]
-            / "harness/browser-harness/agent-workspace/domain-skills"
-        )
 
         self.assertIn(Path("/Users/prakharjain/Desktop/expenses"), request.readable_roots)
         self.assertIn(Path("/tmp"), request.readable_roots)
         self.assertIn(Path("/tmp"), request.writable_roots)
-        self.assertIn(domain_skills_root, request.readable_roots)
-        self.assertIn(domain_skills_root, request.writable_roots)
+        self.assertIn(_default_browser_skill_root(), request.readable_roots)
+        self.assertIn(_default_macos_skill_root(), request.readable_roots)
+        self.assertNotIn(_default_browser_skill_root(), request.writable_roots)
+        self.assertNotIn(_default_macos_skill_root(), request.writable_roots)
         self.assertIn(workflow_dir / "outputs", request.writable_roots)
         self.assertIn(workflow_dir / "agent", request.writable_roots)
         self.assertIn(workflow_dir / "skills", request.writable_roots)
@@ -233,12 +239,41 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertEqual(request.workspace_dir, request.workflow_dir)
         self.assertIn(Path("/tmp"), request.readable_roots)
         self.assertIn(Path("/tmp"), request.writable_roots)
-        domain_skills_root = (
-            Path(__file__).resolve().parents[1]
-            / "harness/browser-harness/agent-workspace/domain-skills"
-        )
-        self.assertIn(domain_skills_root, request.readable_roots)
-        self.assertIn(domain_skills_root, request.writable_roots)
+        self.assertIn(_default_browser_skill_root(), request.readable_roots)
+        self.assertIn(_default_macos_skill_root(), request.readable_roots)
+        self.assertNotIn(_default_browser_skill_root(), request.writable_roots)
+        self.assertNotIn(_default_macos_skill_root(), request.writable_roots)
+
+    def test_agent_request_uses_env_configured_skill_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            browser_skill = root / "browser-harness"
+            macos_skill = root / "macos-computer-use"
+            browser_skill.mkdir()
+            macos_skill.mkdir()
+            env = {
+                "AI_MIME_BROWSER_SKILL_NAME": "browser",
+                "AI_MIME_BROWSER_SKILL_PATH": str(browser_skill),
+                "AI_MIME_MACOS_COMPUTER_USE_SKILL_NAME": "macos-computer-use",
+                "AI_MIME_MACOS_COMPUTER_USE_SKILL_PATH": str(macos_skill),
+            }
+            with patch.dict(os.environ, env, clear=False):
+                request = AgentRunRequest(
+                    provider="claude",
+                    mode="general",
+                    workflow_dir=root / "workflows",
+                    workspace_dir=root / "workflows",
+                )
+                adapter = FakeAdapter()
+                run_agent_task(request, adapter)
+
+            self.assertIn(browser_skill.resolve(), request.readable_roots)
+            self.assertIn(macos_skill.resolve(), request.readable_roots)
+            self.assertNotIn(browser_skill.resolve(), request.writable_roots)
+            self.assertNotIn(macos_skill.resolve(), request.writable_roots)
+            prompt = adapter.prompt or ""
+            self.assertIn(str(browser_skill.resolve()), prompt)
+            self.assertIn(str(macos_skill.resolve()), prompt)
 
     def test_workspace_chat_service_general_request_allows_agent_dir_read_write(self) -> None:
         with tempfile.TemporaryDirectory() as workspace_td, tempfile.TemporaryDirectory() as agent_td:

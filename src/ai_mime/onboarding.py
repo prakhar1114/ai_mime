@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import objc
@@ -33,6 +35,8 @@ from AppKit import (
     NSButtonTypeMomentaryPushIn,
     NSControlTextDidChangeNotification,
     NSEventModifierFlagCommand,
+    NSProgressIndicator,
+    NSProgressIndicatorBarStyle,
 )
 
 from ai_mime.app_data import (
@@ -55,9 +59,27 @@ _CW = _W - 2 * _M  # content width
 _STEPS = ("Welcome", "Permissions", "Claude", "Skills", "Done")
 _CENTER = 1       # NSTextAlignmentCenter
 _ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
+_BROWSER_SKILL_NAME_ENV = "AI_MIME_BROWSER_SKILL_NAME"
+_BROWSER_SKILL_PATH_ENV = "AI_MIME_BROWSER_SKILL_PATH"
+_MACOS_CU_SKILL_NAME_ENV = "AI_MIME_MACOS_COMPUTER_USE_SKILL_NAME"
+_MACOS_CU_SKILL_PATH_ENV = "AI_MIME_MACOS_COMPUTER_USE_SKILL_PATH"
 _BROWSER_HARNESS_SKILL_REL = "harness/browser-harness"
 _HERMES_SKILL_REL = "resources/claude-skills/macos-computer-use"
 _PYTHON_VERSION = "3.12"
+_CLAUDE_FALLBACK_DIRS = (
+    ".local/bin",
+    "bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+)
+
+
+@dataclass(frozen=True)
+class _ClaudeSkillResolution:
+    link_name: str
+    skill_name: str
+    path: Path
+    source: str
 
 # ---------------------------------------------------------------------------
 # Permission definitions
@@ -104,9 +126,21 @@ def _detect_local_claude(
     which=shutil.which,
     run=subprocess.run,
     timeout: float = 3.0,
+    home: Path | None = None,
+    is_file=os.path.isfile,
 ) -> tuple[bool, str]:
     """Return whether Claude Code is locally reachable and a display message."""
     exe = which("claude")
+    if not exe:
+        base_home = home or Path.home()
+        for candidate_dir in _CLAUDE_FALLBACK_DIRS:
+            candidate = Path(candidate_dir)
+            if not candidate.is_absolute():
+                candidate = base_home / candidate
+            candidate = candidate / "claude"
+            if is_file(candidate):
+                exe = str(candidate)
+                break
     if not exe:
         return False, "Claude Code not found on PATH."
 
@@ -140,19 +174,133 @@ def _bundled_hermes_skill_dir() -> Path:
     return get_bundled_resource(_HERMES_SKILL_REL)
 
 
-def _ensure_symlink(link_path: Path, target_path: Path) -> None:
+def _read_skill_name(skill_dir: Path) -> str | None:
+    try:
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    except Exception:
+        return None
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stripped == "---":
+            return None
+        if stripped.startswith("name:"):
+            value = stripped.split(":", 1)[1].strip()
+            return value.strip("\"'")
+    return None
+
+
+def _skill_file_contains(skill_dir: Path, needle: str) -> bool:
+    try:
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    except Exception:
+        return False
+    return needle in text
+
+
+def _skill_is_compatible(skill_dir: Path, expected_name: str) -> bool:
+    if expected_name == "browser":
+        return _skill_file_contains(skill_dir, "browser-harness")
+    return _read_skill_name(skill_dir) == expected_name
+
+
+def _compatible_skill_at(link_path: Path, expected_name: str) -> _ClaudeSkillResolution | None:
+    try:
+        if not link_path.exists() or not link_path.is_dir():
+            return None
+        resolved = link_path.expanduser().resolve()
+    except Exception:
+        return None
+    if not _skill_is_compatible(resolved, expected_name):
+        return None
+    return _ClaudeSkillResolution(
+        link_name=link_path.name,
+        skill_name=expected_name,
+        path=resolved,
+        source="accepted_existing",
+    )
+
+
+def _find_existing_compatible_skill(
+    skills_root: Path,
+    *,
+    link_names: tuple[str, ...],
+    expected_name: str,
+    allow_incompatible_symlink: bool = False,
+) -> _ClaudeSkillResolution | None:
+    for link_name in link_names:
+        link_path = skills_root / link_name
+        existing = _compatible_skill_at(link_path, expected_name)
+        if existing is not None:
+            return existing
+        if allow_incompatible_symlink and link_path.is_symlink():
+            continue
+        if link_path.exists() or link_path.is_symlink():
+            raise FileExistsError(f"Existing Claude skill is incompatible: {link_path}")
+    return None
+
+
+def _ensure_symlink(
+    link_path: Path,
+    target_path: Path,
+    *,
+    expected_name: str,
+    replace_incompatible_symlink: bool = False,
+) -> None:
     target_path = target_path.expanduser().resolve()
     if not target_path.exists() or not target_path.is_dir():
         raise FileNotFoundError(f"Skill source not found: {target_path}")
+    if not _skill_is_compatible(target_path, expected_name):
+        raise FileNotFoundError(f"Skill source is not a compatible {expected_name} skill: {target_path}")
 
     if link_path.is_symlink():
         if link_path.resolve() == target_path:
             return
-        link_path.unlink()
+        if replace_incompatible_symlink:
+            link_path.unlink()
+            link_path.symlink_to(target_path, target_is_directory=True)
+            return
+        raise FileExistsError(f"Existing Claude skill is incompatible: {link_path}")
     elif link_path.exists():
         raise FileExistsError(f"Cannot replace existing non-symlink: {link_path}")
 
     link_path.symlink_to(target_path, target_is_directory=True)
+
+
+def _persist_claude_skill_env(
+    *,
+    env_path: Path,
+    browser: _ClaudeSkillResolution,
+    macos_computer_use: _ClaudeSkillResolution,
+) -> None:
+    _merge_env_var(env_path, _BROWSER_SKILL_NAME_ENV, browser.skill_name)
+    _merge_env_var(env_path, _BROWSER_SKILL_PATH_ENV, str(browser.path))
+    _merge_env_var(env_path, _MACOS_CU_SKILL_NAME_ENV, macos_computer_use.skill_name)
+    _merge_env_var(env_path, _MACOS_CU_SKILL_PATH_ENV, str(macos_computer_use.path))
+    os.environ[_BROWSER_SKILL_NAME_ENV] = browser.skill_name
+    os.environ[_BROWSER_SKILL_PATH_ENV] = str(browser.path)
+    os.environ[_MACOS_CU_SKILL_NAME_ENV] = macos_computer_use.skill_name
+    os.environ[_MACOS_CU_SKILL_PATH_ENV] = str(macos_computer_use.path)
+
+
+def _detect_claude_skills(
+    *,
+    skills_dir: Path | None = None,
+) -> tuple[_ClaudeSkillResolution | None, _ClaudeSkillResolution | None]:
+    skills_root = skills_dir or _claude_skills_dir()
+    browser = _find_existing_compatible_skill(
+        skills_root,
+        link_names=("browser", "browser-harness"),
+        expected_name="browser",
+    )
+    macos_computer_use = _find_existing_compatible_skill(
+        skills_root,
+        link_names=("macos-computer-use",),
+        expected_name="macos-computer-use",
+    )
+    return browser, macos_computer_use
 
 
 def _install_claude_skills(
@@ -160,6 +308,7 @@ def _install_claude_skills(
     skills_dir: Path | None = None,
     browser_harness_skill_dir: Path | None = None,
     hermes_skill_dir: Path | None = None,
+    env_path: Path | None = None,
 ) -> dict[str, Path]:
     """Install AI Mime's Claude skills by linking bundled/repo sources."""
     skills_root = skills_dir or _claude_skills_dir()
@@ -168,11 +317,52 @@ def _install_claude_skills(
 
     skills_root.mkdir(parents=True, exist_ok=True)
 
-    _ensure_symlink(skills_root / "browser-harness", browser_source)
-    _ensure_symlink(skills_root / "macos-computer-use", hermes_source)
+    browser = _find_existing_compatible_skill(
+        skills_root,
+        link_names=("browser", "browser-harness"),
+        expected_name="browser",
+        allow_incompatible_symlink=True,
+    )
+    if browser is None:
+        _ensure_symlink(
+            skills_root / "browser",
+            browser_source,
+            expected_name="browser",
+            replace_incompatible_symlink=True,
+        )
+        browser = _ClaudeSkillResolution(
+            link_name="browser",
+            skill_name="browser",
+            path=browser_source.expanduser().resolve(),
+            source="installed_by_ai_mime",
+        )
+
+    macos_computer_use = _find_existing_compatible_skill(
+        skills_root,
+        link_names=("macos-computer-use",),
+        expected_name="macos-computer-use",
+    )
+    if macos_computer_use is None:
+        _ensure_symlink(
+            skills_root / "macos-computer-use",
+            hermes_source,
+            expected_name="macos-computer-use",
+        )
+        macos_computer_use = _ClaudeSkillResolution(
+            link_name="macos-computer-use",
+            skill_name="macos-computer-use",
+            path=hermes_source.expanduser().resolve(),
+            source="installed_by_ai_mime",
+        )
+
+    _persist_claude_skill_env(
+        env_path=env_path or get_env_path(),
+        browser=browser,
+        macos_computer_use=macos_computer_use,
+    )
 
     return {
-        "browser-harness": skills_root / "browser-harness",
+        "browser": skills_root / browser.link_name,
         "macos-computer-use": skills_root / "macos-computer-use",
     }
 
@@ -212,14 +402,6 @@ def _install_managed_python(
     return False, f"Python {_PYTHON_VERSION} install failed: {detail}"
 
 
-def _skill_link_ok(skills_dir: Path, name: str, target: Path) -> bool:
-    link = skills_dir / name
-    try:
-        return link.is_symlink() and link.resolve() == target.expanduser().resolve()
-    except Exception:
-        return False
-
-
 class _OnboardingWizard(NSObject):
     """Window controller + view builder for the 5-step wizard."""
 
@@ -236,6 +418,9 @@ class _OnboardingWizard(NSObject):
         self._claude_detected = False
         self._claude_status_label = None
         self._install_btn = None
+        self._installing = False
+        self._install_progress = None
+        self._install_progress_label = None
         self._skill_rows = {}
         self._skills_error_label = None
         self._perm_timer = None
@@ -293,6 +478,8 @@ class _OnboardingWizard(NSObject):
         self._claude_key_field = None
         self._claude_status_label = None
         self._install_btn = None
+        self._install_progress = None
+        self._install_progress_label = None
         self._skill_rows = {}
         self._skills_error_label = None
         self._perm_rows = {}
@@ -631,9 +818,27 @@ class _OnboardingWizard(NSObject):
         self._install_btn.setFont_(NSFont.systemFontOfSize_(13))
         self._content.addSubview_(self._install_btn)
 
+        progress_w, progress_h = 260, 12
+        self._install_progress = NSProgressIndicator.alloc().initWithFrame_(
+            NSMakeRect((_W - progress_w) / 2, _H - 428, progress_w, progress_h)
+        )
+        self._install_progress.setStyle_(NSProgressIndicatorBarStyle)
+        self._install_progress.setIndeterminate_(False)
+        self._install_progress.setMinValue_(0.0)
+        self._install_progress.setMaxValue_(100.0)
+        self._install_progress.setDoubleValue_(0.0)
+        self._install_progress.setHidden_(True)
+        self._content.addSubview_(self._install_progress)
+
+        self._install_progress_label = self._add_label(
+            "",
+            x=_M, y=_H - 456, w=_CW, h=18,
+            size=11, align=_CENTER, color=NSColor.secondaryLabelColor(),
+        )
+
         self._skills_error_label = self._add_label(
             "",
-            x=_M, y=92, w=_CW, h=48,
+            x=_M, y=8, w=_CW, h=36,
             size=12, align=_CENTER, color=NSColor.systemRedColor(),
         )
         self._add_continue("Continue", enabled=False)
@@ -689,29 +894,114 @@ class _OnboardingWizard(NSObject):
 
     def _refresh_skill_status(self):
         skills_root = _claude_skills_dir()
-        browser_ok = _skill_link_ok(skills_root, "browser-harness", _browser_harness_skill_dir())
-        hermes_ok = _skill_link_ok(skills_root, "macos-computer-use", _bundled_hermes_skill_dir())
+        try:
+            browser_skill, hermes_skill = _detect_claude_skills(skills_dir=skills_root)
+        except Exception as e:
+            browser_skill = None
+            hermes_skill = None
+            if self._skills_error_label is not None:
+                self._skills_error_label.setStringValue_(str(e))
+        browser_ok = browser_skill is not None
+        hermes_ok = hermes_skill is not None
         python_ok = (not is_frozen()) or get_python_path().exists()
         self._set_skill_status("browser-harness", browser_ok, "Installed" if browser_ok else "Not installed")
         self._set_skill_status("macos-computer-use", hermes_ok, "Installed" if hermes_ok else "Not installed")
         if is_frozen():
             self._set_skill_status("python-3.12", python_ok, "Installed" if python_ok else "Not installed")
+        if browser_skill is not None and hermes_skill is not None:
+            _persist_claude_skill_env(
+                env_path=get_env_path(),
+                browser=browser_skill,
+                macos_computer_use=hermes_skill,
+            )
         if self._continue_btn is not None:
             self._continue_btn.setEnabled_(browser_ok and hermes_ok and python_ok)
 
     # Cocoa selector  installSkills:
     def installSkills_(self, sender):
+        if self._installing:
+            return
+        self._installing = True
         if self._skills_error_label is not None:
             self._skills_error_label.setStringValue_("")
+        self._set_install_progress("Preparing install...", 5)
+        if self._install_btn is not None:
+            self._install_btn.setTitle_("Installing...")
+            self._install_btn.setEnabled_(False)
+        if self._continue_btn is not None:
+            self._continue_btn.setEnabled_(False)
+            self._continue_btn.setHidden_(True)
+
+        thread = threading.Thread(target=self._install_skills_worker, daemon=True)
+        thread.start()
+
+    def _install_skills_worker(self):
+        error = None
         try:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "setInstallProgressFromWorker:",
+                ("Linking Claude skills...", 20),
+                False,
+            )
             _install_claude_skills()
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "setInstallProgressFromWorker:",
+                ("Claude skills linked.", 55 if is_frozen() else 90),
+                False,
+            )
             if is_frozen():
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "setInstallProgressFromWorker:",
+                    (f"Installing Python {_PYTHON_VERSION}...", 70),
+                    False,
+                )
                 ok, msg = _install_managed_python()
                 if not ok:
                     raise RuntimeError(msg)
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "setInstallProgressFromWorker:",
+                    (msg, 92),
+                    False,
+                )
         except Exception as e:
+            error = str(e)
+
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "finishInstallFromWorker:",
+            error,
+            False,
+        )
+
+    # Cocoa selector  setInstallProgressFromWorker:
+    def setInstallProgressFromWorker_(self, payload):
+        label, value = payload
+        self._set_install_progress(label, value)
+
+    def _set_install_progress(self, label, value):
+        if self._install_progress is not None:
+            self._install_progress.setHidden_(False)
+            self._install_progress.setDoubleValue_(float(value))
+        if self._install_progress_label is not None:
+            self._install_progress_label.setStringValue_(label)
+
+    # Cocoa selector  finishInstallFromWorker:
+    def finishInstallFromWorker_(self, error):
+        if error:
             if self._skills_error_label is not None:
-                self._skills_error_label.setStringValue_(str(e))
+                self._skills_error_label.setStringValue_(error)
+            self._set_install_progress("Install failed.", 100)
+        else:
+            self._set_install_progress("Install complete.", 100)
+        self._installing = False
+        if self._install_btn is not None:
+            self._install_btn.setTitle_("Install")
+            self._install_btn.setEnabled_(True)
+        if self._install_progress is not None:
+            self._install_progress.setHidden_(True)
+        if self._install_progress_label is not None:
+            self._install_progress_label.setStringValue_("")
+        if self._continue_btn is not None:
+            self._continue_btn.setHidden_(False)
         self._refresh_skill_status()
 
     # ------------------------------------------------------------------

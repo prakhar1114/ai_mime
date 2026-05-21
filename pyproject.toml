@@ -36,6 +36,12 @@ dependencies = [
     "claude-agent-sdk==0.2.82"
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pyinstaller>=6.0.0",
+]
+
 [project.scripts]
 start_app = "ai_mime.cli:start_app"
 reflect = "ai_mime.cli:reflect"

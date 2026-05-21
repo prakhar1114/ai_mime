@@ -19,11 +19,17 @@ class AppDataPathTests(unittest.TestCase):
     def test_frozen_uv_path_uses_bundled_resource(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            bundled_uv = root / "bin" / "uv"
+            bundled_uv.parent.mkdir(parents=True)
+            bundled_uv.write_text("#!/bin/sh\n", encoding="utf-8")
+            bundled_uv.chmod(0o755)
             old_meipass = getattr(sys, "_MEIPASS", None)
             sys._MEIPASS = str(root)  # type: ignore[attr-defined]
             try:
                 with patch.object(app_data, "is_frozen", return_value=True):
-                    self.assertEqual(app_data.get_uv_path(), root / "bin" / "uv")
+                    uv_path = app_data.get_uv_path()
+                    self.assertEqual(uv_path, bundled_uv)
+                    self.assertTrue(uv_path.is_file())
             finally:
                 if old_meipass is None:
                     delattr(sys, "_MEIPASS")
