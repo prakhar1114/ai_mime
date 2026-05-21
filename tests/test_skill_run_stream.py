@@ -55,6 +55,12 @@ class SkillRunStreamTests(unittest.TestCase):
         app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
         return TestClient(app)
 
+    def _run_dirs(self) -> list[Path]:
+        runs = self.workflow / "runs"
+        if not runs.exists():
+            return []
+        return sorted(path for path in runs.iterdir() if path.is_dir())
+
     def test_skill_run_streams_logs_and_parses_workflow_outputs(self) -> None:
         self._write_run_sh(
             r'''
@@ -89,6 +95,19 @@ class SkillRunStreamTests(unittest.TestCase):
         self.assertIn("stdout:Ada", done["stdout_log"])
         self.assertIn("plain stderr", done["stderr_log"])
         self.assertEqual(done["outputs"], {"greeting": "hello Ada"})
+        self.assertIsInstance(done.get("run_id"), str)
+        self.assertIsInstance(done.get("run_dir"), str)
+
+        run_dirs = self._run_dirs()
+        self.assertEqual(len(run_dirs), 1)
+        self.assertEqual(Path(done["run_dir"]).resolve(), run_dirs[0].resolve())
+        data = (run_dirs[0] / "data.md").read_text(encoding="utf-8")
+        self.assertIn("## Input", data)
+        self.assertIn('"name": "Ada"', data)
+        self.assertIn("## Output", data)
+        self.assertIn('"greeting": "hello Ada"', data)
+        self.assertNotIn("## Error", data)
+        self.assertFalse((run_dirs[0] / "assets").exists())
 
     def test_skill_run_reports_nonzero_exit_with_separate_logs(self) -> None:
         self._write_run_sh(
@@ -110,6 +129,38 @@ class SkillRunStreamTests(unittest.TestCase):
         self.assertEqual(done["exit_code"], 7)
         self.assertIn("before failure", done["stdout_log"])
         self.assertIn("bad selector", done["stderr_log"])
+
+        run_dirs = self._run_dirs()
+        self.assertEqual(len(run_dirs), 1)
+        data = (run_dirs[0] / "data.md").read_text(encoding="utf-8")
+        self.assertIn("## Input", data)
+        self.assertIn("## Output", data)
+        self.assertIn("## Error", data)
+        self.assertIn("run.sh exited with code 7", data)
+
+    def test_skill_run_copies_changed_assets_into_run_folder(self) -> None:
+        self._write_run_sh(
+            r'''
+            mkdir -p ../../outputs/assets/reports
+            echo "asset body" > ../../outputs/assets/reports/result.txt
+            python3 - <<'PY'
+            import json, sys
+            print(json.dumps({"event":"workflow_done","outputs":{"asset":"reports/result.txt"}}), file=sys.stderr, flush=True)
+            PY
+            '''
+        )
+        client = self._client()
+
+        response = client.post(f"/api/tasks/{self.task_id}/skill/run/stream", json={"params": {"name": "Ada"}})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        run_dirs = self._run_dirs()
+        self.assertEqual(len(run_dirs), 1)
+        copied = run_dirs[0] / "assets" / "reports" / "result.txt"
+        self.assertEqual(copied.read_text(encoding="utf-8").strip(), "asset body")
+        data = (run_dirs[0] / "data.md").read_text(encoding="utf-8")
+        self.assertIn("## Assets", data)
+        self.assertIn("[result.txt](assets/reports/result.txt)", data)
 
     def test_skill_run_rejects_non_executable_run_sh(self) -> None:
         self._write_run_sh("echo nope\n", executable=False)

@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import traceback
+import uuid
 from multiprocessing import Event, Process, Queue
 from pathlib import Path
 from typing import Any
@@ -151,6 +152,20 @@ def _find_skill_dir(workflow_dir: Path) -> Path | None:
     return candidates[0]
 
 
+def _find_skill_dir_with_run_sh(workflow_dir: Path) -> Path | None:
+    skills_root = workflow_dir / "skills"
+    if not skills_root.is_dir():
+        return None
+    candidates: list[Path] = []
+    for child in skills_root.iterdir():
+        if child.is_dir() and (child / "run.sh").is_file():
+            candidates.append(child)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
 def _has_reflected_schema(workflow_dir: Path) -> bool:
     return (workflow_dir / "schema.json").exists()
 
@@ -178,6 +193,94 @@ def _parse_skill_progress_event(line: str) -> dict[str, Any] | None:
     if not isinstance(obj, dict) or not isinstance(obj.get("event"), str):
         return None
     return obj
+
+
+def _utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _direct_run_id() -> str:
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
+
+
+def _snapshot_asset_files(assets_dir: Path) -> dict[str, tuple[int, int]]:
+    if not assets_dir.exists() or not assets_dir.is_dir():
+        return {}
+    out: dict[str, tuple[int, int]] = {}
+    for path in assets_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            stat_result = path.stat()
+            rel = path.relative_to(assets_dir).as_posix()
+        except OSError:
+            continue
+        out[rel] = (stat_result.st_size, stat_result.st_mtime_ns)
+    return out
+
+
+def _changed_assets(before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]) -> list[str]:
+    return sorted(rel for rel, marker in after.items() if before.get(rel) != marker)
+
+
+def _copy_run_assets(assets_dir: Path, run_dir: Path, changed: list[str]) -> list[str]:
+    copied: list[str] = []
+    if not changed:
+        return copied
+    run_assets_dir = run_dir / "assets"
+    for rel in changed:
+        src = assets_dir / rel
+        if not src.is_file():
+            continue
+        dst = run_assets_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        copied.append(rel)
+    return copied
+
+
+def _markdown_json(value: Any) -> str:
+    return "```json\n" + json.dumps(value, indent=2, ensure_ascii=False) + "\n```"
+
+
+def _markdown_asset_link(rel: str) -> str:
+    href = "assets/" + rel.replace("\\", "/")
+    escaped_href = href.replace(" ", "%20").replace(")", "%29")
+    label = Path(rel).name or rel
+    return f"- [{label}]({escaped_href})"
+
+
+def _write_direct_run_markdown(
+    *,
+    data_path: Path,
+    run_id: str,
+    status: str,
+    started_at: str,
+    duration_ms: int | None,
+    exit_code: int | None,
+    params: dict[str, Any],
+    outputs: dict[str, Any],
+    asset_rels: list[str],
+    error: str | None = None,
+) -> None:
+    lines = [
+        f"# Run {run_id}",
+        "",
+        f"- Status: {status}",
+        f"- Started: {started_at}",
+    ]
+    if duration_ms is not None:
+        lines.append(f"- Duration: {duration_ms} ms")
+    if exit_code is not None:
+        lines.append(f"- Exit code: {exit_code}")
+    lines.extend(["", "## Input", "", _markdown_json(params), "", "## Output", "", _markdown_json(outputs)])
+    if asset_rels:
+        lines.extend(["", "## Assets", ""])
+        lines.extend(_markdown_asset_link(rel) for rel in asset_rels)
+    if error:
+        lines.extend(["", "## Error", "", error])
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _emit(queue: Any | None, obj: dict[str, Any]) -> None:
@@ -1058,11 +1161,15 @@ def create_app(
         skill_dir_raw = row.get("skill_dir")
         if not isinstance(workflow_dir_raw, str) or not workflow_dir_raw:
             raise HTTPException(status_code=404, detail="Workflow directory not found for task")
-        if not isinstance(skill_dir_raw, str) or not skill_dir_raw:
-            raise HTTPException(status_code=404, detail="Skill is not built for this task yet")
 
         workflow_dir = Path(workflow_dir_raw).resolve()
-        skill_dir = Path(skill_dir_raw).resolve()
+        if isinstance(skill_dir_raw, str) and skill_dir_raw:
+            skill_dir = Path(skill_dir_raw).resolve()
+        else:
+            fallback_skill_dir = _find_skill_dir_with_run_sh(workflow_dir)
+            if fallback_skill_dir is None:
+                raise HTTPException(status_code=404, detail="Skill is not built for this task yet")
+            skill_dir = fallback_skill_dir.resolve()
         _safe_workflow_dir(task_runner.workflows_root, task_id)
         if workflow_dir not in skill_dir.parents:
             raise HTTPException(status_code=400, detail="Invalid skill directory")
@@ -1080,11 +1187,45 @@ def create_app(
 
         def _stream():
             started = time.monotonic()
+            started_at = _utc_timestamp()
+            run_id = _direct_run_id()
+            run_dir = workflow_dir / "runs" / run_id
+            data_path = run_dir / "data.md"
+            assets_dir = workflow_dir / "outputs" / "assets"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            assets_before = _snapshot_asset_files(assets_dir)
             stdout_lines: list[str] = []
             stderr_lines: list[str] = []
             final_outputs: dict[str, Any] = {}
             q: thread_queue.Queue[tuple[str, str | int | None]] = thread_queue.Queue()
             proc: subprocess.Popen[str] | None = None
+
+            def _finish_run_log(
+                *,
+                status: str,
+                exit_code: int | None,
+                error: str | None = None,
+            ) -> list[str]:
+                duration_ms = int((time.monotonic() - started) * 1000)
+                assets_after = _snapshot_asset_files(assets_dir)
+                copied_assets = _copy_run_assets(
+                    assets_dir,
+                    run_dir,
+                    _changed_assets(assets_before, assets_after),
+                )
+                _write_direct_run_markdown(
+                    data_path=data_path,
+                    run_id=run_id,
+                    status=status,
+                    started_at=started_at,
+                    duration_ms=duration_ms,
+                    exit_code=exit_code,
+                    params=params,
+                    outputs=final_outputs,
+                    asset_rels=copied_assets,
+                    error=error,
+                )
+                return copied_assets
 
             def _reader(pipe: Any, source: str) -> None:
                 try:
@@ -1106,6 +1247,8 @@ def create_app(
                     "skill_dir": str(skill_dir),
                     "inputs_path": str(inputs_path),
                     "command": "./run.sh",
+                    "run_id": run_id,
+                    "run_dir": str(run_dir),
                 })
                 try:
                     proc = subprocess.Popen(
@@ -1118,7 +1261,14 @@ def create_app(
                         bufsize=1,
                     )
                 except Exception as e:
-                    yield _sse_event({"event": "error", "message": f"Failed to start run.sh: {e}"})
+                    message = f"Failed to start run.sh: {e}"
+                    _finish_run_log(status="failed", exit_code=None, error=message)
+                    yield _sse_event({
+                        "event": "error",
+                        "message": message,
+                        "run_id": run_id,
+                        "run_dir": str(run_dir),
+                    })
                     return
 
                 assert proc.stdout is not None
@@ -1167,19 +1317,37 @@ def create_app(
                     if proc is not None and proc.poll() is None:
                         proc.terminate()
                     raise
+                except Exception as e:
+                    message = f"Run stream failed: {e}"
+                    _finish_run_log(status="failed", exit_code=None, error=message)
+                    yield _sse_event({
+                        "event": "error",
+                        "message": message,
+                        "run_id": run_id,
+                        "run_dir": str(run_dir),
+                    })
+                    return
                 finally:
                     if proc is not None and proc.poll() is None:
                         proc.terminate()
 
                 duration_ms = int((time.monotonic() - started) * 1000)
+                success = exit_code == 0
+                _finish_run_log(
+                    status="success" if success else "failed",
+                    exit_code=exit_code,
+                    error=None if success else f"run.sh exited with code {exit_code}",
+                )
                 yield _sse_event({
                     "event": "done",
-                    "success": exit_code == 0,
+                    "success": success,
                     "exit_code": exit_code,
                     "duration_ms": duration_ms,
                     "outputs": final_outputs,
                     "stdout_log": "\n".join(stdout_lines),
                     "stderr_log": "\n".join(stderr_lines),
+                    "run_id": run_id,
+                    "run_dir": str(run_dir),
                 })
 
         return StreamingResponse(

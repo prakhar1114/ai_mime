@@ -317,7 +317,7 @@ Skill directory to create or refine: {skill_dir}
 Terminal signal file: {signal_path}
 
 Tools available to you in this environment:
-- Bash — for shelling out (e.g. `browser-harness -c '…'` is on $PATH, plus any CLI you want to call).
+- Bash — for shelling out (e.g. `browser-harness -c '…'`, plus any CLI you want to call).
 - Browser Skill — invoke installed Claude skill `{resolved_browser_skill_name()}`. It drives Chrome via CDP; docs are at {resolved_browser_skill_path()}.
 - Cua-driver skill — use `{resolved_macos_computer_use_skill_name()}` at {resolved_macos_computer_use_skill_path()} for native macOS apps. Slowest; use sparingly.
 - WebSearch / WebFetch — the open web. Use these BEFORE degrading to ui_agent.
@@ -325,6 +325,7 @@ Tools available to you in this environment:
 
 Python runtime contract:
 - The app exports `AI_MIME_PYTHON_PATH` and `AI_MIME_UV_PATH` when it runs or validates a skill.
+- The app exports `AI_MIME_BROWSER_SKILL_PATH` for browser-harness resources. Use it for files under the harness repo; never hardcode a developer checkout path such as `/Users/prakharjain/code/...`.
 - Current resolved default Python: `{default_python_path}`.
 - Current resolved uv: `{uv_path}`.
 - Generated skills may require `requirements.txt` only.
@@ -439,7 +440,7 @@ Phase D — Package as a standard skill
 
 4. Do NOT copy `schema.json` or `optimized_plan.json` into the skill. They're builder-only artifacts.
 
-   Reproducibility: any external tool / MCP server / API you relied on during the build must also be reachable when `run.sh` runs on the end user's machine. If Python packages are needed, list them in `requirements.txt`, create `.venv`, install them with uv during skill build, and document that `run.sh` will use the existing `.venv`. If you used `uvx some-cli`, list the exact invocation in SKILL.md `## Run` and call it the same way in `scripts/run.py` (e.g. `subprocess.run(["uvx", "some-cli", ...])`). Do NOT assume the end user has anything pre-installed beyond `bash`, `curl`, `npx`, `uvx`, `$AI_MIME_PYTHON_PATH`, and an already-created `.venv` when needed.
+   Reproducibility: any external tool / MCP server / API you relied on during the build must also be reachable when `run.sh` runs on the end user's machine. `browser-harness` is available in the AI Mime workflow runtime; use `$AI_MIME_BROWSER_SKILL_PATH` for harness resource files. If Python packages are needed, list them in `requirements.txt`, create `.venv`, install them with uv during skill build, and document that `run.sh` will use the existing `.venv`. If you used `uvx some-cli`, list the exact invocation in SKILL.md `## Run` and call it the same way in `scripts/run.py` (e.g. `subprocess.run(["uvx", "some-cli", ...])`). Do NOT assume the end user has anything pre-installed beyond `bash`, `curl`, `npx`, `uvx`, `browser-harness`, `$AI_MIME_PYTHON_PATH`, and an already-created `.venv` when needed.
 
 5. `scripts/run.py` MUST emit one JSON-line per step transition on stderr so a downstream agent (or human) can read partial progress on failure and resume from the right subtask:
    - `{{"event":"step_start","id":"<step_id>","title":"…"}}`

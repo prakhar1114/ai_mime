@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from ai_mime import onboarding
 
@@ -121,7 +122,7 @@ class OnboardingHelperTests(unittest.TestCase):
                 env_path.read_text(encoding="utf-8"),
             )
 
-    def test_install_claude_skills_accepts_existing_compatible_skills(self) -> None:
+    def test_install_claude_skills_replaces_existing_browser_with_bundled_source(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             skills_dir = root / "home" / ".claude" / "skills"
@@ -147,12 +148,39 @@ class OnboardingHelperTests(unittest.TestCase):
                 env_path=env_path,
             )
 
-            self.assertEqual((skills_dir / "browser").resolve(), existing_browser.resolve())
+            self.assertEqual((skills_dir / "browser").resolve(), bundled_browser.resolve())
             self.assertEqual((skills_dir / "macos-computer-use").resolve(), existing_macos.resolve())
             self.assertEqual(result["browser"], skills_dir / "browser")
             env_text = env_path.read_text(encoding="utf-8")
-            self.assertIn(f"AI_MIME_BROWSER_SKILL_PATH={existing_browser.resolve()}", env_text)
+            self.assertIn(f"AI_MIME_BROWSER_SKILL_PATH={bundled_browser.resolve()}", env_text)
             self.assertIn(f"AI_MIME_MACOS_COMPUTER_USE_SKILL_PATH={existing_macos.resolve()}", env_text)
+
+    def test_frozen_install_claude_skills_prefers_bundled_browser_harness(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            skills_dir = root / "home" / ".claude" / "skills"
+            env_path = root / ".env"
+            existing_browser = root / "existing" / "browser-harness"
+            bundled_browser = root / "bundle" / "browser-harness"
+            bundled_macos = root / "bundle" / "macos-computer-use"
+            for path in (existing_browser, bundled_browser):
+                path.mkdir(parents=True)
+                (path / "SKILL.md").write_text("browser-harness skill\n", encoding="utf-8")
+            bundled_macos.mkdir(parents=True)
+            (bundled_macos / "SKILL.md").write_text("---\nname: macos-computer-use\n---\n", encoding="utf-8")
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "browser").symlink_to(existing_browser, target_is_directory=True)
+
+            with patch.object(onboarding, "is_frozen", return_value=True):
+                onboarding._install_claude_skills(
+                    skills_dir=skills_dir,
+                    browser_harness_skill_dir=bundled_browser,
+                    hermes_skill_dir=bundled_macos,
+                    env_path=env_path,
+                )
+
+            self.assertEqual((skills_dir / "browser").resolve(), bundled_browser.resolve())
+            self.assertIn(f"AI_MIME_BROWSER_SKILL_PATH={bundled_browser.resolve()}", env_path.read_text(encoding="utf-8"))
 
     def test_detect_claude_skills_accepts_legacy_browser_harness_link(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -280,6 +308,67 @@ class OnboardingHelperTests(unittest.TestCase):
 
             self.assertFalse(ok)
             self.assertIn("network unavailable", message)
+
+    def test_install_browser_harness_installs_bundled_source_with_managed_python(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            uv = root / "bin" / "uv"
+            python = root / "python" / "bin" / "python3.12"
+            source = root / "bundle" / "harness" / "browser-harness"
+            tool_dir = root / "tools"
+            tool_bin_dir = root / "bin-tools"
+            uv.parent.mkdir(parents=True)
+            python.parent.mkdir(parents=True)
+            source.mkdir(parents=True)
+            uv.write_text("#!/bin/sh\n", encoding="utf-8")
+            python.write_text("#!/bin/sh\n", encoding="utf-8")
+            (source / "pyproject.toml").write_text("[project]\nname='browser-harness'\n", encoding="utf-8")
+            calls: list[list[str]] = []
+            envs: list[dict[str, str]] = []
+
+            def fake_run(args, **kwargs):
+                calls.append(args)
+                envs.append(kwargs["env"])
+                harness = tool_bin_dir / "browser-harness"
+                harness.write_text("#!/bin/sh\n", encoding="utf-8")
+                harness.chmod(0o755)
+                return SimpleNamespace(returncode=0, stdout="installed browser-harness\n", stderr="")
+
+            with patch.object(onboarding, "get_tool_dir", return_value=tool_dir), patch.object(
+                onboarding, "get_tool_bin_dir", return_value=tool_bin_dir
+            ), patch.object(onboarding, "get_managed_browser_harness_path", return_value=tool_bin_dir / "browser-harness"):
+                ok, message = onboarding._install_browser_harness(
+                    uv_path=uv,
+                    python_path=python,
+                    source_dir=source,
+                    run=fake_run,
+                )
+
+            self.assertTrue(ok)
+            self.assertIn("installed browser-harness", message)
+            self.assertEqual(
+                calls,
+                [[str(uv), "tool", "install", "--force", "--python", str(python), str(source)]],
+            )
+            self.assertEqual(envs[0]["UV_TOOL_DIR"], str(tool_dir))
+            self.assertEqual(envs[0]["UV_TOOL_BIN_DIR"], str(tool_bin_dir))
+
+    def test_install_browser_harness_reports_missing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            uv = root / "uv"
+            python = root / "python"
+            uv.write_text("#!/bin/sh\n", encoding="utf-8")
+            python.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            ok, message = onboarding._install_browser_harness(
+                uv_path=uv,
+                python_path=python,
+                source_dir=root / "missing-browser-harness",
+            )
+
+            self.assertFalse(ok)
+            self.assertIn("browser-harness source not found", message)
 
 
 if __name__ == "__main__":

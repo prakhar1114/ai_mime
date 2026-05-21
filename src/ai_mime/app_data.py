@@ -10,6 +10,8 @@ import shutil
 import sys
 from pathlib import Path
 
+_BROWSER_HARNESS_REL = "harness/browser-harness"
+
 
 # ---------------------------------------------------------------------------
 # Core helpers
@@ -99,6 +101,26 @@ def get_managed_python_install_dir() -> Path:
     return APP_DATA_DIR / "python"
 
 
+def get_tool_dir() -> Path:
+    """Directory where app-owned uv tool environments live."""
+    return APP_DATA_DIR / "tools"
+
+
+def get_tool_bin_dir() -> Path:
+    """Directory where app-owned uv tool executable shims live."""
+    return APP_DATA_DIR / "bin"
+
+
+def get_managed_browser_harness_path() -> Path:
+    """Path to the packaged browser-harness console script."""
+    return get_tool_bin_dir() / "browser-harness"
+
+
+def get_bundled_browser_harness_dir() -> Path:
+    """Resolve the packaged browser-harness source/resources directory."""
+    return get_bundled_resource(_BROWSER_HARNESS_REL)
+
+
 def _find_managed_python(install_dir: Path | None = None) -> Path | None:
     root = install_dir or get_managed_python_install_dir()
     candidates: list[Path] = []
@@ -146,11 +168,18 @@ def get_python_path(workflow_dir: str | os.PathLike[str] | None = None) -> Path:
 
 def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> dict[str, str]:
     """Environment entries exported to generated workflow scripts."""
-    return {
+    env = {
         "AI_MIME_UV_PATH": str(get_uv_path()),
         "AI_MIME_PYTHON_PATH": str(get_python_path(workflow_dir)),
         "UV_PYTHON_INSTALL_DIR": str(get_managed_python_install_dir()),
     }
+    if is_frozen():
+        current_path = os.environ.get("PATH", "")
+        tool_bin = str(get_tool_bin_dir())
+        env["PATH"] = tool_bin if not current_path else f"{tool_bin}{os.pathsep}{current_path}"
+        env["AI_MIME_BROWSER_SKILL_NAME"] = "browser"
+        env["AI_MIME_BROWSER_SKILL_PATH"] = str(get_bundled_browser_harness_dir())
+    return env
 
 
 # ---------------------------------------------------------------------------

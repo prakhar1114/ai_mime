@@ -78,6 +78,35 @@ class AppDataPathTests(unittest.TestCase):
             self.assertIn("AI_MIME_UV_PATH", env)
             self.assertIn("UV_PYTHON_INSTALL_DIR", env)
 
+    def test_frozen_workflow_runtime_env_prepends_tool_bin(self) -> None:
+        with tempfile.TemporaryDirectory() as td, patch.dict("os.environ", {"PATH": "/usr/bin:/bin"}):
+            root = Path(td)
+            managed_python = root / "python" / "cpython-3.12.0-macos-aarch64-none" / "bin" / "python3.12"
+            managed_python.parent.mkdir(parents=True)
+            managed_python.write_text("#!/bin/sh\n", encoding="utf-8")
+            managed_python.chmod(0o755)
+            bundle = root / "bundle"
+            browser_harness = bundle / "harness" / "browser-harness"
+            browser_harness.mkdir(parents=True)
+
+            old_meipass = getattr(sys, "_MEIPASS", None)
+            sys._MEIPASS = str(bundle)  # type: ignore[attr-defined]
+            try:
+                with patch.object(app_data, "APP_DATA_DIR", root), patch.object(
+                    app_data, "is_frozen", return_value=True
+                ):
+                    env = app_data.workflow_runtime_env()
+            finally:
+                if old_meipass is None:
+                    delattr(sys, "_MEIPASS")
+                else:
+                    sys._MEIPASS = old_meipass  # type: ignore[attr-defined]
+
+            self.assertEqual(env["PATH"], f"{root / 'bin'}:/usr/bin:/bin")
+            self.assertEqual(env["AI_MIME_BROWSER_SKILL_NAME"], "browser")
+            self.assertEqual(env["AI_MIME_BROWSER_SKILL_PATH"], str(browser_harness))
+            self.assertNotIn("AI_MIME_BROWSER_HARNESS_BIN", env)
+
 
 if __name__ == "__main__":
     unittest.main()

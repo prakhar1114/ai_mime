@@ -40,11 +40,15 @@ from AppKit import (
 )
 
 from ai_mime.app_data import (
+    get_bundled_browser_harness_dir,
     get_env_path,
+    get_managed_browser_harness_path,
     get_managed_python_install_dir,
     get_onboarding_done_path,
     get_bundled_resource,
     get_python_path,
+    get_tool_bin_dir,
+    get_tool_dir,
     get_uv_path,
     is_frozen,
 )
@@ -63,7 +67,6 @@ _BROWSER_SKILL_NAME_ENV = "AI_MIME_BROWSER_SKILL_NAME"
 _BROWSER_SKILL_PATH_ENV = "AI_MIME_BROWSER_SKILL_PATH"
 _MACOS_CU_SKILL_NAME_ENV = "AI_MIME_MACOS_COMPUTER_USE_SKILL_NAME"
 _MACOS_CU_SKILL_PATH_ENV = "AI_MIME_MACOS_COMPUTER_USE_SKILL_PATH"
-_BROWSER_HARNESS_SKILL_REL = "harness/browser-harness"
 _HERMES_SKILL_REL = "resources/claude-skills/macos-computer-use"
 _PYTHON_VERSION = "3.12"
 _CLAUDE_FALLBACK_DIRS = (
@@ -167,7 +170,7 @@ def _claude_skills_dir(home: Path | None = None) -> Path:
 
 
 def _browser_harness_skill_dir() -> Path:
-    return get_bundled_resource(_BROWSER_HARNESS_SKILL_REL)
+    return get_bundled_browser_harness_dir()
 
 
 def _bundled_hermes_skill_dir() -> Path:
@@ -317,25 +320,18 @@ def _install_claude_skills(
 
     skills_root.mkdir(parents=True, exist_ok=True)
 
-    browser = _find_existing_compatible_skill(
-        skills_root,
-        link_names=("browser", "browser-harness"),
+    _ensure_symlink(
+        skills_root / "browser",
+        browser_source,
         expected_name="browser",
-        allow_incompatible_symlink=True,
+        replace_incompatible_symlink=True,
     )
-    if browser is None:
-        _ensure_symlink(
-            skills_root / "browser",
-            browser_source,
-            expected_name="browser",
-            replace_incompatible_symlink=True,
-        )
-        browser = _ClaudeSkillResolution(
-            link_name="browser",
-            skill_name="browser",
-            path=browser_source.expanduser().resolve(),
-            source="installed_by_ai_mime",
-        )
+    browser = _ClaudeSkillResolution(
+        link_name="browser",
+        skill_name="browser",
+        path=browser_source.expanduser().resolve(),
+        source="installed_by_ai_mime",
+    )
 
     macos_computer_use = _find_existing_compatible_skill(
         skills_root,
@@ -400,6 +396,66 @@ def _install_managed_python(
         return True, detail
     detail = output.splitlines()[-1] if output else f"uv exited {proc.returncode}"
     return False, f"Python {_PYTHON_VERSION} install failed: {detail}"
+
+
+def _install_browser_harness(
+    *,
+    uv_path: Path | None = None,
+    python_path: Path | None = None,
+    source_dir: Path | None = None,
+    run=subprocess.run,
+    timeout: float = 900.0,
+) -> tuple[bool, str]:
+    """Install the bundled browser-harness command as an app-owned uv tool."""
+    uv = uv_path or get_uv_path()
+    python = python_path or get_python_path()
+    source = source_dir or _browser_harness_skill_dir()
+    if not uv.exists():
+        return False, f"uv not found at {uv}"
+    if not python.exists():
+        return False, f"managed Python not found at {python}"
+    if not (source / "pyproject.toml").is_file():
+        return False, f"browser-harness source not found at {source}"
+
+    tool_dir = get_tool_dir()
+    tool_bin_dir = get_tool_bin_dir()
+    tool_dir.mkdir(parents=True, exist_ok=True)
+    tool_bin_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(uv),
+        "tool",
+        "install",
+        "--force",
+        "--python",
+        str(python),
+        str(source),
+    ]
+    try:
+        proc = run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env={
+                **os.environ,
+                "UV_TOOL_DIR": str(tool_dir),
+                "UV_TOOL_BIN_DIR": str(tool_bin_dir),
+            },
+        )
+    except Exception as e:
+        return False, f"browser-harness install failed: {e}"
+
+    output = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0:
+        detail = output.splitlines()[-1] if output else f"uv exited {proc.returncode}"
+        return False, f"browser-harness install failed: {detail}"
+
+    harness = get_managed_browser_harness_path()
+    if not harness.is_file() or not os.access(harness, os.X_OK):
+        return False, f"browser-harness executable not found at {harness}"
+    detail = output.splitlines()[-1] if output else "browser-harness is installed."
+    return True, detail
 
 
 class _OnboardingWizard(NSObject):
@@ -956,6 +1012,19 @@ class _OnboardingWizard(NSObject):
                     False,
                 )
                 ok, msg = _install_managed_python()
+                if not ok:
+                    raise RuntimeError(msg)
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "setInstallProgressFromWorker:",
+                    (msg, 82),
+                    False,
+                )
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "setInstallProgressFromWorker:",
+                    ("Installing browser-harness...", 88),
+                    False,
+                )
+                ok, msg = _install_browser_harness()
                 if not ok:
                     raise RuntimeError(msg)
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
