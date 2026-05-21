@@ -22,6 +22,7 @@ from claude_agent_sdk import (
 )
 
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
+from ai_mime.debug_log import log as debug_log
 
 DEFAULT_ALLOWED_TOOLS = [
     "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "Bash", "Skill",
@@ -36,6 +37,15 @@ CanUseToolCallback = Callable[[str, dict[str, Any], Any], Awaitable[dict[str, An
 _READ_FILE_TOOLS = {"Read", "NotebookRead", "Glob", "Grep"}
 _WRITE_FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 _SANDBOX_MATCHER = "Read|NotebookRead|Glob|Grep|Write|Edit|MultiEdit|NotebookEdit"
+_CLAUDE_SDK_STDERR_PREFIX = "[ai-mime claude-sdk stderr]"
+
+
+def _log_claude_sdk_stderr(data: str) -> None:
+    text = str(data or "")
+    if not text:
+        return
+    for line in text.splitlines() or [text]:
+        debug_log(f"{_CLAUDE_SDK_STDERR_PREFIX} {line}")
 
 
 def _within_roots(target: str, roots: list[Path]) -> bool:
@@ -196,6 +206,7 @@ def _options_kwargs_for(
         "cwd": str(request.workspace_dir),
         "tools": available,
         "allowed_tools": list(auto_allow_tools) if auto_allow_tools is not None else list(available),
+        "stderr": _log_claude_sdk_stderr,
         "settings": json.dumps(
             {
                 "autoCompactEnabled": True,
