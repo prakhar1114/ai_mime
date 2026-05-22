@@ -28,7 +28,7 @@ def test_replay_ui_uses_real_agent_transport() -> None:
     assert "stdoutTail" in js
     assert "stderrTail" in js
     assert "references/fallback_plan.md" in js
-    assert "macos-computer-use UI agent skill" in js
+    assert "$AI_MIME_UI_AGENT_CMD" in js
     assert "First triage the failure before editing anything" in js
     assert "Closed tabs" in js
     assert "Restore or continue the expected UI state first" in js

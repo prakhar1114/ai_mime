@@ -19,8 +19,6 @@ from ai_mime.agent_runner.models import (
     FilesystemAccessEntry,
     resolved_browser_skill_name,
     resolved_browser_skill_path,
-    resolved_macos_computer_use_skill_name,
-    resolved_macos_computer_use_skill_path,
 )
 from ai_mime.app_data import (
     get_managed_browser_harness_path,
@@ -84,8 +82,8 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 def _resolved_skill_context() -> str:
     return (
         f"Browser skill: `{resolved_browser_skill_name()}` at {resolved_browser_skill_path()}\n"
-        f"macOS computer-use skill: `{resolved_macos_computer_use_skill_name()}` "
-        f"at {resolved_macos_computer_use_skill_path()}"
+        "UI agent: `run_computer_use_task` via `$AI_MIME_UI_AGENT_CMD` — drives native macOS "
+        "apps through the cua MCP server (screenshot + click). Native-UI fallback; slowest."
     )
 
 
@@ -326,7 +324,7 @@ Terminal signal file: {signal_path}
 Tools available to you in this environment:
 - Bash — for shelling out through app-managed tools only (e.g. `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`).
 - Browser Skill — invoke installed Claude skill `{resolved_browser_skill_name()}`. It drives Chrome via CDP; docs are at {resolved_browser_skill_path()}.
-- Cua-driver skill — use `{resolved_macos_computer_use_skill_name()}` at {resolved_macos_computer_use_skill_path()} for native macOS apps. Slowest; use sparingly.
+- UI agent — last-resort native-macOS control via the cua MCP server (screenshot + click). Call `"$AI_MIME_UI_AGENT_CMD" "<task>" --schema '<json>' --json`. Give it DETAILED, ordered step-by-step instructions — which app, the exact targets/values for each step, and how to verify success — not a vague one-liner; and pass `--schema` describing the exact JSON you need back. Read stdout: `result_json` is the structured result and `logs` is the step-by-step trace of what it actually did. If `status != "success"`, use `logs` (where it stopped + the remaining steps it reported) to retry or finish the step another way. Slowest; use sparingly.
 - WebSearch / WebFetch — the open web. Use these BEFORE degrading to ui_agent.
 - Read / Write / Edit / MultiEdit / Glob / Grep — file ops, scoped to readable/writable roots.
 
@@ -352,7 +350,7 @@ You can ask the user clarifying questions in chat when the answer affects whethe
 Executor model — each step in `optimized_plan.steps[].executor` is one of:
 - `script`: pure deterministic Python (file IO, HTTP, parsing, library calls, shelling out via subprocess). No UI. May call `ask_gemini` for stochastic JSON-schema decisions. **This is the preferred path.**
 - `browser_harness`: composable Chrome CDP script via the `{resolved_browser_skill_name()}` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. May also call `ask_gemini` for in-page judgment.
-- `ui_agent`: screenshot+click loop via `{resolved_macos_computer_use_skill_name()}`. Last resort for native UIs or hostile DOMs.
+- `ui_agent`: screenshot+click loop via the UI agent (`run_computer_use_task` / `"$AI_MIME_UI_AGENT_CMD"`), which drives the Mac through the cua MCP server. Last resort for native UIs or hostile DOMs.
 
 `ask_gemini` (`from browser_harness.helpers import ask_gemini`) is the stochasticity escape hatch for *both* `script` and `browser_harness` steps — do not push a step to `ui_agent` just because it has one fuzzy decision. Give `ask_gemini` an explicit JSON schema and branch deterministically on its output.
 
@@ -389,7 +387,7 @@ For each `optimized_plan.steps[i]` in order. Work autonomously, verify internall
 2. Match `step.executor` to the execution shape:
    - `script` → Python via Bash (subprocess / requests / pdfplumber / file IO). `ask_gemini` for stochastic JSON decisions.
    - `browser_harness` → Chrome via the `{resolved_browser_skill_name()}` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. `ask_gemini` for in-page judgment.
-   - `ui_agent` → `{resolved_macos_computer_use_skill_name()}` skill (screenshot + click).
+   - `ui_agent` → the UI agent: `"$AI_MIME_UI_AGENT_CMD" "<task>" [--schema '<json>'] --json` (screenshot + click via the cua MCP server); parse the JSON line from stdout.
    If you swap `ui_agent` → `browser_harness` because browser-harness can handle the target, update `optimized_plan.json` step's `executor` to match. Mention the user-visible effect only if it matters, e.g. "I found a more reliable way to do this in the browser."
 3. Execute against the live environment using `agent/confirmed_inputs.json`. Verify success (screenshots / page_info / shell output) before declaring the step done.
 4. Append durable findings to `agent/learned_notes.md` — selectors, URLs, payload shapes, traps. Map, not diary.
@@ -400,7 +398,7 @@ For each `optimized_plan.steps[i]` in order. Work autonomously, verify internall
 After the last step verifies, announce in one line: "All <N> steps complete end-to-end."
 
 Phase C — Synthesize and validate `scripts/run.py`
-1. Synthesize `{skill_dir}/scripts/run.py` from `agent/learned_notes.md`. Per-step code shape matches its `executor`: `script` → inline Python; `browser_harness` → shell out to `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'` (or import helpers directly); `ui_agent` → drive `{resolved_macos_computer_use_skill_name()}`.
+1. Synthesize `{skill_dir}/scripts/run.py` from `agent/learned_notes.md`. Per-step code shape matches its `executor`: `script` → inline Python; `browser_harness` → shell out to `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'` (or import helpers directly); `ui_agent` → shell out to `"$AI_MIME_UI_AGENT_CMD" "<task>" [--schema '<json>'] --json` and parse `result_json` from stdout.
 2. Contract:
    - Invocation: `"$AI_MIME_PYTHON_PATH" scripts/run.py --inputs-json /path/to/inputs.json` or `./run.sh /path/to/inputs.json`. Read all inputs up front, no prompts.
    - For irreducible judgment, call `ask_gemini` with an explicit JSON schema. Pattern: `from browser_harness.helpers import ask_gemini; pick = ask_gemini(prompt, schema={{"type":"object","properties":{{"id":{{"type":["string","null"]}},"reason":{{"type":"string"}}}},"required":["id","reason"]}})`. Branch deterministically on the returned dict. Document each call site in `SKILL.md`.
@@ -443,7 +441,7 @@ Phase D — Package as a standard skill
        ```
    - `inputs/inputs.example.json`     — copy of `agent/confirmed_inputs.json`. Re-runnable as-is.
    - `inputs/inputs.template.json`    — same keys as example, but each value is `"<FILL IN: <one-line description>>"` (or the input's recorded default).
-   - `references/fallback_plan.md`    — REQUIRED. Synthesized from `schema.plan.subtasks[]` + matching `optimized_plan.steps[]`. Per subtask: heading, one-line `Intent:`, the recorded sub-steps as bullets, `Notes:` with selectors / URLs / traps learned in Phase B. A human or `{resolved_macos_computer_use_skill_name()}` agent must be able to finish the task from this file alone if `run.sh` fails.
+   - `references/fallback_plan.md`    — REQUIRED. Synthesized from `schema.plan.subtasks[]` + matching `optimized_plan.steps[]`. Per subtask: heading, one-line `Intent:`, the recorded sub-steps as bullets, `Notes:` with selectors / URLs / traps learned in Phase B. A human or the UI agent must be able to finish the task from this file alone if `run.sh` fails.
 
 3. Free-form `references/`. Beyond `fallback_plan.md`, write whatever notes help a future runner — domain notes, per-subtask notes, selectors, payload shapes. You decide based on what was actually useful in Phase B. Don't force everything into one `learned_notes.md`.
 
@@ -510,7 +508,7 @@ Core behavior:
 - For task variants, use the script and skill context to automate the new task directly. You may create temporary input JSON files or run helper commands, but keep durable outputs under allowed output paths.
 - If `./run.sh` fails or cannot cover the remaining task, triage before editing: classify the failure as likely environment/user-state issue, input issue, transient UI issue, or skill defect. Closed tabs, missing windows, changed focus, logged-out browser state, interrupted app state, and one-off UI disruption are recovery work, not skill repair.
 - Decide from the logs, script, skill docs, and `references/fallback_plan.md` how to complete the task. You may continue manually, restore expected UI state, rerun only the remaining work, or complete the task directly from the fallback plan.
-- Use the `{resolved_macos_computer_use_skill_name()}` skill as the UI-agent fallback for unknown UI-only parts. Prefer script/browser approaches when they are clear, but do not stop just because the original script failed.
+- Use the UI agent (`run_computer_use_task` via `"$AI_MIME_UI_AGENT_CMD" "<task>" --schema '<json>' --json`) as the UI-agent fallback for unknown UI-only parts. Give it detailed step-by-step instructions and a `--schema` for the result you need, then read back `result_json` and the `logs` trace; if it doesn't fully succeed, use `logs` to see where it stopped and finish from there. Prefer script/browser approaches when they are clear, but do not stop just because the original script failed.
 - You may append durable domain findings to `{replay_notes_path}` or `{domain_notes_path}`. Keep these notes factual: selectors, URLs, payload shapes, input gotchas, and observed domain behavior.
 
 Hard boundaries:

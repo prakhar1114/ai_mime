@@ -41,7 +41,6 @@ APP_NAME="AI Mime"
 APP_BUNDLE="$REPO_ROOT/dist/$APP_NAME.app"
 DMG_PATH="$REPO_ROOT/dist/$APP_NAME.dmg"
 ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
-HERMES_SKILL="$REPO_ROOT/resources/claude-skills/macos-computer-use/SKILL.md"
 BROWSER_HARNESS_SKILL="$REPO_ROOT/harness/browser-harness/SKILL.md"
 UV_BINARY_PATH="$(command -v uv || true)"
 
@@ -55,7 +54,7 @@ export UV_BINARY_PATH
 # 0. Validate bundled onboarding resources
 # ---------------------------------------------------------------------------
 echo "==> Checking bundled onboarding resources …"
-for resource in "$HERMES_SKILL" "$BROWSER_HARNESS_SKILL"; do
+for resource in "$BROWSER_HARNESS_SKILL"; do
   if [[ ! -f "$resource" ]]; then
     echo "ERROR: Required onboarding resource missing: $resource"
     exit 1

@@ -781,7 +781,7 @@
       ``,
       `First validate or normalize the inputs. Prefer running ./run.sh with an inputs JSON file because it is cheap, end-to-end, and emits rich progress logs. Use the logs to report progress and results.`,
       ``,
-      `If ./run.sh fails, read the complete skill package including references/fallback_plan.md, use the macos-computer-use UI agent skill for unknown UI-only parts, and decide from the logs and skill context how to complete the task.`,
+      `If ./run.sh fails, read the complete skill package including references/fallback_plan.md, use the UI agent ("$AI_MIME_UI_AGENT_CMD") for unknown UI-only parts, and decide from the logs and skill context how to complete the task.`,
     ].join("\n");
   }
 
@@ -820,7 +820,7 @@
       ``,
       `Read the complete skill package before deciding what to do: SKILL.md, run.sh, scripts/run.py, inputs/inputs.example.json, inputs/inputs.template.json, all files under references/, and especially references/fallback_plan.md.`,
       `First triage the failure before editing anything: decide whether this is an environment/user-state issue, input issue, transient UI issue, or actual skill defect. Closed tabs, missing windows, changed focus, logged-out browser state, interrupted app state, and one-off UI disruption should be recovered from without repairing the skill.`,
-      `Use the macos-computer-use UI agent skill for unknown UI-only parts. Restore or continue the expected UI state first and complete the task from the fallback plan and logs when possible.`,
+      `Use the UI agent ("$AI_MIME_UI_AGENT_CMD") for unknown UI-only parts. Restore or continue the expected UI state first and complete the task from the fallback plan and logs when possible.`,
       `Only rewrite run.sh, scripts/run.py, or other skill files if the logs/script show a real skill defect that would likely fail again from a normal starting state. Prioritize completing this run and reporting the final result.`,
     ].join("\n");
   }

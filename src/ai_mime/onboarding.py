@@ -67,9 +67,6 @@ _CENTER = 1       # NSTextAlignmentCenter
 _ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 _BROWSER_SKILL_NAME_ENV = "AI_MIME_BROWSER_SKILL_NAME"
 _BROWSER_SKILL_PATH_ENV = "AI_MIME_BROWSER_SKILL_PATH"
-_MACOS_CU_SKILL_NAME_ENV = "AI_MIME_MACOS_COMPUTER_USE_SKILL_NAME"
-_MACOS_CU_SKILL_PATH_ENV = "AI_MIME_MACOS_COMPUTER_USE_SKILL_PATH"
-_HERMES_SKILL_REL = "resources/claude-skills/macos-computer-use"
 _PYTHON_VERSION = "3.12"
 _CLAUDE_FALLBACK_DIRS = (
     ".local/bin",
@@ -175,10 +172,6 @@ def _browser_harness_skill_dir() -> Path:
     return get_bundled_browser_harness_dir()
 
 
-def _bundled_hermes_skill_dir() -> Path:
-    return get_bundled_resource(_HERMES_SKILL_REL)
-
-
 def _read_skill_name(skill_dir: Path) -> str | None:
     try:
         text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
@@ -278,47 +271,34 @@ def _persist_claude_skill_env(
     *,
     env_path: Path,
     browser: _ClaudeSkillResolution,
-    macos_computer_use: _ClaudeSkillResolution,
 ) -> None:
     _merge_env_var(env_path, _BROWSER_SKILL_NAME_ENV, browser.skill_name)
     _merge_env_var(env_path, _BROWSER_SKILL_PATH_ENV, str(browser.path))
-    _merge_env_var(env_path, _MACOS_CU_SKILL_NAME_ENV, macos_computer_use.skill_name)
-    _merge_env_var(env_path, _MACOS_CU_SKILL_PATH_ENV, str(macos_computer_use.path))
     os.environ[_BROWSER_SKILL_NAME_ENV] = browser.skill_name
     os.environ[_BROWSER_SKILL_PATH_ENV] = str(browser.path)
-    os.environ[_MACOS_CU_SKILL_NAME_ENV] = macos_computer_use.skill_name
-    os.environ[_MACOS_CU_SKILL_PATH_ENV] = str(macos_computer_use.path)
 
 
 def _detect_claude_skills(
     *,
     skills_dir: Path | None = None,
-) -> tuple[_ClaudeSkillResolution | None, _ClaudeSkillResolution | None]:
+) -> _ClaudeSkillResolution | None:
     skills_root = skills_dir or _claude_skills_dir()
-    browser = _find_existing_compatible_skill(
+    return _find_existing_compatible_skill(
         skills_root,
         link_names=("browser", "browser-harness"),
         expected_name="browser",
     )
-    macos_computer_use = _find_existing_compatible_skill(
-        skills_root,
-        link_names=("macos-computer-use",),
-        expected_name="macos-computer-use",
-    )
-    return browser, macos_computer_use
 
 
 def _install_claude_skills(
     *,
     skills_dir: Path | None = None,
     browser_harness_skill_dir: Path | None = None,
-    hermes_skill_dir: Path | None = None,
     env_path: Path | None = None,
 ) -> dict[str, Path]:
     """Install AI Mime's Claude skills by linking bundled/repo sources."""
     skills_root = skills_dir or _claude_skills_dir()
     browser_source = browser_harness_skill_dir or _browser_harness_skill_dir()
-    hermes_source = hermes_skill_dir or _bundled_hermes_skill_dir()
 
     skills_root.mkdir(parents=True, exist_ok=True)
 
@@ -335,33 +315,13 @@ def _install_claude_skills(
         source="installed_by_ai_mime",
     )
 
-    macos_computer_use = _find_existing_compatible_skill(
-        skills_root,
-        link_names=("macos-computer-use",),
-        expected_name="macos-computer-use",
-    )
-    if macos_computer_use is None:
-        _ensure_symlink(
-            skills_root / "macos-computer-use",
-            hermes_source,
-            expected_name="macos-computer-use",
-        )
-        macos_computer_use = _ClaudeSkillResolution(
-            link_name="macos-computer-use",
-            skill_name="macos-computer-use",
-            path=hermes_source.expanduser().resolve(),
-            source="installed_by_ai_mime",
-        )
-
     _persist_claude_skill_env(
         env_path=env_path or get_env_path(),
         browser=browser,
-        macos_computer_use=macos_computer_use,
     )
 
     return {
         "browser": skills_root / browser.link_name,
-        "macos-computer-use": skills_root / "macos-computer-use",
     }
 
 
@@ -874,9 +834,8 @@ class _OnboardingWizard(NSObject):
         )
 
         self._add_skill_row("browser-harness", "Repo browser-harness skill", _H - 230)
-        self._add_skill_row("macos-computer-use", "Bundled Hermes macOS computer-use skill", _H - 300)
         if is_frozen():
-            self._add_skill_row("python-3.12", "Managed Python for workflow virtualenvs", _H - 350)
+            self._add_skill_row("python-3.12", "Managed Python for workflow virtualenvs", _H - 300)
 
         install_btn_w, install_btn_h = 150, 34
         self._install_btn = NSButton.alloc().initWithFrame_(
@@ -967,27 +926,23 @@ class _OnboardingWizard(NSObject):
     def _refresh_skill_status(self):
         skills_root = _claude_skills_dir()
         try:
-            browser_skill, hermes_skill = _detect_claude_skills(skills_dir=skills_root)
+            browser_skill = _detect_claude_skills(skills_dir=skills_root)
         except Exception as e:
             browser_skill = None
-            hermes_skill = None
             if self._skills_error_label is not None:
                 self._skills_error_label.setStringValue_(str(e))
         browser_ok = browser_skill is not None
-        hermes_ok = hermes_skill is not None
         python_ok = (not is_frozen()) or get_python_path().exists()
         self._set_skill_status("browser-harness", browser_ok, "Installed" if browser_ok else "Not installed")
-        self._set_skill_status("macos-computer-use", hermes_ok, "Installed" if hermes_ok else "Not installed")
         if is_frozen():
             self._set_skill_status("python-3.12", python_ok, "Installed" if python_ok else "Not installed")
-        if browser_skill is not None and hermes_skill is not None:
+        if browser_skill is not None:
             _persist_claude_skill_env(
                 env_path=get_env_path(),
                 browser=browser_skill,
-                macos_computer_use=hermes_skill,
             )
         if self._continue_btn is not None:
-            self._continue_btn.setEnabled_(browser_ok and hermes_ok and python_ok)
+            self._continue_btn.setEnabled_(browser_ok and python_ok)
 
     # Cocoa selector  installSkills:
     def installSkills_(self, sender):

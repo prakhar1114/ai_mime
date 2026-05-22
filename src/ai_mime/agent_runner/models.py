@@ -26,11 +26,8 @@ class FilesystemAccessEntry(BaseModel):
 
 
 _BROWSER_HARNESS_SKILL_REL = "harness/browser-harness"
-_MACOS_COMPUTER_USE_SKILL_REL = "resources/claude-skills/macos-computer-use"
 _BROWSER_SKILL_NAME_ENV = "AI_MIME_BROWSER_SKILL_NAME"
 _BROWSER_SKILL_PATH_ENV = "AI_MIME_BROWSER_SKILL_PATH"
-_MACOS_CU_SKILL_NAME_ENV = "AI_MIME_MACOS_COMPUTER_USE_SKILL_NAME"
-_MACOS_CU_SKILL_PATH_ENV = "AI_MIME_MACOS_COMPUTER_USE_SKILL_PATH"
 
 
 def _skill_path_from_env(key: str, fallback: Path) -> Path:
@@ -50,22 +47,10 @@ def resolved_browser_skill_path() -> Path:
     return _skill_path_from_env(_BROWSER_SKILL_PATH_ENV, get_bundled_resource(_BROWSER_HARNESS_SKILL_REL))
 
 
-def resolved_macos_computer_use_skill_name() -> str:
-    return (os.environ.get(_MACOS_CU_SKILL_NAME_ENV) or "macos-computer-use").strip() or "macos-computer-use"
-
-
-def resolved_macos_computer_use_skill_path() -> Path:
-    return _skill_path_from_env(
-        _MACOS_CU_SKILL_PATH_ENV,
-        get_bundled_resource(_MACOS_COMPUTER_USE_SKILL_REL),
-    )
-
-
 def _default_readable_roots() -> tuple[Path, ...]:
     return (
         Path("/tmp"),
         resolved_browser_skill_path(),
-        resolved_macos_computer_use_skill_path(),
     )
 
 
@@ -113,5 +98,7 @@ class AgentRunResult(BaseModel):
     status: AgentRunStatus
     session_id: str
     summary: str
+    result_json: dict[str, Any] | None = None
+    logs: list[str] = Field(default_factory=list)
     outputs_path: Path | None = None
     error: str | None = None
