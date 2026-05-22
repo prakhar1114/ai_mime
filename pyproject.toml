@@ -10,7 +10,7 @@ authors = [
     {name = "Prakhar Jain", email = "prakharjain1114@gmail.com"},
 ]
 readme = "README.md"
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "rumps>=0.4.0",
     "pynput>=1.7.6",
@@ -33,7 +33,8 @@ dependencies = [
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
     "lmnr[all]",
-    "claude-agent-sdk==0.2.82"
+    "claude-agent-sdk==0.2.82",
+    "cua-computer-server[mcp]>=0.1.25"
 ]
 
 [dependency-groups]
