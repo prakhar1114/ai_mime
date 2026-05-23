@@ -301,75 +301,86 @@ class AgentRunnerTests(unittest.TestCase):
             run_agent_task(request, adapter)
 
             prompt = adapter.prompt or ""
+            # Verify system prompt refers to instructions directory and sequence files
+            self.assertIn("instructions/build_skill", prompt)
+            self.assertIn("00_rules.md", prompt)
+            self.assertIn("01_phase_a_confirm_inputs.md", prompt)
+            self.assertIn("CRITICAL: Do NOT read all instruction files at once", prompt)
+
+            # Read the files in the instructions folder and verify they contain the detailed protocols
+            instructions_dir = Path(__file__).parent.parent / "src" / "ai_mime" / "agent_runner" / "instructions" / "build_skill"
+            files_content = ""
+            for p in instructions_dir.glob("*.md"):
+                files_content += p.read_text(encoding="utf-8") + "\n"
+
             # Core protocol elements
-            self.assertIn("build_signal.json", prompt)
-            self.assertIn("skill_ready", prompt)
-            self.assertIn("skill_unbuildable", prompt)
-            self.assertIn("ask_gemini", prompt)
+            self.assertIn("build_signal.json", files_content)
+            self.assertIn("skill_ready", files_content)
+            self.assertIn("skill_unbuildable", files_content)
+            self.assertIn("ask_gemini", files_content)
             # Executor taxonomy
-            self.assertIn("script", prompt)
-            self.assertIn("browser_harness", prompt)
-            self.assertIn("ui_agent", prompt)
+            self.assertIn("script", files_content)
+            self.assertIn("browser_harness", files_content)
+            self.assertIn("ui_agent", files_content)
             # Four-phase protocol
-            self.assertIn("Phase A", prompt)
-            self.assertIn("Phase B", prompt)
-            self.assertIn("Phase C", prompt)
-            self.assertIn("Phase D", prompt)
+            self.assertIn("Phase A", files_content)
+            self.assertIn("Phase B", files_content)
+            self.assertIn("Phase C", files_content)
+            self.assertIn("Phase D", files_content)
             # Non-technical, autonomy-first chat behavior
-            self.assertIn("The end user is not technical", prompt)
-            self.assertIn("Ask only important questions", prompt)
-            self.assertIn("Do NOT ask for confirmation before each step", prompt)
-            self.assertIn("plain-language", prompt)
-            self.assertIn("expected outputs", prompt)
-            self.assertIn("very high-level", prompt)
-            self.assertIn("do not ask for packaging approval", prompt)
-            self.assertIn("Do not pause after successful individual steps", prompt)
-            self.assertNotIn("Continue?", prompt)
-            self.assertNotIn("Ready to package and create the skill", prompt)
-            self.assertNotIn("advance only after explicit user OK", prompt)
+            self.assertIn("The end user is not technical", files_content)
+            self.assertIn("Ask only important questions", files_content)
+            self.assertIn("Do NOT ask for confirmation before each step", files_content)
+            self.assertIn("plain-language", files_content)
+            self.assertIn("expected outputs", files_content)
+            self.assertIn("very high-level", files_content)
+            self.assertIn("do not ask for packaging approval", files_content)
+            self.assertIn("Do not pause after successful individual steps", files_content)
+            self.assertNotIn("Continue?", files_content)
+            self.assertNotIn("Ready to package and create the skill", files_content)
+            self.assertNotIn("advance only after explicit user OK", files_content)
             # Inputs editing
-            self.assertIn("task_params", prompt)
-            self.assertIn("inputs[]", prompt)
+            self.assertIn("inputs[]", files_content)
             # Side effect protocol
-            self.assertIn("side_effects.md", prompt)
+            self.assertIn("side_effects.md", files_content)
             # File contract
-            self.assertIn("scripts/run.py", prompt)
-            self.assertIn("run.sh", prompt)
-            self.assertIn("inputs/inputs.example.json", prompt)
-            self.assertIn("inputs/inputs.template.json", prompt)
-            self.assertIn("references/fallback_plan.md", prompt)
-            self.assertIn("skill-creator", prompt)
+            self.assertIn("scripts/run.py", files_content)
+            self.assertIn("run.sh", files_content)
+            self.assertIn("inputs/inputs.example.json", files_content)
+            self.assertIn("inputs/inputs.template.json", files_content)
+            self.assertIn("references/fallback_plan.md", files_content)
+            self.assertIn("skill-creator", files_content)
             # Internet & external services guidance
-            self.assertIn("WebSearch", prompt)
-            self.assertIn("WebFetch", prompt)
-            self.assertIn("Do not depend on `uvx`, `npx`", prompt)
-            self.assertNotIn("npx --yes", prompt)
-            self.assertIn("AI_MIME_PYTHON_PATH", prompt)
-            self.assertIn("AI_MIME_UV_PATH", prompt)
-            self.assertIn("AI_MIME_BROWSER_HARNESS_BIN", prompt)
-            self.assertIn('"$AI_MIME_BROWSER_HARNESS_BIN" -c', prompt)
-            self.assertIn("requirements.txt", prompt)
-            self.assertIn(".venv/bin/python", prompt)
-            self.assertIn("SKILL.md` `## Run` must document the Python runtime contract", prompt)
-            self.assertIn("skill `.venv/bin/python`", prompt)
-            self.assertIn("workflow `.venv/bin/python`", prompt)
-            self.assertIn("then required `$AI_MIME_PYTHON_PATH`", prompt)
-            self.assertIn('"$AI_MIME_UV_PATH" venv .venv --python "$AI_MIME_PYTHON_PATH"', prompt)
+            self.assertIn("WebSearch", files_content)
+            self.assertIn("WebFetch", files_content)
+            self.assertIn("Do not depend on `uvx`, `npx`", files_content)
+            self.assertNotIn("npx --yes", files_content)
+            self.assertIn("AI_MIME_PYTHON_PATH", files_content)
+            self.assertIn("AI_MIME_UV_PATH", files_content)
+            self.assertIn("AI_MIME_BROWSER_HARNESS_BIN", files_content)
+            self.assertIn('"$AI_MIME_BROWSER_HARNESS_BIN" -c', files_content)
+            self.assertIn("requirements.txt", files_content)
+            self.assertIn(".venv/bin/python", files_content)
+            self.assertIn("SKILL.md` `## Run` must document the Python runtime contract", files_content)
+            self.assertIn("skill `.venv/bin/python`", files_content)
+            self.assertIn("workflow `.venv/bin/python`", files_content)
+            self.assertIn("then required `$AI_MIME_PYTHON_PATH`", files_content)
+            self.assertIn('"$AI_MIME_UV_PATH" venv .venv --python "$AI_MIME_PYTHON_PATH"', files_content)
             self.assertIn(
                 '"$AI_MIME_UV_PATH" pip install -r requirements.txt --python .venv/bin/python',
-                prompt,
+                files_content,
             )
-            self.assertIn('PYTHON="${AI_MIME_PYTHON_PATH:?AI_MIME_PYTHON_PATH is required}"', prompt)
-            self.assertNotIn('PYTHON="${AI_MIME_PYTHON_PATH:-python3}"', prompt)
-            self.assertIn("Runtime does not create or repair `.venv`", prompt)
+            self.assertIn('PYTHON="${AI_MIME_PYTHON_PATH:?AI_MIME_PYTHON_PATH is required}"', files_content)
+            self.assertNotIn('PYTHON="${AI_MIME_PYTHON_PATH:-python3}"', files_content)
+            self.assertIn("Runtime does not create or repair `.venv`", files_content)
             # Structured log contract
-            self.assertIn("step_start", prompt)
-            self.assertIn("step_done", prompt)
-            self.assertIn("step_failed", prompt)
-            self.assertIn("workflow_done", prompt)
+            self.assertIn("step_start", files_content)
+            self.assertIn("step_done", files_content)
+            self.assertIn("step_failed", files_content)
+            self.assertIn("workflow_done", files_content)
             # Skill must not ship internal builder artifacts
-            self.assertNotIn("references/schema.json", prompt)
-            self.assertNotIn("references/optimized_plan.json", prompt)
+            self.assertNotIn("references/schema.json", files_content)
+            self.assertNotIn("references/optimized_plan.json", files_content)
             # schema/optimized_plan are writable for input edits
             writable = {str(p) for p in request.writable_roots}
             self.assertIn(str(workflow_dir / "schema.json"), writable)
@@ -444,29 +455,35 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertNotIn(str(workflow_dir / "optimized_plan.json"), writable)
 
             prompt = adapter.prompt or ""
-            self.assertIn("replay execution agent", prompt)
-            self.assertIn("SKILL.md", prompt)
-            self.assertIn("run.sh", prompt)
-            self.assertIn("scripts/run.py", prompt)
-            self.assertIn("inputs/inputs.template.json", prompt)
-            self.assertIn("references/fallback_plan.md", prompt)
-            self.assertIn("Validate and normalize", prompt)
-            self.assertIn("./run.sh <inputs.json>", prompt)
-            self.assertIn("task variants", prompt)
-            self.assertIn("complete the task", prompt)
-            self.assertIn("$AI_MIME_UI_AGENT_CMD", prompt)
-            self.assertIn("triage before editing", prompt)
-            self.assertIn("Closed tabs", prompt)
-            self.assertIn("missing windows", prompt)
-            self.assertIn("one-off UI disruption", prompt)
-            self.assertIn("replay_notes.md", prompt)
-            self.assertIn("domain_notes.md", prompt)
-            self.assertIn("Targeted edits", prompt)
-            self.assertIn("Only edit the skill when needed", prompt)
-            self.assertIn("repeated deterministic failure", prompt)
-            self.assertNotIn("Do NOT switch to skill-build mode", prompt)
-            self.assertNotIn("needs skill healing", prompt)
-            self.assertNotIn("AI_MIME_REPLAY_HANDOFF_TO_SKILL_BUILD", prompt)
+            # Verify system prompt refers to instructions directory and sequence files
+            self.assertIn("instructions/replay", prompt)
+            self.assertIn("00_rules.md", prompt)
+            self.assertIn("01_replay.md", prompt)
+            self.assertIn("CRITICAL: Do NOT read all instruction files at once", prompt)
+
+            # Read the files in the instructions folder and verify they contain the detailed protocols
+            instructions_dir = Path(__file__).parent.parent / "src" / "ai_mime" / "agent_runner" / "instructions" / "replay"
+            files_content = ""
+            for p in instructions_dir.glob("*.md"):
+                files_content += p.read_text(encoding="utf-8") + "\n"
+
+            self.assertIn("Validate and normalize", files_content)
+            self.assertIn("./run.sh <inputs.json>", files_content)
+            self.assertIn("task variants", files_content)
+            self.assertIn("complete the task", files_content)
+            self.assertIn("$AI_MIME_UI_AGENT_CMD", files_content)
+            self.assertIn("triage before editing", files_content)
+            self.assertIn("Closed tabs", files_content)
+            self.assertIn("missing windows", files_content)
+            self.assertIn("one-off UI disruption", files_content)
+            self.assertIn("replay_notes.md", files_content)
+            self.assertIn("domain_notes.md", files_content)
+            self.assertIn("Targeted edits", files_content)
+            self.assertIn("Only edit the skill when needed", files_content)
+            self.assertIn("repeated deterministic failure", files_content)
+            self.assertNotIn("Do NOT switch to skill-build mode", files_content)
+            self.assertNotIn("needs skill healing", files_content)
+            self.assertNotIn("AI_MIME_REPLAY_HANDOFF_TO_SKILL_BUILD", files_content)
 
     def test_workspace_chat_service_can_use_replay_execution_mode(self) -> None:
         prompts: list[str] = []
@@ -624,32 +641,32 @@ class AgentRunnerTests(unittest.TestCase):
                 return await hook({"tool_name": tool_name, "tool_input": tool_input}, "tid", None)
 
             # Read inside readable root → allowed (empty dict)
-            out = _asyncio.get_event_loop().run_until_complete(
+            out = _asyncio.run(
                 _call("Read", {"file_path": str(workflow_dir / "schema.json")})
             )
             self.assertEqual(out, {})
 
             # Read outside readable root → block
-            out = _asyncio.get_event_loop().run_until_complete(
+            out = _asyncio.run(
                 _call("Read", {"file_path": "/etc/passwd"})
             )
             self.assertEqual(out.get("decision"), "block")
             self.assertIn("sandbox", out.get("reason", ""))
 
             # Write to writable root → allowed
-            out = _asyncio.get_event_loop().run_until_complete(
+            out = _asyncio.run(
                 _call("Write", {"file_path": str(allowed / "x.json")})
             )
             self.assertEqual(out, {})
 
             # Write outside writable root (still inside readable workflow_dir) → block
-            out = _asyncio.get_event_loop().run_until_complete(
+            out = _asyncio.run(
                 _call("Write", {"file_path": str(workflow_dir / "outside.txt")})
             )
             self.assertEqual(out.get("decision"), "block")
 
             # Bash / unrelated tool → pass through
-            out = _asyncio.get_event_loop().run_until_complete(
+            out = _asyncio.run(
                 _call("Bash", {"command": "echo hi"})
             )
             self.assertEqual(out, {})
@@ -695,7 +712,7 @@ class AgentRunnerTests(unittest.TestCase):
             "/opt/homebrew/bin/uv --version",
             "/usr/local/bin/python3 --version",
         ):
-            out = _asyncio.get_event_loop().run_until_complete(_call(command))
+            out = _asyncio.run(_call(command))
             self.assertEqual(out.get("decision"), "block", command)
             self.assertIn("packaged mode", out.get("reason", "") + " packaged mode")
 
@@ -721,7 +738,7 @@ class AgentRunnerTests(unittest.TestCase):
             '"$AI_MIME_PYTHON_PATH" -c "print(\'/usr/local/lib\')"',
             'echo "see /opt/homebrew/bin" && "$AI_MIME_UV_PATH" --version',
         ):
-            out = _asyncio.get_event_loop().run_until_complete(_call(command))
+            out = _asyncio.run(_call(command))
             self.assertEqual(out, {}, command)
 
     def test_options_kwargs_installs_packaged_bash_guard_when_frozen(self) -> None:

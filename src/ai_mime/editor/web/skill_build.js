@@ -6,7 +6,8 @@
   const startPanel = document.getElementById("skillBuildStart");
   const startTitle = document.getElementById("skillBuildStartTitle");
   const startCopy = document.getElementById("skillBuildStartCopy");
-  const primaryBtn = document.getElementById("skillBuildPrimaryBtn");
+  const improveSkillBtn = document.getElementById("improveSkillBtn");
+  const continueBtn = document.getElementById("continueBtn");
   const newSessionBtn = document.getElementById("newSkillBuildSessionBtn");
   let agentSessionsLoaded = false;
 
@@ -79,7 +80,8 @@
   }
 
   function setStartButtonsDisabled(disabled) {
-    if (primaryBtn) primaryBtn.disabled = !!disabled;
+    if (improveSkillBtn) improveSkillBtn.disabled = !!disabled;
+    if (continueBtn) continueBtn.disabled = !!disabled;
     if (newSessionBtn) newSessionBtn.disabled = !!disabled;
   }
 
@@ -101,7 +103,7 @@
   }
 
   function renderStartPanel(data) {
-    if (!startPanel || !primaryBtn || !newSessionBtn) return;
+    if (!startPanel || !improveSkillBtn || !continueBtn || !newSessionBtn) return;
     const hasSkill = !!(data && data.has_skill);
     const hasPlan = data && data.has_optimized_plan !== false;
     if (!hasPlan) {
@@ -109,19 +111,38 @@
       return;
     }
     startPanel.hidden = false;
+
+    const hasActiveSession = !!(data && data.active_session_id);
+    const isTerminated = !!(data && data.terminal_status);
+    const isIncomplete = hasActiveSession && !isTerminated;
+
+    improveSkillBtn.hidden = !hasSkill;
+    continueBtn.hidden = !isIncomplete;
+
     if (startTitle) {
-      startTitle.textContent = hasSkill ? "Improve the existing skill" : "Continue building this skill";
+      if (hasSkill && isIncomplete) {
+        startTitle.textContent = "Improve or continue building this skill";
+      } else if (hasSkill) {
+        startTitle.textContent = "Improve the existing skill";
+      } else if (isIncomplete) {
+        startTitle.textContent = "Continue building this skill";
+      } else {
+        startTitle.textContent = "Build this skill";
+      }
     }
+
     if (startCopy) {
-      startCopy.textContent = hasSkill
-        ? "Resume the active build session and continue improving the existing skill package."
-        : "Resume the active build session from the optimized workflow plan.";
+      if (hasSkill && isIncomplete) {
+        startCopy.textContent = "Resume the active session to continue building, or start improving the existing skill package.";
+      } else if (hasSkill) {
+        startCopy.textContent = "The skill has been built. You can start a session to improve it or build from scratch.";
+      } else if (isIncomplete) {
+        startCopy.textContent = "Resume the active build session from the optimized workflow plan.";
+      } else {
+        startCopy.textContent = "Start a new skill-build session to iteratively turn this workflow into a reusable, deterministic skill.";
+      }
     }
-    primaryBtn.textContent = hasSkill ? "Improve the skill" : "Continue";
-    primaryBtn.dataset.prompt = hasSkill
-      ? "continue improving this skill"
-      : "continue";
-    primaryBtn.dataset.resetTerminal = (hasSkill || data.terminal_status) ? "1" : "";
+
     setStartButtonsDisabled(!agentSessionsLoaded);
   }
 
@@ -134,23 +155,38 @@
     setStartButtonsDisabled(false);
   }, 1000);
 
-  if (primaryBtn) {
-    primaryBtn.addEventListener("click", async () => {
+  if (improveSkillBtn) {
+    improveSkillBtn.addEventListener("click", async () => {
       if (!agentSessionsLoaded) return;
-      primaryBtn.disabled = true;
+      const feedback = prompt("How would you like to improve this skill?");
+      if (feedback === null) return;
+      const feedbackTrimmed = feedback.trim();
+      if (!feedbackTrimmed) return;
+
+      improveSkillBtn.disabled = true;
       hideStartPanel();
-      if (primaryBtn.dataset.resetTerminal) {
-        try {
-          await fetch(`/api/tasks/${encodeURIComponent(taskId)}/skill-build/reset`, { method: "POST" });
-          banner.hidden = true;
-          banner.innerHTML = "";
-        } catch {
-          if (startPanel) startPanel.hidden = false;
-          primaryBtn.disabled = false;
-          return;
-        }
+
+      try {
+        await fetch(`/api/tasks/${encodeURIComponent(taskId)}/skill-build/reset`, { method: "POST" });
+        banner.hidden = true;
+        banner.innerHTML = "";
+      } catch (err) {
+        console.error("Failed to reset skill build terminal status:", err);
       }
-      submitAgentPrompt(primaryBtn.dataset.prompt || "continue");
+
+      const newChatBtn = document.getElementById("newChatBtn");
+      try { newChatBtn && newChatBtn.click(); } catch { /* ignore */ }
+
+      submitAgentPrompt(`Improve the skill: ${feedbackTrimmed}`);
+    });
+  }
+
+  if (continueBtn) {
+    continueBtn.addEventListener("click", () => {
+      if (!agentSessionsLoaded) return;
+      continueBtn.disabled = true;
+      hideStartPanel();
+      submitAgentPrompt("continue");
     });
   }
 

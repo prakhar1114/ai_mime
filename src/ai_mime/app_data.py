@@ -144,6 +144,11 @@ def get_managed_browser_harness_path() -> Path:
     if sub_venv_harness.is_file() and os.access(sub_venv_harness, os.X_OK):
         return sub_venv_harness
 
+    # 3. Check the system PATH
+    found = shutil.which("browser-harness")
+    if found:
+        return Path(found)
+
     # 4. Fallback
     return get_tool_bin_dir() / "browser-harness"
 
@@ -210,6 +215,8 @@ def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> 
         # steps instead of hardcoding the module path.
         "AI_MIME_UI_AGENT_CMD": f"{python_path} -m ai_mime.agent_runner.computer_use",
         "UV_PYTHON_INSTALL_DIR": str(get_managed_python_install_dir()),
+        "AI_MIME_BROWSER_SKILL_NAME": os.environ.get("AI_MIME_BROWSER_SKILL_NAME") or "browser",
+        "AI_MIME_BROWSER_SKILL_PATH": os.environ.get("AI_MIME_BROWSER_SKILL_PATH") or str(get_bundled_browser_harness_dir()),
     }
     if is_frozen():
         # uv isolation (tool/cache dirs, no user config) and the sanitized PATH only

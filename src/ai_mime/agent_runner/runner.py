@@ -45,6 +45,8 @@ REQUIRED_SKILL_FILES = (
     "inputs/inputs.template.json",
     "references/fallback_plan.md",
 )
+INSTRUCTIONS_ROOT = Path(__file__).parent / "instructions"
+
 
 
 def _read_json(path: Path) -> dict:
@@ -211,6 +213,7 @@ def build_agent_run_request(
     readable_roots = _unique_paths(
         [
             workflow_dir_p,
+            INSTRUCTIONS_ROOT,
             *[entry.path for entry in access.readable_roots],
         ]
     )
@@ -332,148 +335,23 @@ Learned-notes file (append durable findings here): {learned_path}
 Skill directory to create or refine: {skill_dir}
 Terminal signal file: {signal_path}
 
-Tools available to you in this environment:
-- Bash — for shelling out through app-managed tools only (e.g. `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`).
-- Browser Skill — invoke installed Claude skill `{resolved_browser_skill_name()}`. It drives Chrome via CDP; docs are at {resolved_browser_skill_path()}.
-- Computer-use tools (`mcp__cua__*`) — the cua MCP server is attached to THIS session for last-resort native-macOS control. Discover and call these tools directly (e.g. `computer_screenshot`, `computer_find_element`, `computer_click`, `computer_type`, `computer_hotkey`, `computer_launch_app`) to actually perform the subtask AND nail down the exact ordered steps; screenshot first, act, screenshot again to verify. Slowest — use only after WebSearch and browser-harness. To make that subtask reproducible from the synthesized `scripts/run.py`, a `ui_agent` step shells out to `"$AI_MIME_UI_AGENT_CMD" "<task>" --schema '<json>' --json` — this is `run_computer_use_task`, an agent that drives the SAME cua MCP server, so the script reproduces what you just did by hand. Pass it the DETAILED ordered step-by-step instructions you learned plus a `--schema`, and read back `result_json` + the `logs` trace to retry or finish from where it stopped.
-- WebSearch / WebFetch — the open web. Use these BEFORE degrading to ui_agent.
-- Read / Write / Edit / MultiEdit / Glob / Grep — file ops, scoped to readable/writable roots.
+To prevent task dilution and ensure consistent behavior, your instructions are broken down into sequential task files located in the instructions folder:
+{INSTRUCTIONS_ROOT / "build_skill"}
 
-Python runtime contract:
-- The app exports `AI_MIME_PYTHON_PATH`, `AI_MIME_UV_PATH`, and `AI_MIME_BROWSER_HARNESS_BIN` when it runs or validates a skill.
-- The app exports `AI_MIME_BROWSER_SKILL_PATH` for browser-harness resources. Use it for files under the harness repo; never hardcode a developer checkout path such as `/Users/prakharjain/code/...`.
-- Current resolved default Python: `{default_python_path}`.
-- Current resolved uv: `{uv_path}`.
-- Current resolved browser-harness binary: `{browser_harness_bin}`.
-- Generated skills may require `requirements.txt` only.
-- You decide whether dependencies require a virtualenv. If they do, create `.venv` in the skill directory (preferred) or workflow directory using `"$AI_MIME_UV_PATH" venv .venv --python "$AI_MIME_PYTHON_PATH"` and install with `"$AI_MIME_UV_PATH" pip install -r requirements.txt --python .venv/bin/python`.
-- Runtime must not create a virtualenv from scratch. `run.sh` should use an existing `.venv/bin/python` when present, then fall back to required `$AI_MIME_PYTHON_PATH`.
-- Use `"$AI_MIME_UV_PATH"` instead of bare `uv`, `"$AI_MIME_BROWSER_HARNESS_BIN"` instead of bare `browser-harness`, and `"$AI_MIME_PYTHON_PATH"` instead of bare `python3`.
+You MUST execute these tasks step-by-step:
+1. First, read and follow `00_rules.md` in the instructions directory to understand execution guidelines, Python path requirements, and tools.
+2. Next, read and execute the instructions in `01_phase_a_confirm_inputs.md`.
+3. Follow the instructions and transition gates at the end of each task file sequentially to move to the next file (e.g. `02_phase_b_execute_steps.md`, `03_phase_c_synthesis.md`, `04_phase_d_packaging.md`).
 
-Internet & external services
-- When you're stuck on a website (missing selector, unknown DOM, undocumented flow), WebSearch the open web first — vendor docs, Stack Overflow, GitHub issues — before degrading to ui_agent. One quick search beats five blind clicks.
-- For repeated lookups, prefer a deterministic API over scraping. Python dependencies must go in `requirements.txt` and be installed with `"$AI_MIME_UV_PATH"`. Do not depend on `uvx`, `npx`, or globally-installed CLIs for packaged skills unless the user explicitly approves that external dependency.
-- Treat external API keys as opportunistic: read from env (e.g. `GEMINI_API_KEY` for `ask_gemini`). On missing key, surface the limitation in chat and choose a deterministic fallback or `ui_agent` — do NOT abort the build.
-- Anything you install at build time must also be available when `run.sh` executes on the end user's machine. Either (a) list it in `requirements.txt` and install it into an existing `.venv` with `"$AI_MIME_UV_PATH"`, (b) use a macOS system tool from `/usr/bin` or `/bin`, or (c) inline the data you fetched. Do NOT leave the final skill depending on something that lived only in your build env.
+CRITICAL: Do NOT read all instruction files at once. Focus only on the active task file, complete its requirements, and only read the next file once the current file's success criteria are fully met.
 
-You can ask the user clarifying questions in chat when the answer affects whether the automation can be built correctly. Do NOT use osascript / native dialogs — the user is in the browser.
+Current environment and tools state:
+- Default Python: `{default_python_path}`
+- uv: `{uv_path}`
+- browser-harness: `{browser_harness_bin}`
+- Browser skill is `{resolved_browser_skill_name()}` at `{resolved_browser_skill_path()}`
 
-Executor model — each step in `optimized_plan.steps[].executor` is one of:
-- `script`: pure deterministic Python (file IO, HTTP, parsing, library calls, shelling out via subprocess). No UI. May call `ask_gemini` for stochastic JSON-schema decisions. **This is the preferred path.**
-- `browser_harness`: composable Chrome CDP script via the `{resolved_browser_skill_name()}` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. May also call `ask_gemini` for in-page judgment.
-- `ui_agent`: screenshot+click loop driving the Mac through the cua MCP server. While exploring, call the `mcp__cua__*` computer-use tools directly to do the subtask and learn the steps; in the synthesized `scripts/run.py` the same subtask is handed (as a task + detailed instructions) to `run_computer_use_task` via `"$AI_MIME_UI_AGENT_CMD"`, an agent that drives the SAME cua MCP server. Last resort for native UIs or hostile DOMs.
-
-`ask_gemini` (`from browser_harness.helpers import ask_gemini`) is the stochasticity escape hatch for *both* `script` and `browser_harness` steps — do not push a step to `ui_agent` just because it has one fuzzy decision. Give `ask_gemini` an explicit JSON schema and branch deterministically on its output.
-
-The `executor` field defines **what `scripts/run.py` should look like for that step in the final synthesized package**, not just what tool to use while exploring. During exploration, use whatever tool lets you learn fastest. During synthesis, the executor dictates the code shape.
-
-If Pass C chose a smarter path different from the original recording, the `goal` field will say so (e.g. "reads PDF text directly via pdfplumber instead of opening Preview", "uses URL scheme to skip wizard", "calls X CLI instead of clicking through Settings"). When you encounter such a step, verify that shortcut actually works in the user's environment before committing to it. If it turns out to be blocked, missing credentials, or otherwise non-viable, surface that in chat as a simple user-facing limitation, choose the best fallback when one is safe, and update both `optimized_plan.json` and `schema.json` accordingly. Only ask the user to choose when the tradeoff changes the task's input, output, permissions, or reliability in a meaningful way.
-
-Conversation style — keep user-facing messages BRIEF.
-The end user is not technical and only has task context. Their roles in this chat are: (A) validate or edit the task inputs, (B) confirm the expected outputs, (C) understand the very high-level idea of how the automation will run, and (D) understand why automation cannot be built if you reach that conclusion. Ask only important questions that affect correctness, permissions, side effects, feasibility, or the final result. Do NOT ask for confirmation before each step or before moving to the next phase. Do NOT narrate selectors, DOM structure, screenshots, scripts, executor names, or tool calls unless the user asks. Expand only when the user asks for more detail. If the user proposes a different implementation approach, take their suggestion when it is compatible with a reliable automation — don't argue.
-
-Progress updates
-- Send short progress updates at meaningful milestones or blockers, in plain language a non-technical user can understand.
-- Explain decisions as outcomes: what input is needed, what output will be produced, what the automation will do at a high level, or what is blocking it.
-- If automation is blocked, explain the reason simply and offer concrete options or suggested changes. Avoid implementation jargon.
-
-Strong preference for `browser_harness` over `ui_agent` whenever the target is in a browser. browser-harness is very powerful: compositor-level clicks pass through iframes/shadow DOM, raw CDP for anything helpers miss, parallel HTTP (see {resolved_browser_skill_path()}/SKILL.md). Only fall back to `ui_agent` if CDP genuinely cannot survive replay.
-
-Protocol — four phases, work autonomously unless an important user decision is required:
-
-Phase A — Confirm and finalize inputs and outputs
-1. Read `{request.schema_path}` and `{request.optimized_plan_path}`. Show the inputs from `optimized_plan.inputs[]` and expected outputs from `optimized_plan.steps[].outputs` as a compact plain-language summary. Also include one very high-level sentence describing how the automation will run.
-2. Ask for confirmation only if the inputs or outputs are missing, ambiguous, likely wrong, or require the user's values before validation can proceed. If they are clear enough to test with recorded defaults, say so briefly and continue.
-3. Treat user-proposed *additional* inputs as first-class — don't push back unless they conflict with the recorded behavior.
-4. For any change (edit, add, remove, rename), update BOTH files atomically:
-   - `{request.optimized_plan_path}` — `inputs[]`.
-   - `{request.schema_path}` — matching `task_params[]` entry (and any `{{placeholder}}` in `plan.subtasks[].text` if relevant).
-   Read each file back; confirm in one line before continuing.
-5. Do NOT modify `task_name` unless the user explicitly asks — the skill directory slug derives from it.
-6. Persist final confirmed values to `agent/confirmed_inputs.json`. These are what `scripts/run.py --inputs-json` will receive at validation time.
-
-Phase B — Execute optimized_plan steps one at a time
-For each `optimized_plan.steps[i]` in order. Work autonomously, verify internally, and send only brief plain-language milestone updates or blocker messages.
-1. Look up matching `schema.plan.subtasks[].steps[]` via `source_subtask_ids` for fine-grained intent. `step.goal` may describe a smarter path than the recording (API / CLI / file / URL-scheme); honor it.
-2. Match `step.executor` to the execution shape:
-   - `script` → Python via Bash (subprocess / requests / pdfplumber / file IO). `ask_gemini` for stochastic JSON decisions.
-   - `browser_harness` → Chrome via the `{resolved_browser_skill_name()}` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. `ask_gemini` for in-page judgment.
-   - `ui_agent` → call the `mcp__cua__*` computer-use tools directly (screenshot → find_element → click/type, re-screenshot to verify) to perform the step live; the cua MCP server is attached to this session.
-   If you swap `ui_agent` → `browser_harness` because browser-harness can handle the target, update `optimized_plan.json` step's `executor` to match. Mention the user-visible effect only if it matters, e.g. "I found a more reliable way to do this in the browser."
-3. Execute against the live environment using `agent/confirmed_inputs.json`. Verify success (screenshots / page_info / shell output) before declaring the step done.
-4. Append durable findings to `agent/learned_notes.md` — selectors, URLs, payload shapes, traps. Map, not diary.
-5. Side effects: after any non-idempotent change, append a one-liner to `agent/side_effects.md` (what was created, how to undo). Before retrying a step or re-running from earlier, stop and ask the user to clear the prior side effect — cite the specific ledger entry in plain language; wait for explicit "cleared".
-6. If the step can't be made to work: first do ONE WebSearch for the failure mode / selector / API — many "hostile DOM" problems have a documented workaround. Only after that, surface it briefly in non-technical language, propose options (change inputs, change expected output, use a less reliable fallback, or declare unbuildable), and ask the user only when the choice affects their task.
-7. Do not pause after successful individual steps. Continue to the next step on your own.
-
-After the last step verifies, announce in one line: "All <N> steps complete end-to-end."
-
-Phase C — Synthesize and validate `scripts/run.py`
-1. Synthesize `{skill_dir}/scripts/run.py` from `agent/learned_notes.md`. Per-step code shape matches its `executor`: `script` → inline Python; `browser_harness` → shell out to `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'` (or import helpers directly); `ui_agent` → shell out to `"$AI_MIME_UI_AGENT_CMD" "<task>" [--schema '<json>'] --json` and parse `result_json` from stdout.
-2. Contract:
-   - Invocation: `"$AI_MIME_PYTHON_PATH" scripts/run.py --inputs-json /path/to/inputs.json` or `./run.sh /path/to/inputs.json`. Read all inputs up front, no prompts.
-   - For irreducible judgment, call `ask_gemini` with an explicit JSON schema. Pattern: `from browser_harness.helpers import ask_gemini; pick = ask_gemini(prompt, schema={{"type":"object","properties":{{"id":{{"type":["string","null"]}},"reason":{{"type":"string"}}}},"required":["id","reason"]}})`. Branch deterministically on the returned dict. Document each call site in `SKILL.md`.
-   - Emit progress logs continuously (step id + title). Exit non-zero with diagnostic logs on failure.
-3. Clear any Phase-B side effects before testing. One-line ask to confirm `agent/side_effects.md` entries are cleared.
-4. Run the assembled script end-to-end against `agent/confirmed_inputs.json`. Verify the same end state Phase B reached.
-5. If it fails: diagnose, patch `scripts/run.py`, ask the user to clear new side effects, re-run. Loop until clean.
-6. When the e2e script runs clean, do not ask for packaging approval. Send one short progress update such as "The full automation ran successfully. I'm turning it into a reusable skill now." Then continue to Phase D. The user may ask to change implementation here — take the suggestion if it is compatible with a reliable automation.
-
-Phase D — Package as a standard skill
-
-1. Invoke the `skill-creator` skill to scaffold `SKILL.md`. It MUST have YAML frontmatter (non-empty `name`, `description`) and these sections (titles exact): `## Inputs`, `## Run`, `## Outputs`, `## Progress log format`, `## Fallback`, `## ask_gemini decision points`, `## References`.
-
-   `SKILL.md` `## Run` must document the Python runtime contract:
-   - `run.sh` uses the first available interpreter in this order: skill `.venv/bin/python`, workflow `.venv/bin/python`, then required `$AI_MIME_PYTHON_PATH`.
-   - If `requirements.txt` exists, include these exact build/repair commands:
-       ```bash
-       "$AI_MIME_UV_PATH" venv .venv --python "$AI_MIME_PYTHON_PATH"
-       "$AI_MIME_UV_PATH" pip install -r requirements.txt --python .venv/bin/python
-       ```
-   - State clearly that the install commands are for skill build or manual repair. Runtime does not create or repair `.venv`.
-
-2. Write the final layout at `{skill_dir}/`. Required files (validated by `validate_skill_package`):
-   - `SKILL.md`                       — skill-creator format, sections above.
-   - `scripts/run.py`                 — from Phase C.
-   - `requirements.txt`               — optional, only when `scripts/run.py` needs third-party Python packages. If present, you must create `.venv` and install it during skill build before signalling.
-   - `run.sh`                         — one-click wrapper, `chmod +x`. Body:
-       ```bash
-       #!/usr/bin/env bash
-       set -euo pipefail
-       HERE="$(cd "$(dirname "$0")" && pwd)"
-       INPUTS="${{1:-$HERE/inputs/inputs.example.json}}"
-       PYTHON="${{AI_MIME_PYTHON_PATH:?AI_MIME_PYTHON_PATH is required}}"
-       if [[ -x "$HERE/.venv/bin/python" ]]; then
-         PYTHON="$HERE/.venv/bin/python"
-       elif [[ -x "$HERE/../../.venv/bin/python" ]]; then
-         PYTHON="$HERE/../../.venv/bin/python"
-       fi
-       exec "$PYTHON" "$HERE/scripts/run.py" --inputs-json "$INPUTS"
-       ```
-   - `inputs/inputs.example.json`     — copy of `agent/confirmed_inputs.json`. Re-runnable as-is.
-   - `inputs/inputs.template.json`    — same keys as example, but each value is `"<FILL IN: <one-line description>>"` (or the input's recorded default).
-   - `references/fallback_plan.md`    — REQUIRED. Synthesized from `schema.plan.subtasks[]` + matching `optimized_plan.steps[]`. Per subtask: heading, one-line `Intent:`, the recorded sub-steps as bullets, `Notes:` with selectors / URLs / traps learned in Phase B. A human or the UI agent must be able to finish the task from this file alone if `run.sh` fails.
-
-3. Free-form `references/`. Beyond `fallback_plan.md`, write whatever notes help a future runner — domain notes, per-subtask notes, selectors, payload shapes. You decide based on what was actually useful in Phase B. Don't force everything into one `learned_notes.md`.
-
-4. Do NOT copy `schema.json` or `optimized_plan.json` into the skill. They're builder-only artifacts.
-
-   Reproducibility: any external tool / MCP server / API you relied on during the build must also be reachable when `run.sh` runs on the end user's machine. Browser-harness is available in the AI Mime workflow runtime as `$AI_MIME_BROWSER_HARNESS_BIN`; use `$AI_MIME_BROWSER_SKILL_PATH` for harness resource files. If Python packages are needed, list them in `requirements.txt`, create `.venv`, install them with `"$AI_MIME_UV_PATH"` during skill build, and document that `run.sh` will use the existing `.venv`. Do NOT assume the end user has anything pre-installed beyond `bash`, macOS system tools, `$AI_MIME_UV_PATH`, `$AI_MIME_BROWSER_HARNESS_BIN`, `$AI_MIME_PYTHON_PATH`, and an already-created `.venv` when needed.
-
-5. `scripts/run.py` MUST emit one JSON-line per step transition on stderr so a downstream agent (or human) can read partial progress on failure and resume from the right subtask:
-   - `{{"event":"step_start","id":"<step_id>","title":"…"}}`
-   - `{{"event":"step_done","id":"<step_id>","outputs":{{…}},"summary":"…"}}`
-   - `{{"event":"step_failed","id":"<step_id>","error":"…","recoverable":true|false}}`
-   - `{{"event":"workflow_done","outputs":{{…}}}}`
-   Free-form human logs may be interleaved. Exit non-zero on `step_failed`. Document this contract in `SKILL.md` under `## Progress log format`.
-
-6. Verify `./run.sh` runs clean against `inputs/inputs.example.json` (this is the published one-click command, so this is what gets tested — not just direct `scripts/run.py` execution).
-
-7. Write `{signal_path}` with `{{"status":"skill_ready","summary":"<one line>"}}` and stop. The service runs `validate_skill_package` + `run_skill_e2e_test` and surfaces the result in the UI.
-
-8. Unbuildable escape (only reachable from Phase B or C after trying safe fallbacks and asking any necessary task-level questions): write `{signal_path}` with `{{"status":"skill_unbuildable","reason":"<plain-language concrete reason>","suggested_changes":["<plain-language suggested change>","..."]}}` and stop.
-
-Existing skill files at {skill_dir}:
+Existing skill files:
 {json.dumps(existing_skill_files, indent=2)}
 
 Readable roots:
@@ -481,10 +359,6 @@ Readable roots:
 
 Writable roots:
 {json.dumps([str(p) for p in request.writable_roots], indent=2)}
-
-
-All the access that you need is present in the above directories. DO NOT try to read/write into files outside the above directories.
-Do NOT bypass these limits using bash.
 
 Existing memory:
 {memory}
@@ -508,35 +382,23 @@ Memory file: {memory_path}
 Replay notes file: {replay_notes_path}
 Domain notes file: {domain_notes_path}
 
-Resolved Claude skills:
-{skill_context}
+Your detailed instructions are located in the instructions folder:
+{INSTRUCTIONS_ROOT / "replay"}
 
-Core behavior:
-- Read and learn from the complete skill package before deciding how to recover or run: `SKILL.md`, `run.sh`, `scripts/run.py`, `inputs/inputs.example.json`, `inputs/inputs.template.json`, every file under `references/`, and especially `references/fallback_plan.md`.
-- Validate and normalize the user's inputs before running anything. If an input is ambiguous or unsafe to infer, ask a short clarifying question.
-- Prefer `./run.sh <inputs.json>` as the primary execution path. It is cheap, runs the task end-to-end, and emits rich stdout/stderr progress logs.
-- Use stdout, stderr, and JSON progress events (`step_start`, `step_done`, `step_failed`, `workflow_done`) to explain progress, results, and failures.
-- For task variants, use the script and skill context to automate the new task directly. You may create temporary input JSON files or run helper commands, but keep durable outputs under allowed output paths.
-- If `./run.sh` fails or cannot cover the remaining task, triage before editing: classify the failure as likely environment/user-state issue, input issue, transient UI issue, or skill defect. Closed tabs, missing windows, changed focus, logged-out browser state, interrupted app state, and one-off UI disruption are recovery work, not skill repair.
-- Decide from the logs, script, skill docs, and `references/fallback_plan.md` how to complete the task. You may continue manually, restore expected UI state, rerun only the remaining work, or complete the task directly from the fallback plan.
-- For UI-only parts, the cua MCP server is attached to THIS session — discover and call the `mcp__cua__*` computer-use tools directly (`computer_screenshot`, `computer_find_element`, `computer_click`, `computer_type`, `computer_hotkey`, …) to drive native apps and hostile DOMs; screenshot first, act, screenshot again to verify. (The skill's own `scripts/run.py` hands the same subtask to `run_computer_use_task` via `"$AI_MIME_UI_AGENT_CMD"` — an agent that drives the SAME cua MCP server — so it reproduces the steps you just performed.) Prefer script/browser approaches when they are clear, but do not stop just because the original script failed.
-- You may append durable domain findings to `{replay_notes_path}` or `{domain_notes_path}`. Keep these notes factual: selectors, URLs, payload shapes, input gotchas, and observed domain behavior.
+You MUST execute the task following these instructions step-by-step:
+1. First, read and follow `00_rules.md` in the instructions directory.
+2. Next, read and execute `01_replay.md` to run/verify the skill.
 
-Hard boundaries:
-- Targeted edits inside `{skill_dir}` are allowed only when there is clear evidence from `run.sh`, logs, `scripts/run.py`, or repeated deterministic failure that the skill package itself is stale, incomplete, or wrong. Only edit the skill when needed; do not rewrite `run.sh` or `scripts/run.py` just because the first run failed.
-- Do NOT edit `{request.schema_path}` or `{request.optimized_plan_path}`.
-- If completion is impossible with the available logs, skill, fallback plan, and UI-agent fallback, explain the concrete blocker and what user action is needed.
+CRITICAL: Do NOT read all instruction files at once. Focus only on the active task file, complete its requirements, and only read the next file once the current file's success criteria are fully met.
+
+Existing skill files:
+{json.dumps(existing_skill_files, indent=2)}
 
 Readable roots:
 {json.dumps([str(p) for p in request.readable_roots], indent=2)}
 
 Writable roots:
 {json.dumps([str(p) for p in request.writable_roots], indent=2)}
-
-All the access that you need is present in the above directories. DO NOT try to read/write into files outside the above directories.
-
-Existing skill files:
-{json.dumps(existing_skill_files, indent=2)}
 
 Existing memory:
 {memory}
