@@ -299,6 +299,18 @@ class ConversationOverlay:
         self._stack.addArrangedSubview_(self._header_row)
         self._stack.addArrangedSubview_(self._message_label)
         self._stack.addArrangedSubview_(self._tool_label)
+
+        # Add vertical spacer to push controls to the bottom when window is taller
+        self._v_spacer = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 1, 1))
+        self._stack.addArrangedSubview_(self._v_spacer)
+        try:
+            self._v_spacer.setContentHuggingPriority_forOrientation_(
+                1.0,
+                AppKit.NSLayoutConstraintOrientationVertical,  # type: ignore[attr-defined]
+            )
+        except Exception:
+            pass
+
         self._stack.addArrangedSubview_(self._controls_row)
 
         self._content.addSubview_(self._stack)
@@ -378,6 +390,8 @@ class ConversationOverlay:
             self._title.setHidden_(True)
             self._message_label.setHidden_(True)
             self._tool_label.setHidden_(True)
+            if hasattr(self, "_v_spacer") and self._v_spacer:
+                self._v_spacer.setHidden_(True)
             self._controls_row.setHidden_(True)
 
             # Disable resizing while minimized
@@ -421,7 +435,11 @@ class ConversationOverlay:
             self._title.setHidden_(False)
             self._message_label.setHidden_(False)
             self._tool_label.setHidden_(False)
+            if hasattr(self, "_v_spacer") and self._v_spacer:
+                self._v_spacer.setHidden_(False)
             self._controls_row.setHidden_(False)
+
+            self._update_window_height()
         except Exception as e:
             print(f"Error maximizing conversation overlay: {e}")
 
@@ -436,10 +454,39 @@ class ConversationOverlay:
         except Exception:
             pass
 
+    def _update_window_height(self) -> None:
+        try:
+            if self.is_minimized:
+                return
+
+            # Force layout pass to ensure fitting size is up to date
+            self._stack.layoutSubtreeIfNeeded()
+
+            stack_height = float(self._stack.fittingSize().height)
+            margin_layout = 10.0
+            needed_height = stack_height + 2.0 * margin_layout
+
+            # Bound the height between a minimum of 140.0 and maximum of 280.0
+            new_height = max(140.0, min(280.0, needed_height))
+
+            # Update frame
+            sx, sy, sw, sh = active_screen_visible_frame()
+            current_frame = self._panel.frame()
+            w = current_frame.size.width
+            x = float(sx + sw - w)
+            y = float(sy + (sh - new_height) / 2.0)
+
+            # Only update if the height is actually different
+            if abs(current_frame.size.height - new_height) > 1.0:
+                self._panel.setFrame_display_animate_(AppKit.NSMakeRect(x, y, w, new_height), True, False)
+        except Exception as e:
+            print(f"Error updating window height: {e}")
+
     def update_text(self, text: str) -> None:
         try:
             cleaned = text.strip()
             self._message_label.setStringValue_(cleaned)
+            self._update_window_height()
         except Exception:
             pass
 
@@ -449,82 +496,19 @@ class ConversationOverlay:
                 self._tool_label.setStringValue_(f"Running Tool: {tool_name}")
             else:
                 self._tool_label.setStringValue_("Thinking...")
+            self._update_window_height()
         except Exception:
             pass
 
     def _handle_show_chat(self) -> None:
         try:
             if self.mode == "build_skill_chat":
-                url = f"http://127.0.0.1:{self.port}/skill-build/{urllib.parse.quote(self.task_id)}"
+                path_suffix = f"/skill-build/{urllib.parse.quote(self.task_id)}"
             elif self.mode == "replay_execution":
-                url = f"http://127.0.0.1:{self.port}/replay/{urllib.parse.quote(self.task_id)}"
+                path_suffix = f"/replay/{urllib.parse.quote(self.task_id)}"
             else:
-                url = f"http://127.0.0.1:{self.port}/agent"
-
-            parsed = urllib.parse.urlparse(url)
-            target_path = parsed.path
-
-            found = False
-            for browser in ["Google Chrome", "Brave Browser", "Safari"]:
-                # Check if browser app is running first, to avoid launching it if closed
-                check_running = f'tell application "System Events" to return (count of (every process whose name is "{browser}")) > 0'
-                script_check = Foundation.NSAppleScript.alloc().initWithSource_(check_running)
-                success_check, _ = script_check.executeAndReturnError_(None) if script_check else (None, None)
-                is_running = bool(success_check.booleanValue()) if success_check else False
-                if not is_running:
-                    continue
-
-                if browser in ("Google Chrome", "Brave Browser"):
-                    script_text = f'''
-                    tell application "{browser}"
-                        set found to false
-                        repeat with w in windows
-                            set tabIndex to 1
-                            repeat with t in tabs of w
-                                if URL of t contains "{target_path}" then
-                                    set active tab index of w to tabIndex
-                                    set index of w to 1
-                                    activate
-                                    set found to true
-                                    exit repeat
-                                end if
-                                set tabIndex to tabIndex + 1
-                            end repeat
-                            if found then exit repeat
-                        end repeat
-                        return found
-                    end tell
-                    '''
-                else:  # Safari
-                    script_text = f'''
-                    tell application "Safari"
-                        set found to false
-                        repeat with w in windows
-                            set tabIndex to 1
-                            repeat with t in tabs of w
-                                if URL of t contains "{target_path}" then
-                                    set current tab of w to t
-                                    set index of w to 1
-                                    activate
-                                    set found to true
-                                    exit repeat
-                                end if
-                                set tabIndex to tabIndex + 1
-                            end repeat
-                            if found then exit repeat
-                        end repeat
-                        return found
-                    end tell
-                    '''
-
-                script = Foundation.NSAppleScript.alloc().initWithSource_(script_text)
-                success, _ = script.executeAndReturnError_(None) if script else (None, None)
-                if success and success.booleanValue():
-                    found = True
-                    break
-
-            if not found:
-                webbrowser.open(url)
+                path_suffix = f"/agent"
+            focus_browser_tab(self.port, path_suffix)
         except Exception as e:
             print(f"Error focusing chat in browser: {e}")
 
@@ -552,3 +536,224 @@ class ConversationOverlay:
                 print(f"Error interrupting agent: {e}")
 
         threading.Thread(target=_post_interrupt, daemon=True).start()
+
+
+def focus_browser_tab(port: int, path_suffix: str) -> None:
+    try:
+        url = f"http://127.0.0.1:{port}{path_suffix}"
+        parsed = urllib.parse.urlparse(url)
+        target_path = parsed.path
+
+        found = False
+        for browser in ["Google Chrome", "Brave Browser", "Safari"]:
+            # Check if browser app is running first, to avoid launching it if closed
+            check_running = f'tell application "System Events" to return (count of (every process whose name is "{browser}")) > 0'
+            script_check = Foundation.NSAppleScript.alloc().initWithSource_(check_running)
+            success_check, _ = script_check.executeAndReturnError_(None) if script_check else (None, None)
+            is_running = bool(success_check.booleanValue()) if success_check else False
+            if not is_running:
+                continue
+
+            if browser in ("Google Chrome", "Brave Browser"):
+                script_text = f'''
+                tell application "{browser}"
+                    set found to false
+                    repeat with w in windows
+                        set tabIndex to 1
+                        repeat with t in tabs of w
+                            if URL of t contains "{target_path}" then
+                                set active tab index of w to tabIndex
+                                set index of w to 1
+                                activate
+                                set found to true
+                                exit repeat
+                            end if
+                            set tabIndex to tabIndex + 1
+                        end repeat
+                        if found then exit repeat
+                    end repeat
+                    return found
+                end tell
+                '''
+            else:  # Safari
+                script_text = f'''
+                tell application "Safari"
+                    set found to false
+                    repeat with w in windows
+                        set tabIndex to 1
+                        repeat with t in tabs of w
+                            if URL of t contains "{target_path}" then
+                                set current tab of w to t
+                                set index of w to 1
+                                activate
+                                set found to true
+                                exit repeat
+                            end if
+                            set tabIndex to tabIndex + 1
+                        end repeat
+                        if found then exit repeat
+                    end repeat
+                    return found
+                end tell
+                '''
+
+            script = Foundation.NSAppleScript.alloc().initWithSource_(script_text)
+            success, _ = script.executeAndReturnError_(None) if script else (None, None)
+            if success and success.booleanValue():
+                found = True
+                break
+
+        if not found:
+            webbrowser.open(url)
+    except Exception as e:
+        print(f"Error focusing browser tab: {e}")
+
+
+class AutomationIndicatorView(AppKit.NSView):  # type: ignore[misc]
+    def initWithFrame_(self, frame):
+        self = objc.super(AutomationIndicatorView, self).initWithFrame_(frame)
+        if self:
+            self._owner = None
+            self._state = "running"  # "running", "success", "failed"
+
+            # Large Spinning Progress Indicator (64x64, centered in 72x72)
+            self._spinner = AppKit.NSProgressIndicator.alloc().initWithFrame_(
+                AppKit.NSMakeRect(4.0, 4.0, 64.0, 64.0)
+            )
+            self._spinner.setStyle_(AppKit.NSProgressIndicatorStyleSpinning)
+            try:
+                self._spinner.setControlSize_(AppKit.NSControlSizeLarge)
+            except Exception:
+                pass
+            self._spinner.startAnimation_(None)
+            self.addSubview_(self._spinner)
+        return self
+
+    def setStatus_(self, status: str):
+        self._state = status
+        if status in ("success", "failed"):
+            self._spinner.stopAnimation_(None)
+            self._spinner.setHidden_(True)
+        self.setNeedsDisplay_(True)
+
+    def drawRect_(self, rect):
+        AppKit.NSColor.clearColor().set()
+        AppKit.NSRectFill(self.bounds())
+
+        if self._state == "success":
+            # Draw a green checkmark/tick centered in 72x72
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(0.15, 0.8, 0.25, 1.0).set()
+            path = AppKit.NSBezierPath.bezierPath()
+            path.setLineWidth_(6.0)
+            path.setLineCapStyle_(AppKit.NSLineCapStyleRound)
+            path.moveToPoint_(AppKit.NSMakePoint(18.0, 32.0))
+            path.lineToPoint_(AppKit.NSMakePoint(30.0, 20.0))
+            path.lineToPoint_(AppKit.NSMakePoint(54.0, 52.0))
+            path.stroke()
+        elif self._state == "failed":
+            # Draw a red cross/error indicator centered in 72x72
+            AppKit.NSColor.colorWithRed_green_blue_alpha_(0.9, 0.25, 0.2, 1.0).set()
+            path = AppKit.NSBezierPath.bezierPath()
+            path.setLineWidth_(6.0)
+            path.setLineCapStyle_(AppKit.NSLineCapStyleRound)
+            # Line 1
+            path.moveToPoint_(AppKit.NSMakePoint(20.0, 20.0))
+            path.lineToPoint_(AppKit.NSMakePoint(52.0, 52.0))
+            # Line 2
+            path.moveToPoint_(AppKit.NSMakePoint(52.0, 20.0))
+            path.lineToPoint_(AppKit.NSMakePoint(20.0, 52.0))
+            path.stroke()
+
+    def mouseDown_(self, event):
+        try:
+            if self._owner:
+                self._owner.on_clicked()
+        except Exception:
+            pass
+        objc.super(AutomationIndicatorView, self).mouseDown_(event)
+
+
+class AutomationOverlayActionHandler(AppKit.NSObject):  # type: ignore[misc]
+    def autoClose_(self, timer):  # noqa: N802 - ObjC selector
+        try:
+            self._overlay.close()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
+class AutomationOverlay:
+    """
+    Compact, non-resizable circular HUD indicating automation/replay execution is running.
+    Clicking it opens/focuses the replay task page in the browser.
+    """
+
+    def __init__(self, port: int, task_id: str) -> None:
+        self.port = port
+        self.task_id = task_id
+        self.is_minimized = True  # Mock minimized so background view acts as click trigger
+
+        sx, sy, sw, sh = active_screen_visible_frame()
+        self.width = 72.0
+        self.height = 72.0
+        x = float(sx + sw - self.width)
+        y = float(sy + (sh - self.height) / 2.0)
+        rect = AppKit.NSMakeRect(x, y, self.width, self.height)
+
+        self._panel = make_overlay_panel(rect, nonactivating=True)
+        style = AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel
+        self._panel.setStyleMask_(style)
+
+        # Content View
+        self._content = InteractiveHUDView.alloc().initWithFrame_(
+            AppKit.NSMakeRect(0, 0, self.width, self.height)
+        )
+        self._content._owner = self
+        self._panel.setContentView_(self._content)
+
+        # Indicator View
+        self._indicator = AutomationIndicatorView.alloc().initWithFrame_(
+            AppKit.NSMakeRect(0, 0, self.width, self.height)
+        )
+        self._indicator._owner = self
+        self._content.addSubview_(self._indicator)
+
+        self._action_handler = AutomationOverlayActionHandler.alloc().init()
+        self._action_handler._overlay = self
+
+        self.show()
+
+    def show(self) -> None:
+        try:
+            self._panel.orderFrontRegardless()
+        except Exception:
+            try:
+                self._panel.makeKeyAndOrderFront_(None)
+            except Exception:
+                pass
+
+    def hide(self) -> None:
+        try:
+            self._panel.orderOut_(None)
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        try:
+            self._panel.close()
+        except Exception:
+            pass
+
+    def update_status(self, status: str) -> None:
+        try:
+            self._indicator.setStatus_(status)
+        except Exception as e:
+            print(f"Error updating automation status: {e}")
+
+    def on_clicked(self) -> None:
+        try:
+            path_suffix = f"/replay/{urllib.parse.quote(self.task_id)}"
+            focus_browser_tab(self.port, path_suffix)
+            # Dismiss overlay once clicked
+            self.close()
+        except Exception as e:
+            print(f"Error in automation click handler: {e}")

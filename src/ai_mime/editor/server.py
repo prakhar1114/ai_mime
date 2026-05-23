@@ -1259,6 +1259,7 @@ def create_app(
             final_outputs: dict[str, Any] = {}
             q: thread_queue.Queue[tuple[str, str | int | None]] = thread_queue.Queue()
             proc: subprocess.Popen[str] | None = None
+            overlay_completed = False
 
             def _finish_run_log(
                 *,
@@ -1302,6 +1303,11 @@ def create_app(
                 inputs_path = Path(td) / "inputs.json"
                 inputs_path.write_text(json.dumps(params, indent=2, ensure_ascii=False), encoding="utf-8")
                 cmd = [str(run_sh), str(inputs_path)]
+                if app_command_queue is not None:
+                    app_command_queue.put({
+                        "type": "show_automation_overlay",
+                        "task_id": task_id,
+                    })
                 yield _sse_event({
                     "event": "started",
                     "skill_dir": str(skill_dir),
@@ -1323,6 +1329,12 @@ def create_app(
                 except Exception as e:
                     message = f"Failed to start run.sh: {e}"
                     _finish_run_log(status="failed", exit_code=None, error=message)
+                    if app_command_queue is not None:
+                        app_command_queue.put({
+                            "type": "update_automation_overlay",
+                            "status": "failed",
+                        })
+                        overlay_completed = True
                     yield _sse_event({
                         "event": "error",
                         "message": message,
@@ -1373,6 +1385,30 @@ def create_app(
                                 "source_event": source_event,
                             })
                     exit_code = proc.wait()
+                    duration_ms = int((time.monotonic() - started) * 1000)
+                    success = exit_code == 0
+                    _finish_run_log(
+                        status="success" if success else "failed",
+                        exit_code=exit_code,
+                        error=None if success else f"run.sh exited with code {exit_code}",
+                    )
+                    if app_command_queue is not None:
+                        app_command_queue.put({
+                            "type": "update_automation_overlay",
+                            "status": "success" if success else "failed",
+                        })
+                        overlay_completed = True
+                    yield _sse_event({
+                        "event": "done",
+                        "success": success,
+                        "exit_code": exit_code,
+                        "duration_ms": duration_ms,
+                        "outputs": final_outputs,
+                        "stdout_log": "\n".join(stdout_lines),
+                        "stderr_log": "\n".join(stderr_lines),
+                        "run_id": run_id,
+                        "run_dir": str(run_dir),
+                    })
                 except GeneratorExit:
                     if proc is not None and proc.poll() is None:
                         proc.terminate()
@@ -1380,6 +1416,12 @@ def create_app(
                 except Exception as e:
                     message = f"Run stream failed: {e}"
                     _finish_run_log(status="failed", exit_code=None, error=message)
+                    if app_command_queue is not None:
+                        app_command_queue.put({
+                            "type": "update_automation_overlay",
+                            "status": "failed",
+                        })
+                        overlay_completed = True
                     yield _sse_event({
                         "event": "error",
                         "message": message,
@@ -1390,25 +1432,8 @@ def create_app(
                 finally:
                     if proc is not None and proc.poll() is None:
                         proc.terminate()
-
-                duration_ms = int((time.monotonic() - started) * 1000)
-                success = exit_code == 0
-                _finish_run_log(
-                    status="success" if success else "failed",
-                    exit_code=exit_code,
-                    error=None if success else f"run.sh exited with code {exit_code}",
-                )
-                yield _sse_event({
-                    "event": "done",
-                    "success": success,
-                    "exit_code": exit_code,
-                    "duration_ms": duration_ms,
-                    "outputs": final_outputs,
-                    "stdout_log": "\n".join(stdout_lines),
-                    "stderr_log": "\n".join(stderr_lines),
-                    "run_id": run_id,
-                    "run_dir": str(run_dir),
-                })
+                    if not overlay_completed and app_command_queue is not None:
+                        app_command_queue.put({"type": "hide_conversation_overlay"})
 
         return StreamingResponse(
             _stream(),

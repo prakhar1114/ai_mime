@@ -236,6 +236,28 @@ class RecorderApp(rumps.App):
                 elif cmd.get("type") == "toggle_conversation_overlay":
                     handled = True
                     self._toggle_conversation_overlay(None)
+                elif cmd.get("type") == "show_automation_overlay":
+                    handled = True
+                    task_id = cmd.get("task_id") or ""
+                    if self._conversation_overlay is not None:
+                        try:
+                            self._conversation_overlay.close()
+                        except Exception:
+                            pass
+                        self._conversation_overlay = None
+                    try:
+                        from ai_mime.overlay.conversation_overlay import AutomationOverlay
+                        self._conversation_overlay = AutomationOverlay(port=self.port, task_id=task_id)
+                    except Exception as e:
+                        log(f"Failed to create AutomationOverlay: {e}", exc_info=True)
+                elif cmd.get("type") == "update_automation_overlay":
+                    handled = True
+                    status = cmd.get("status") or "running"
+                    if self._conversation_overlay is not None and hasattr(self._conversation_overlay, "update_status"):
+                        try:
+                            self._conversation_overlay.update_status(status)
+                        except Exception as e:
+                            log(f"Failed to update AutomationOverlay: {e}", exc_info=True)
             except Exception as e:
                 log(f"Error handling dashboard command {cmd}: {e}", exc_info=True)
         if handled:
