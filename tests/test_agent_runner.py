@@ -17,6 +17,7 @@ from ai_mime.agent_runner import (
     run_skill_e2e_test,
     validate_skill_package,
 )
+from ai_mime.agent_runner.adapters.claude_sdk import cua_mcp_servers
 from ai_mime.app_data import get_bundled_resource
 
 
@@ -771,7 +772,7 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(settings["autoCompactWindow"], AUTO_COMPACT_TOKEN_THRESHOLD)
             ClaudeAgentOptions(**kwargs)
 
-    def test_build_skill_chat_request_has_empty_mcp_servers_by_default(self) -> None:
+    def test_build_skill_chat_request_attaches_cua_mcp_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             workflow_dir = Path(td)
             (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
@@ -784,7 +785,7 @@ class AgentRunnerTests(unittest.TestCase):
             finally:
                 if prev is not None:
                     os.environ["AI_MIME_MCP_SERVERS_JSON"] = prev
-            self.assertEqual(request.mcp_servers, {})
+            self.assertEqual(request.mcp_servers, cua_mcp_servers())
 
     def test_build_skill_chat_request_reads_mcp_servers_from_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -803,7 +804,7 @@ class AgentRunnerTests(unittest.TestCase):
                     os.environ.pop("AI_MIME_MCP_SERVERS_JSON", None)
                 else:
                     os.environ["AI_MIME_MCP_SERVERS_JSON"] = prev
-            self.assertEqual(request.mcp_servers, payload)
+            self.assertEqual(request.mcp_servers, {**payload, **cua_mcp_servers()})
 
     def test_build_skill_chat_request_ignores_invalid_mcp_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -821,7 +822,7 @@ class AgentRunnerTests(unittest.TestCase):
                     os.environ.pop("AI_MIME_MCP_SERVERS_JSON", None)
                 else:
                     os.environ["AI_MIME_MCP_SERVERS_JSON"] = prev
-            self.assertEqual(request.mcp_servers, {})
+            self.assertEqual(request.mcp_servers, cua_mcp_servers())
 
     def test_workspace_chat_service_persists_returned_session_id(self) -> None:
         prompts: list[str] = []

@@ -15,6 +15,7 @@ from ai_mime.agent_runner.adapters.claude_sdk import (
     list_claude_sessions,
     load_claude_session_messages,
     stream_chat,
+    to_permission_result,
 )
 from ai_mime.agent_runner.chat import AgentBusyError, DEFAULT_CLAUDE_MODEL_OPTIONS
 from ai_mime.agent_runner.models import AgentRunRequest
@@ -164,7 +165,7 @@ class WorkflowSkillBuildService:
 
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
-        async def can_use_tool(tool_name: str, input_data: dict[str, Any], _ctx: Any) -> dict[str, Any]:
+        async def can_use_tool(tool_name: str, input_data: dict[str, Any], _ctx: Any) -> Any:
             decision = self._authorize_tool(request, tool_name, input_data)
             if decision.get("behavior") == "ask":
                 tool_use_id = decision.get("tool_use_id") or f"perm-{uuid.uuid4().hex[:12]}"
@@ -184,9 +185,9 @@ class WorkflowSkillBuildService:
                     self._pending_permissions.pop(tool_use_id, None)
                 if resolved.get("behavior") == "allow_always" and tool_name == "Bash":
                     self._session_bash_allow_all = True
-                    return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}
-                return resolved
-            return decision
+                    return to_permission_result({"behavior": "allow", "updated_input": input_data})
+                return to_permission_result(resolved)
+            return to_permission_result(decision)
 
         def _store_client(c: Any) -> None:
             self._active_client = c

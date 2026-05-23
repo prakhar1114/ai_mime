@@ -6,13 +6,15 @@ import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Literal
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Sequence
 
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
     HookMatcher,
+    PermissionResultAllow,
+    PermissionResultDeny,
     ResultMessage,
     TextBlock,
     ToolResultBlock,
@@ -31,10 +33,49 @@ DEFAULT_ALLOWED_TOOLS = [
     "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "Bash", "Skill",
     "WebFetch", "WebSearch",
 ]
+DEFAULT_ENABLED_SKILLS = (
+    "browser",
+    "browser-harness",
+    "skill-creator:skill-creator",
+)
 DEFAULT_SETTING_SOURCES = ["user", "project", "local"]
 AUTO_COMPACT_TOKEN_THRESHOLD = 175_000
 
-CanUseToolCallback = Callable[[str, dict[str, Any], Any], Awaitable[dict[str, Any]]]
+# cua-computer-server mounts its MCP server (streamable HTTP) at /mcp on the API
+# server started by cli.start_app; the trailing slash matters and the port must
+# stay in sync with cli.COMPUTER_SERVER_PORT. Shared so the UI agent
+# (computer_use.run_computer_use_task) and the build/replay chat agents
+# (runner.build_agent_run_request) all attach the SAME computer-use tools — the
+# chat agents can then call mcp__cua__computer_* directly for native-UI control.
+CUA_MCP_SERVER_NAME = "cua"
+CUA_MCP_URL = "http://127.0.0.1:58840/mcp/"
+
+
+def cua_mcp_servers() -> dict[str, dict[str, Any]]:
+    """MCP config for cua-computer-server's streamable-HTTP endpoint (mounted at /mcp)."""
+    return {CUA_MCP_SERVER_NAME: {"type": "http", "url": CUA_MCP_URL}}
+
+CanUseToolCallback = Callable[[str, dict[str, Any], Any], Awaitable[Any]]
+
+
+def to_permission_result(decision: dict[str, Any]) -> PermissionResultAllow | PermissionResultDeny:
+    """Convert an internal authorize-dict into the SDK's typed PermissionResult.
+
+    The chat services reason in plain dicts internally (with extra `ask` /
+    `allow_always` control-flow behaviors), but the SDK's `can_use_tool` callback
+    MUST return a `PermissionResultAllow` / `PermissionResultDeny` instance — a raw
+    dict raises "Tool permission callback must return PermissionResult". Treat
+    `allow`/`allow_always` as allow; everything else (deny, unknown) as deny.
+    """
+    if decision.get("behavior") in ("allow", "allow_always"):
+        return PermissionResultAllow(
+            updated_input=decision.get("updated_input"),
+            updated_permissions=decision.get("updated_permissions"),
+        )
+    return PermissionResultDeny(
+        message=str(decision.get("message") or "Tool call denied."),
+        interrupt=bool(decision.get("interrupt", False)),
+    )
 
 
 _READ_FILE_TOOLS = {"Read", "NotebookRead", "Glob", "Grep"}
@@ -269,7 +310,7 @@ def _options_kwargs_for(
     *,
     can_use_tool: CanUseToolCallback | None = None,
     auto_allow_tools: list[str] | None = None,
-    skills: list[str] | Literal["all"] | None = "all",
+    skills: Sequence[str] | Literal["all"] | None = DEFAULT_ENABLED_SKILLS,
     setting_sources: list[str] | None = None,
 ) -> dict[str, Any]:
     effective_allowed = allowed_tools if allowed_tools is not None else request.allowed_tools
@@ -289,7 +330,7 @@ def _options_kwargs_for(
     if request.mcp_servers:
         kwargs["mcp_servers"] = dict(request.mcp_servers)
     if skills is not None:
-        kwargs["skills"] = skills
+        kwargs["skills"] = skills if skills == "all" else list(skills)
     kwargs["setting_sources"] = list(setting_sources) if setting_sources is not None else list(DEFAULT_SETTING_SOURCES)
     if request.model:
         kwargs["model"] = request.model
@@ -341,7 +382,7 @@ async def stream_chat(
     allowed_tools: list[str] | None = None,
     can_use_tool: CanUseToolCallback | None = None,
     auto_allow_tools: list[str] | None = None,
-    skills: list[str] | Literal["all"] | None = "all",
+    skills: Sequence[str] | Literal["all"] | None = DEFAULT_ENABLED_SKILLS,
     setting_sources: list[str] | None = None,
     on_client: Callable[[ClaudeSDKClient], None] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:

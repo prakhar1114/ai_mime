@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Protocol
 
+from ai_mime.agent_runner.adapters.claude_sdk import cua_mcp_servers
 from ai_mime.agent_runner.models import (
     AgentProvider,
     AgentRunMode,
@@ -82,8 +83,13 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 def _resolved_skill_context() -> str:
     return (
         f"Browser skill: `{resolved_browser_skill_name()}` at {resolved_browser_skill_path()}\n"
-        "UI agent: `run_computer_use_task` via `$AI_MIME_UI_AGENT_CMD` — drives native macOS "
-        "apps through the cua MCP server (screenshot + click). Native-UI fallback; slowest."
+        "Computer-use: the cua MCP server is attached to this session — call the `mcp__cua__*` "
+        "tools directly (`computer_screenshot`, `computer_find_element`, `computer_click`, "
+        "`computer_type`, `computer_hotkey`, `computer_launch_app`, …) to drive native macOS "
+        "apps while you work out the exact steps. To reproduce a native-UI subtask from a "
+        "standalone script, hand those steps to `run_computer_use_task` via "
+        "`$AI_MIME_UI_AGENT_CMD` — it runs the SAME cua MCP server through its own agent. "
+        "Native-UI fallback; slowest."
     )
 
 
@@ -235,9 +241,14 @@ def build_agent_run_request(
             ]
         )
 
+    # Attach the cua computer-use MCP server so the build/replay chat agents can
+    # call mcp__cua__computer_* directly for native-UI control (the same tools the
+    # standalone UI agent uses via $AI_MIME_UI_AGENT_CMD).
     mcp_servers: dict | None = None
     if mode == "build_skill_chat":
-        mcp_servers = _default_skill_builder_mcp_servers()
+        mcp_servers = {**_default_skill_builder_mcp_servers(), **cua_mcp_servers()}
+    elif mode == "replay_execution":
+        mcp_servers = dict(cua_mcp_servers())
 
     return AgentRunRequest(
         provider=provider,
@@ -324,7 +335,7 @@ Terminal signal file: {signal_path}
 Tools available to you in this environment:
 - Bash — for shelling out through app-managed tools only (e.g. `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`).
 - Browser Skill — invoke installed Claude skill `{resolved_browser_skill_name()}`. It drives Chrome via CDP; docs are at {resolved_browser_skill_path()}.
-- UI agent — last-resort native-macOS control via the cua MCP server (screenshot + click). Call `"$AI_MIME_UI_AGENT_CMD" "<task>" --schema '<json>' --json`. Give it DETAILED, ordered step-by-step instructions — which app, the exact targets/values for each step, and how to verify success — not a vague one-liner; and pass `--schema` describing the exact JSON you need back. Read stdout: `result_json` is the structured result and `logs` is the step-by-step trace of what it actually did. If `status != "success"`, use `logs` (where it stopped + the remaining steps it reported) to retry or finish the step another way. Slowest; use sparingly.
+- Computer-use tools (`mcp__cua__*`) — the cua MCP server is attached to THIS session for last-resort native-macOS control. Discover and call these tools directly (e.g. `computer_screenshot`, `computer_find_element`, `computer_click`, `computer_type`, `computer_hotkey`, `computer_launch_app`) to actually perform the subtask AND nail down the exact ordered steps; screenshot first, act, screenshot again to verify. Slowest — use only after WebSearch and browser-harness. To make that subtask reproducible from the synthesized `scripts/run.py`, a `ui_agent` step shells out to `"$AI_MIME_UI_AGENT_CMD" "<task>" --schema '<json>' --json` — this is `run_computer_use_task`, an agent that drives the SAME cua MCP server, so the script reproduces what you just did by hand. Pass it the DETAILED ordered step-by-step instructions you learned plus a `--schema`, and read back `result_json` + the `logs` trace to retry or finish from where it stopped.
 - WebSearch / WebFetch — the open web. Use these BEFORE degrading to ui_agent.
 - Read / Write / Edit / MultiEdit / Glob / Grep — file ops, scoped to readable/writable roots.
 
@@ -350,7 +361,7 @@ You can ask the user clarifying questions in chat when the answer affects whethe
 Executor model — each step in `optimized_plan.steps[].executor` is one of:
 - `script`: pure deterministic Python (file IO, HTTP, parsing, library calls, shelling out via subprocess). No UI. May call `ask_gemini` for stochastic JSON-schema decisions. **This is the preferred path.**
 - `browser_harness`: composable Chrome CDP script via the `{resolved_browser_skill_name()}` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. May also call `ask_gemini` for in-page judgment.
-- `ui_agent`: screenshot+click loop via the UI agent (`run_computer_use_task` / `"$AI_MIME_UI_AGENT_CMD"`), which drives the Mac through the cua MCP server. Last resort for native UIs or hostile DOMs.
+- `ui_agent`: screenshot+click loop driving the Mac through the cua MCP server. While exploring, call the `mcp__cua__*` computer-use tools directly to do the subtask and learn the steps; in the synthesized `scripts/run.py` the same subtask is handed (as a task + detailed instructions) to `run_computer_use_task` via `"$AI_MIME_UI_AGENT_CMD"`, an agent that drives the SAME cua MCP server. Last resort for native UIs or hostile DOMs.
 
 `ask_gemini` (`from browser_harness.helpers import ask_gemini`) is the stochasticity escape hatch for *both* `script` and `browser_harness` steps — do not push a step to `ui_agent` just because it has one fuzzy decision. Give `ask_gemini` an explicit JSON schema and branch deterministically on its output.
 
@@ -387,7 +398,7 @@ For each `optimized_plan.steps[i]` in order. Work autonomously, verify internall
 2. Match `step.executor` to the execution shape:
    - `script` → Python via Bash (subprocess / requests / pdfplumber / file IO). `ask_gemini` for stochastic JSON decisions.
    - `browser_harness` → Chrome via the `{resolved_browser_skill_name()}` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. `ask_gemini` for in-page judgment.
-   - `ui_agent` → the UI agent: `"$AI_MIME_UI_AGENT_CMD" "<task>" [--schema '<json>'] --json` (screenshot + click via the cua MCP server); parse the JSON line from stdout.
+   - `ui_agent` → call the `mcp__cua__*` computer-use tools directly (screenshot → find_element → click/type, re-screenshot to verify) to perform the step live; the cua MCP server is attached to this session.
    If you swap `ui_agent` → `browser_harness` because browser-harness can handle the target, update `optimized_plan.json` step's `executor` to match. Mention the user-visible effect only if it matters, e.g. "I found a more reliable way to do this in the browser."
 3. Execute against the live environment using `agent/confirmed_inputs.json`. Verify success (screenshots / page_info / shell output) before declaring the step done.
 4. Append durable findings to `agent/learned_notes.md` — selectors, URLs, payload shapes, traps. Map, not diary.
@@ -508,7 +519,7 @@ Core behavior:
 - For task variants, use the script and skill context to automate the new task directly. You may create temporary input JSON files or run helper commands, but keep durable outputs under allowed output paths.
 - If `./run.sh` fails or cannot cover the remaining task, triage before editing: classify the failure as likely environment/user-state issue, input issue, transient UI issue, or skill defect. Closed tabs, missing windows, changed focus, logged-out browser state, interrupted app state, and one-off UI disruption are recovery work, not skill repair.
 - Decide from the logs, script, skill docs, and `references/fallback_plan.md` how to complete the task. You may continue manually, restore expected UI state, rerun only the remaining work, or complete the task directly from the fallback plan.
-- Use the UI agent (`run_computer_use_task` via `"$AI_MIME_UI_AGENT_CMD" "<task>" --schema '<json>' --json`) as the UI-agent fallback for unknown UI-only parts. Give it detailed step-by-step instructions and a `--schema` for the result you need, then read back `result_json` and the `logs` trace; if it doesn't fully succeed, use `logs` to see where it stopped and finish from there. Prefer script/browser approaches when they are clear, but do not stop just because the original script failed.
+- For UI-only parts, the cua MCP server is attached to THIS session — discover and call the `mcp__cua__*` computer-use tools directly (`computer_screenshot`, `computer_find_element`, `computer_click`, `computer_type`, `computer_hotkey`, …) to drive native apps and hostile DOMs; screenshot first, act, screenshot again to verify. (The skill's own `scripts/run.py` hands the same subtask to `run_computer_use_task` via `"$AI_MIME_UI_AGENT_CMD"` — an agent that drives the SAME cua MCP server — so it reproduces the steps you just performed.) Prefer script/browser approaches when they are clear, but do not stop just because the original script failed.
 - You may append durable domain findings to `{replay_notes_path}` or `{domain_notes_path}`. Keep these notes factual: selectors, URLs, payload shapes, input gotchas, and observed domain behavior.
 
 Hard boundaries:
