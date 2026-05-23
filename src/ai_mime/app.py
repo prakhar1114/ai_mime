@@ -77,6 +77,7 @@ class RecorderApp(rumps.App):
         self.refine_cmd_q: multiprocessing.Queue | None = None
         self.refine_resp_q: multiprocessing.Queue | None = None
         self._recording_overlay: RecordingOverlay | None = None
+        self._conversation_overlay: Any | None = None
         self._skip_reflect_once = False
         self.dummy_recording = False
 
@@ -184,19 +185,59 @@ class RecorderApp(rumps.App):
                 cmd = q.get_nowait()
             except Empty:
                 break
-            except Exception:
+            except Exception as e:
+                log(f"Error polling command queue: {e}", exc_info=True)
                 break
-            if not isinstance(cmd, dict):
-                continue
-            if cmd.get("type") == "start_recording":
-                handled = True
-                if self.is_recording:
-                    self._publish_dashboard_state(recording_requested=False)
+            try:
+                if not isinstance(cmd, dict):
                     continue
-                try:
-                    self.start_recording()
-                finally:
-                    self._publish_dashboard_state(recording_requested=False)
+                if cmd.get("type") == "start_recording":
+                    handled = True
+                    if self.is_recording:
+                        self._publish_dashboard_state(recording_requested=False)
+                        continue
+                    try:
+                        self.start_recording()
+                    finally:
+                        self._publish_dashboard_state(recording_requested=False)
+                elif cmd.get("type") == "show_conversation_overlay":
+                    handled = True
+                    mode = cmd.get("mode") or "general"
+                    task_id = cmd.get("task_id") or ""
+                    if self._conversation_overlay is not None:
+                        try:
+                            self._conversation_overlay.close()
+                        except Exception:
+                            pass
+                    try:
+                        from ai_mime.overlay.conversation_overlay import ConversationOverlay
+                        self._conversation_overlay = ConversationOverlay(port=self.port, task_id=task_id, mode=mode)
+                        self._conversation_overlay.show()
+                    except Exception as e:
+                        log(f"Failed to create ConversationOverlay: {e}", exc_info=True)
+                elif cmd.get("type") == "update_conversation_overlay":
+                    handled = True
+                    if self._conversation_overlay is not None:
+                        try:
+                            if "text" in cmd:
+                                self._conversation_overlay.update_text(cmd["text"])
+                            if "tool" in cmd:
+                                self._conversation_overlay.update_tool(cmd["tool"])
+                        except Exception as e:
+                            log(f"Failed to update ConversationOverlay: {e}", exc_info=True)
+                elif cmd.get("type") == "hide_conversation_overlay":
+                    handled = True
+                    if self._conversation_overlay is not None:
+                        try:
+                            self._conversation_overlay.close()
+                        except Exception:
+                            pass
+                        self._conversation_overlay = None
+                elif cmd.get("type") == "toggle_conversation_overlay":
+                    handled = True
+                    self._toggle_conversation_overlay(None)
+            except Exception as e:
+                log(f"Error handling dashboard command {cmd}: {e}", exc_info=True)
         if handled:
             self._publish_dashboard_state()
 
@@ -207,6 +248,25 @@ class RecorderApp(rumps.App):
             self.dummy_toggle.state = int(self.dummy_recording)
         except Exception:
             pass
+
+    def _toggle_conversation_overlay(self, _sender=None):
+        if self._conversation_overlay is not None:
+            try:
+                if self._conversation_overlay.is_minimized:
+                    self._conversation_overlay.maximize()
+                else:
+                    self._conversation_overlay.minimize()
+            except Exception as e:
+                log(f"Failed to toggle ConversationOverlay: {e}", exc_info=True)
+        else:
+            try:
+                rumps.notification(
+                    title="AI Mime",
+                    subtitle="No active overlay",
+                    message="Overlay is only active during agent conversations.",
+                )
+            except Exception:
+                pass
 
     def _poll_reflect_events(self, _):
         # Drain reflect queue quickly; emit a single notification from the UI process.

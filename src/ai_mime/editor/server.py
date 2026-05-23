@@ -832,6 +832,7 @@ def create_app(
     async def _agent_chat_stream_response(
         service: WorkspaceAgentChatService,
         payload: dict[str, Any],
+        task_id: str | None = None,
     ) -> StreamingResponse:
         message = payload.get("message")
         session_id = payload.get("session_id")
@@ -851,11 +852,37 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(e))
 
         async def _sse():
+            if app_command_queue is not None:
+                app_command_queue.put({
+                    "type": "show_conversation_overlay",
+                    "mode": service.mode,
+                    "task_id": task_id or "",
+                })
+            message_accum = ""
             try:
                 async for event in event_iter:
+                    if app_command_queue is not None:
+                        if event.get("event") == "text":
+                            message_accum += event.get("text") or ""
+                            snippet = message_accum
+                            if len(snippet) > 500:
+                                snippet = "..." + snippet[-497:]
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "text": snippet,
+                            })
+                        elif event.get("event") == "tool_use":
+                            tool_name = event.get("name") or ""
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "tool": tool_name,
+                            })
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+            finally:
+                if app_command_queue is not None:
+                    app_command_queue.put({"type": "hide_conversation_overlay"})
 
         return StreamingResponse(
             _sse(),
@@ -889,6 +916,12 @@ def create_app(
     @app.get("/api/app/status")
     def api_app_status():
         return task_runner.app_status()
+
+    @app.post("/api/overlay/toggle")
+    def api_overlay_toggle():
+        if app_command_queue is not None:
+            app_command_queue.put({"type": "toggle_conversation_overlay"})
+        return {"ok": True}
 
     @app.get("/api/agent/sessions")
     def api_agent_sessions():
@@ -988,7 +1021,7 @@ def create_app(
 
     @app.post("/api/tasks/{task_id}/agent/chat/stream")
     async def api_task_agent_chat_stream(task_id: str, payload: dict[str, Any] = Body(...)):
-        return await _agent_chat_stream_response(_task_agent_service(task_id), payload)
+        return await _agent_chat_stream_response(_task_agent_service(task_id), payload, task_id=task_id)
 
     @app.post("/api/tasks/{task_id}/agent/interrupt")
     def api_task_agent_interrupt(task_id: str):
@@ -1037,7 +1070,7 @@ def create_app(
 
     @app.post("/api/tasks/{task_id}/replay-agent/chat/stream")
     async def api_replay_agent_chat_stream(task_id: str, payload: dict[str, Any] = Body(...)):
-        return await _agent_chat_stream_response(_replay_agent_service(task_id), payload)
+        return await _agent_chat_stream_response(_replay_agent_service(task_id), payload, task_id=task_id)
 
     @app.post("/api/tasks/{task_id}/replay-agent/interrupt")
     def api_replay_agent_interrupt(task_id: str):
@@ -1081,6 +1114,7 @@ def create_app(
     async def _skill_build_stream_response(
         service: WorkflowSkillBuildService,
         payload: dict[str, Any],
+        task_id: str | None = None,
     ) -> StreamingResponse:
         message = payload.get("message")
         session_id = payload.get("session_id")
@@ -1099,11 +1133,37 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(e))
 
         async def _sse():
+            if app_command_queue is not None:
+                app_command_queue.put({
+                    "type": "show_conversation_overlay",
+                    "mode": "build_skill_chat",
+                    "task_id": task_id or "",
+                })
+            message_accum = ""
             try:
                 async for event in event_iter:
+                    if app_command_queue is not None:
+                        if event.get("event") == "text":
+                            message_accum += event.get("text") or ""
+                            snippet = message_accum
+                            if len(snippet) > 500:
+                                snippet = "..." + snippet[-497:]
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "text": snippet,
+                            })
+                        elif event.get("event") == "tool_use":
+                            tool_name = event.get("name") or ""
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "tool": tool_name,
+                            })
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+            finally:
+                if app_command_queue is not None:
+                    app_command_queue.put({"type": "hide_conversation_overlay"})
 
         return StreamingResponse(
             _sse(),
@@ -1393,7 +1453,7 @@ def create_app(
 
     @app.post("/api/tasks/{task_id}/skill-build/chat/stream")
     async def api_skill_build_chat_stream(task_id: str, payload: dict[str, Any] = Body(...)):
-        return await _skill_build_stream_response(_skill_build_service(task_id), payload)
+        return await _skill_build_stream_response(_skill_build_service(task_id), payload, task_id=task_id)
 
     @app.post("/api/tasks/{task_id}/skill-build/interrupt")
     def api_skill_build_interrupt(task_id: str):

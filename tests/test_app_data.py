@@ -126,6 +126,71 @@ class AppDataPathTests(unittest.TestCase):
             self.assertEqual(env["UV_CACHE_DIR"], str(root / "uv-cache"))
             self.assertEqual(env["UV_NO_CONFIG"], "1")
 
+    def test_get_managed_browser_harness_path_frozen(self) -> None:
+        with patch.object(app_data, "is_frozen", return_value=True), patch.object(
+            app_data, "get_tool_bin_dir", return_value=Path("/fake/app_data/bin")
+        ):
+            self.assertEqual(app_data.get_managed_browser_harness_path(), Path("/fake/app_data/bin/browser-harness"))
+
+    def test_get_managed_browser_harness_path_dev_in_sys_exe_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fake_python = Path(td) / "python"
+            fake_harness = Path(td) / "browser-harness"
+            fake_harness.write_text("#!/bin/sh\n", encoding="utf-8")
+            fake_harness.chmod(0o755)
+
+            with patch.object(app_data, "is_frozen", return_value=False), patch.object(
+                sys, "executable", str(fake_python)
+            ):
+                self.assertEqual(app_data.get_managed_browser_harness_path(), fake_harness)
+
+    def test_get_managed_browser_harness_path_dev_in_sub_repo_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            sub_venv_harness = repo_root / "harness" / "browser-harness" / ".venv" / "bin" / "browser-harness"
+            sub_venv_harness.parent.mkdir(parents=True)
+            sub_venv_harness.write_text("#!/bin/sh\n", encoding="utf-8")
+            sub_venv_harness.chmod(0o755)
+
+            with patch.object(app_data, "is_frozen", return_value=False), patch.object(
+                app_data, "_repo_root", return_value=repo_root
+            ), patch.object(sys, "executable", "/fake/python"):
+                self.assertEqual(app_data.get_managed_browser_harness_path(), sub_venv_harness)
+
+    def test_get_managed_browser_harness_path_dev_on_path(self) -> None:
+        with patch.object(app_data, "is_frozen", return_value=False), patch.object(
+            app_data, "_repo_root", return_value=Path("/fake/repo")
+        ), patch.object(sys, "executable", "/fake/python"), patch.object(
+            app_data.shutil, "which", return_value="/usr/local/bin/browser-harness"
+        ):
+            self.assertEqual(app_data.get_managed_browser_harness_path(), Path("/usr/local/bin/browser-harness"))
+
+    def test_get_managed_browser_harness_path_dev_fallback(self) -> None:
+        with patch.object(app_data, "is_frozen", return_value=False), patch.object(
+            app_data, "_repo_root", return_value=Path("/fake/repo")
+        ), patch.object(sys, "executable", "/fake/python"), patch.object(
+            app_data.shutil, "which", return_value=None
+        ), patch.object(
+            app_data, "get_tool_bin_dir", return_value=Path("/fake/app_data/bin")
+        ):
+            self.assertEqual(app_data.get_managed_browser_harness_path(), Path("/fake/app_data/bin/browser-harness"))
+
+    def test_frozen_workflow_runtime_env_exports_pythonpath(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td) / "bundle"
+            bundle.mkdir()
+            old_meipass = getattr(sys, "_MEIPASS", None)
+            sys._MEIPASS = str(bundle)  # type: ignore[attr-defined]
+            try:
+                with patch.object(app_data, "is_frozen", return_value=True):
+                    env = app_data.workflow_runtime_env()
+                    self.assertEqual(env["PYTHONPATH"], str(bundle))
+            finally:
+                if old_meipass is None:
+                    delattr(sys, "_MEIPASS")
+                else:
+                    sys._MEIPASS = old_meipass  # type: ignore[attr-defined]
+
 
 if __name__ == "__main__":
     unittest.main()

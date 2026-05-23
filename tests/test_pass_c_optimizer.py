@@ -174,7 +174,7 @@ class PassCOptimizerTests(unittest.TestCase):
             self.assertTrue((workflow_dir / "metadata.json").exists())
             self.assertTrue((workflow_dir / "schema.json").exists())
             self.assertTrue((workflow_dir / "optimized_plan.json").exists())
-            self.assertFalse((workflow_dir / "manifest.jsonl").exists())
+            self.assertTrue((workflow_dir / "manifest.jsonl").exists())
             self.assertFalse((workflow_dir / "step_cards.json").exists())
             self.assertFalse((workflow_dir / "plan_creation.json").exists())
             self.assertFalse((workflow_dir / "0.png").exists())

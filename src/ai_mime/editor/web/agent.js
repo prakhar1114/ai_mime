@@ -20,6 +20,7 @@
     sendBtn: document.getElementById("sendBtn"),
     stopBtn: document.getElementById("stopBtn"),
     bashApprovalToggle: document.getElementById("bashApprovalToggle"),
+    toggleOverlayBtn: document.getElementById("toggleOverlayBtn"),
   };
 
   let sessions = [];
@@ -637,6 +638,16 @@
       } catch (e) {
         setError(e.message || String(e));
         el.bashApprovalToggle.checked = !el.bashApprovalToggle.checked;
+      }
+    });
+  }
+
+  if (el.toggleOverlayBtn) {
+    el.toggleOverlayBtn.addEventListener("click", async () => {
+      try {
+        await request("/api/overlay/toggle", { method: "POST" });
+      } catch (e) {
+        setError(e.message || String(e));
       }
     });
   }

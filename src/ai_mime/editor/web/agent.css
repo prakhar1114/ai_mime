@@ -587,6 +587,24 @@ textarea::placeholder {
   text-underline-offset: 3px;
 }
 
+.toggle-overlay-btn {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  padding: 0 12px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.toggle-overlay-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
 @media (max-width: 760px) {
   .agent-shell {
     grid-template-columns: 1fr;

@@ -123,7 +123,28 @@ def get_uv_cache_dir() -> Path:
 
 
 def get_managed_browser_harness_path() -> Path:
-    """Path to the packaged browser-harness console script."""
+    """Resolve browser-harness for workflow/skill environments.
+
+    In frozen builds, use the browser-harness executable under the app-managed
+    tool bin directory. In development, search the virtualenv or system PATH,
+    or fallback to the sub-repo's own virtualenv/executable.
+    """
+    if is_frozen():
+        return get_tool_bin_dir() / "browser-harness"
+
+    # Development mode: find a valid local browser-harness executable.
+    # 1. Check parent of current python interpreter (if we're inside a venv that has it installed)
+    py_bin_dir = Path(sys.executable).parent
+    harness_in_py = py_bin_dir / "browser-harness"
+    if harness_in_py.is_file() and os.access(harness_in_py, os.X_OK):
+        return harness_in_py
+
+    # 2. Check the sub-repo's own virtualenv
+    sub_venv_harness = _repo_root() / "harness" / "browser-harness" / ".venv" / "bin" / "browser-harness"
+    if sub_venv_harness.is_file() and os.access(sub_venv_harness, os.X_OK):
+        return sub_venv_harness
+
+    # 4. Fallback
     return get_tool_bin_dir() / "browser-harness"
 
 
@@ -203,6 +224,9 @@ def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> 
         env["PATH"] = os.pathsep.join([tool_bin, bundled_bin, *_FROZEN_SYSTEM_PATHS])
         env["AI_MIME_BROWSER_SKILL_NAME"] = "browser"
         env["AI_MIME_BROWSER_SKILL_PATH"] = str(get_bundled_browser_harness_dir())
+        # Propagate the PyInstaller bundle root to the python subprocesses
+        # so they can import the packaged modules.
+        env["PYTHONPATH"] = str(sys._MEIPASS)  # type: ignore[attr-defined]
     return env
 
 

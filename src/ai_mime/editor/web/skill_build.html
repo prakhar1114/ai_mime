@@ -28,10 +28,13 @@
       <main class="chat">
         <header class="chat-head">
           <div class="chat-title" id="chatTitle">New Session</div>
-          <label class="bash-toggle">
-            <input type="checkbox" id="bashApprovalToggle" />
-            <span>Require approval for Bash</span>
-          </label>
+          <div class="chat-head-right" style="display: flex; align-items: center; gap: 14px;">
+            <button id="toggleOverlayBtn" class="toggle-overlay-btn" type="button">Toggle Overlay</button>
+            <label class="bash-toggle">
+              <input type="checkbox" id="bashApprovalToggle" />
+              <span>Require approval for Bash</span>
+            </label>
+          </div>
         </header>
 
         <div id="terminalBanner" class="terminal-banner" hidden></div>
