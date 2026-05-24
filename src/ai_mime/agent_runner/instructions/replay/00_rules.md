@@ -4,7 +4,26 @@ These rules apply to all replay operations. Read this file first to understand t
 
 ## Environment Details
 - **Browser Skill / Harness** — read the browser-harness folder (it has a `SKILL.md` file) to understand the APIs and helpers available for driving Chrome via CDP.
-- **Computer-use tools (`mcp__cua__*`)** — attached to THIS session for last-resort native-macOS control.discover and call these tools directly (`computer_screenshot`, `computer_find_element`, `computer_click`, `computer_type`, `computer_hotkey`, …) to drive native apps and hostile DOMs; screenshot first, act, screenshot again to verify. (The skill's own `scripts/run.py` hands the same subtask to `run_computer_use_task` via `"$AI_MIME_UI_AGENT_CMD"` — an agent that drives the SAME cua MCP server — so it reproduces the steps you just performed.)
+- **Computer-use tools (`mcp__cua__*`)** — attached to THIS session for last-resort native-macOS control. Discover and call these tools directly (`computer_screenshot`, `computer_find_element`, `computer_click`, `computer_type`, `computer_hotkey`, …) to drive native apps and hostile DOMs; screenshot first, act, screenshot again to verify.
+  - **Standalone UI Agent Delegation**:
+    In any custom script execution or manual triage helper, hand native-UI actions to the standalone UI Agent via the `$AI_MIME_UI_AGENT_CMD` environment variable. Never search the codebase, write custom selenium/click loops in Python, or import internal modules directly.
+    - **Usage Example in Python**:
+      ```python
+      import os, shlex, subprocess, json
+      
+      ui_agent_cmd = os.environ.get("AI_MIME_UI_AGENT_CMD")
+      task_prompt = "In the Weather application: 1. Click search, 2. Type 'Paris', 3. Press Enter."
+      schema = {
+          "type": "object",
+          "properties": {"temperature": {"type": "number"}},
+          "required": ["temperature"]
+      }
+      
+      cmd = shlex.split(ui_agent_cmd) + [task_prompt, "--schema", json.dumps(schema), "--json"]
+      proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+      result = json.loads(proc.stdout)
+      print("Paris Temperature:", result["result_json"]["temperature"])
+      ``` 
 - **Bash** — for shelling out through app-managed tools.
 - **WebSearch / WebFetch** — the open web.
 

@@ -338,6 +338,9 @@ Terminal signal file: {signal_path}
 To prevent task dilution and ensure consistent behavior, your instructions are broken down into sequential task files located in the instructions folder:
 {INSTRUCTIONS_ROOT / "build_skill"}
 
+An example of a correctly structured and packaged skill is available for your reference at:
+{INSTRUCTIONS_ROOT / "example_skill"}
+
 You MUST execute these tasks step-by-step:
 1. First, read and follow `00_rules.md` in the instructions directory to understand execution guidelines, Python path requirements, and tools.
 2. Next, read and execute the instructions in `01_phase_a_confirm_inputs.md`.

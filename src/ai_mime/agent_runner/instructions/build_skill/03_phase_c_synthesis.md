@@ -3,11 +3,21 @@
 In this phase, you will write the final deterministic python execution script, run tests against it, and iterate until it runs clean.
 
 ## Instructions
-1. Create or overwrite the skill script at `{skill_dir}/scripts/run.py` using details from `agent/learned_notes.md`.
+1. Create or overwrite the skill script at `{skill_dir}/scripts/run.py` using details from `agent/learned_notes.md`. (You can refer to the example script at `instructions/example_skill/scripts/run.py` to see a working reference for how to parse inputs and format progress logs).
 2. Per-step code shape must match its `executor` in the optimized plan:
    - `script` → inline Python.
    - `browser_harness` → shell out to `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'` (or import helpers directly).
    - `ui_agent` → shell out to `"$AI_MIME_UI_AGENT_CMD" "<task>" [--schema '<json>'] --json` and parse `result_json` from stdout.
+     - **Python Invocation Example**:
+       ```python
+       import os, shlex, subprocess, json
+       ui_agent_cmd = os.environ.get("AI_MIME_UI_AGENT_CMD")
+       task_prompt = "In the open web browser: 1. Click search input, 2. Type 'weather', 3. Press Enter key."
+       cmd = shlex.split(ui_agent_cmd) + [task_prompt, "--json"]
+       proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+       result = json.loads(proc.stdout)
+       # result is a dict containing {"status": "success"|"failed", "result_json": {...}, "summary": "..."}
+       ```
 3. Code Contract:
    - Invocation: `"$AI_MIME_PYTHON_PATH" scripts/run.py --inputs-json /path/to/inputs.json` or `./run.sh /path/to/inputs.json`. Read all inputs up front, do not prompt for inputs.
    - For irreducible judgment, call `ask_gemini` with an explicit JSON schema. Pattern:

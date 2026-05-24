@@ -45,6 +45,8 @@ a = Analysis(
         # Menubar icons (resolved at runtime via get_bundled_resource)
         (os.path.join(_repo, "docs", "logo", "icon32.png"), os.path.join("docs", "logo")),
         (os.path.join(_repo, "docs", "logo", "icon60.png"), os.path.join("docs", "logo")),
+        # Agent runner instructions (containing build_skill, replay, and example_skill)
+        (os.path.join(_src, "ai_mime", "agent_runner", "instructions"), os.path.join("ai_mime", "agent_runner", "instructions")),
     ],
     hiddenimports=[
         # --- Cocoa / AppKit stack -------------------------------------------

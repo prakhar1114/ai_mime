@@ -3,6 +3,8 @@
 In this phase, you will write the markdown documentation, wrap execution in `run.sh`, create example/template input files, and signal that the skill is ready.
 
 ## Instructions
+You can refer to the complete example skill package reference at `instructions/example_skill/` (which contains `SKILL.md`, `run.sh`, `scripts/run.py`, `requirements.txt`, `inputs/`, and `references/`) to see exactly how a standard skill is structured, documented, and packaged.
+
 1. Invoke the `skill-creator` skill to scaffold `SKILL.md`. It MUST have YAML frontmatter (non-empty `name`, `description`) and these sections (titles exact): `## Inputs`, `## Run`, `## Outputs`, `## Progress log format`, `## Fallback`, `## ask_gemini decision points`, `## References`.
 
    `SKILL.md` `## Run` must document the Python runtime contract:
