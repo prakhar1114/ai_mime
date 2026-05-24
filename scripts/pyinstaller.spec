@@ -16,6 +16,12 @@ import sys  # os is already injected by PyInstaller
 # ---------------------------------------------------------------------------
 _repo = os.path.abspath(os.path.join(SPECPATH, ".."))  # noqa: F821
 _src = os.path.join(_repo, "src")
+_uv_binary = os.environ.get("UV_BINARY_PATH")
+if not _uv_binary or not os.path.isfile(_uv_binary):  # noqa: F821
+    raise RuntimeError(
+        "UV_BINARY_PATH must point to the uv binary. "
+        "Run scripts/build.sh so it can resolve and export uv."
+    )
 
 # Make ai_mime importable during analysis.
 sys.path.insert(0, _src)
@@ -26,15 +32,21 @@ sys.path.insert(0, _src)
 a = Analysis(
     scripts=[os.path.join(_src, "ai_mime", "cli.py")],
     pathex=[_src],
-    binaries=[],
+    binaries=[
+        (_uv_binary, "bin"),
+    ],
     datas=[
         # user_config.yml → bundle root (sys._MEIPASS root)
         (os.path.join(_repo, "user_config.yml"), "."),
         # Workflow-editor web assets
         (os.path.join(_src, "ai_mime", "editor", "web"), os.path.join("ai_mime", "editor", "web")),
+        # Bundled browser-harness skill, linked into ~/.claude/skills during onboarding
+        (os.path.join(_repo, "harness", "browser-harness"), os.path.join("harness", "browser-harness")),
         # Menubar icons (resolved at runtime via get_bundled_resource)
         (os.path.join(_repo, "docs", "logo", "icon32.png"), os.path.join("docs", "logo")),
         (os.path.join(_repo, "docs", "logo", "icon60.png"), os.path.join("docs", "logo")),
+        # Agent runner instructions (containing build_skill, replay, and example_skill)
+        (os.path.join(_src, "ai_mime", "agent_runner", "instructions"), os.path.join("ai_mime", "agent_runner", "instructions")),
     ],
     hiddenimports=[
         # --- Cocoa / AppKit stack -------------------------------------------

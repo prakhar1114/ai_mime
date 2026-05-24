@@ -10,7 +10,7 @@ authors = [
     {name = "Prakhar Jain", email = "prakharjain1114@gmail.com"},
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "rumps>=0.4.0",
     "pynput>=1.7.6",
@@ -32,7 +32,16 @@ dependencies = [
     "setuptools",
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
-    "lmnr[all]"
+    "lmnr[all]",
+    "claude-agent-sdk==0.2.82",
+    "cua-computer-server[mcp]>=0.1.25",
+    "browser-harness"
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pyinstaller>=6.0.0",
 ]
 
 [project.scripts]
@@ -41,3 +50,6 @@ reflect = "ai_mime.cli:reflect"
 
 [tool.setuptools.package-data]
 "ai_mime.editor.web" = ["*.html", "*.js", "*.css"]
+
+[tool.uv.sources]
+browser-harness = { path = "harness/browser-harness", editable = true }

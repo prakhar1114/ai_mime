@@ -1,4 +1,8 @@
+import atexit
 import click
+import os
+import signal
+import subprocess
 from pathlib import Path
 import logging
 import multiprocessing
@@ -10,7 +14,57 @@ from ai_mime.user_config import load_user_config
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
 from ai_mime.app import run_app
 from ai_mime.onboarding import run_onboarding
+from ai_mime.debug_log import log
 
+
+COMPUTER_SERVER_PORT = 58840
+
+
+def _free_port(port: int) -> None:
+    """Kill whatever process is currently listening on ``port``."""
+    try:
+        pids = subprocess.run(
+            ["lsof", "-ti", f"tcp:{port}"],
+            capture_output=True, text=True, check=False,
+        ).stdout.split()
+    except Exception as e:
+        log(f"Computer server: failed to inspect port {port}: {e}", exc_info=True)
+        return
+    for pid in pids:
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+            log(f"Computer server: killed stale process {pid} on port {port}")
+        except (ProcessLookupError, ValueError):
+            pass
+
+
+def _run_computer_server(port: int) -> None:
+    """Child-process entrypoint: serve the cua computer server (with MCP)."""
+    log(f"Computer server: child process started, binding port {port}")
+    try:
+        from computer_server import Server
+
+        Server(host="0.0.0.0", port=port).start()
+    except Exception as e:
+        log(f"Computer server: crashed on port {port}: {e}", exc_info=True)
+        raise
+
+
+def _start_computer_server(port: int = COMPUTER_SERVER_PORT) -> None:
+    """Launch the cua computer server on ``port`` as a child process.
+
+    Runs in-process via multiprocessing (rather than shelling out to a separate
+    interpreter) so the packaged app's server inherits the bundle's bundled
+    computer_server and its macOS screen-recording/accessibility permissions.
+    """
+    _free_port(port)
+    proc = multiprocessing.Process(
+        target=_run_computer_server, args=(port,), daemon=True
+    )
+    proc.start()
+    atexit.register(proc.terminate)
+    log(f"Computer server: launched on port {port} (pid {proc.pid})")
+    click.echo(f"Computer server starting on port {port} (pid {proc.pid}).")
 
 
 @click.command()
@@ -21,14 +75,19 @@ def start_app():
     # First-run onboarding — frozen builds only.
     # if is_frozen() and not get_onboarding_done_path().exists():
     if not get_onboarding_done_path().exists():
+        log("start_app: running onboarding")
         run_onboarding()
 
     # Reload .env so that any key written by onboarding is live.
     load_dotenv(get_env_path(), override=True)
 
+    _start_computer_server()
+
     if check_permissions():
+        log("start_app: permissions OK, starting app")
         run_app()
     else:
+        log("start_app: permissions missing, not starting app")
         click.echo("Permissions missing. Please enable them and restart.")
 
 @click.command()

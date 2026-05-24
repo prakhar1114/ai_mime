@@ -6,8 +6,17 @@ import path helpers from here.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
+
+_BROWSER_HARNESS_REL = "harness/browser-harness"
+_FROZEN_SYSTEM_PATHS = (
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +86,155 @@ def get_bundled_resource(rel: str) -> Path:
     if is_frozen():
         return Path(sys._MEIPASS) / rel  # type: ignore[attr-defined]
     return _repo_root() / rel
+
+
+def get_uv_path() -> Path:
+    """Resolve uv for app-managed Python/workflow environments.
+
+    Frozen builds use the uv binary bundled by PyInstaller. Development uses
+    the developer's PATH so local runs keep using the existing toolchain.
+    """
+    if is_frozen():
+        return get_bundled_resource("bin/uv")
+    found = shutil.which("uv")
+    if found:
+        return Path(found)
+    return Path("uv")
+
+
+def get_managed_python_install_dir() -> Path:
+    """Directory where packaged onboarding installs uv-managed Python."""
+    return APP_DATA_DIR / "python"
+
+
+def get_tool_dir() -> Path:
+    """Directory where app-owned uv tool environments live."""
+    return APP_DATA_DIR / "tools"
+
+
+def get_tool_bin_dir() -> Path:
+    """Directory where app-owned uv tool executable shims live."""
+    return APP_DATA_DIR / "bin"
+
+
+def get_uv_cache_dir() -> Path:
+    """Directory where app-owned uv cache data lives."""
+    return APP_DATA_DIR / "uv-cache"
+
+
+def get_managed_browser_harness_path() -> Path:
+    """Resolve browser-harness for workflow/skill environments.
+
+    In frozen builds, use the browser-harness executable under the app-managed
+    tool bin directory. In development, search the virtualenv or system PATH,
+    or fallback to the sub-repo's own virtualenv/executable.
+    """
+    if is_frozen():
+        return get_tool_bin_dir() / "browser-harness"
+
+    # Development mode: find a valid local browser-harness executable.
+    # 1. Check parent of current python interpreter (if we're inside a venv that has it installed)
+    py_bin_dir = Path(sys.executable).parent
+    harness_in_py = py_bin_dir / "browser-harness"
+    if harness_in_py.is_file() and os.access(harness_in_py, os.X_OK):
+        return harness_in_py
+
+    # 2. Check the sub-repo's own virtualenv
+    sub_venv_harness = _repo_root() / "harness" / "browser-harness" / ".venv" / "bin" / "browser-harness"
+    if sub_venv_harness.is_file() and os.access(sub_venv_harness, os.X_OK):
+        return sub_venv_harness
+
+    # 3. Check the system PATH
+    found = shutil.which("browser-harness")
+    if found:
+        return Path(found)
+
+    # 4. Fallback
+    return get_tool_bin_dir() / "browser-harness"
+
+
+def get_bundled_browser_harness_dir() -> Path:
+    """Resolve the packaged browser-harness source/resources directory."""
+    return get_bundled_resource(_BROWSER_HARNESS_REL)
+
+
+def _find_managed_python(install_dir: Path | None = None) -> Path | None:
+    root = install_dir or get_managed_python_install_dir()
+    candidates: list[Path] = []
+    for pattern in (
+        "*/bin/python3.12",
+        "*/bin/python3",
+        "*/bin/python",
+        "bin/python3.12",
+        "bin/python3",
+        "bin/python",
+    ):
+        candidates.extend(root.glob(pattern))
+    for candidate in sorted(candidates):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def get_python_path(workflow_dir: str | os.PathLike[str] | None = None) -> Path:
+    """Resolve the Python executable for workflow scripts.
+
+    Existing workflow/skill virtualenvs take precedence. In frozen builds,
+    fall back to the app-managed Python installed during onboarding. In
+    development, use the current/system interpreter instead of managed Python.
+    """
+    if workflow_dir is not None:
+        venv_python = Path(workflow_dir) / ".venv" / "bin" / "python"
+        if venv_python.is_file() and os.access(venv_python, os.X_OK):
+            return venv_python
+
+    if is_frozen():
+        managed = _find_managed_python()
+        if managed is not None:
+            return managed
+        return get_managed_python_install_dir() / "bin" / "python3.12"
+
+    executable = Path(sys.executable)
+    if executable.is_file():
+        return executable
+    found = shutil.which("python3") or shutil.which("python")
+    if found:
+        return Path(found)
+    return Path("python3")
+
+
+def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> dict[str, str]:
+    """Environment entries exported to generated workflow scripts."""
+    python_path = str(get_python_path(workflow_dir))
+    env = {
+        "AI_MIME_UV_PATH": str(get_uv_path()),
+        "AI_MIME_PYTHON_PATH": python_path,
+        "AI_MIME_BROWSER_HARNESS_BIN": str(get_managed_browser_harness_path()),
+        # Stable subprocess form of the UI agent (run_computer_use_task). Generated
+        # skill scripts and the build/replay agents shell out to this for ui_agent
+        # steps instead of hardcoding the module path.
+        "AI_MIME_UI_AGENT_CMD": f"{python_path} -m ai_mime.agent_runner.computer_use",
+        "UV_PYTHON_INSTALL_DIR": str(get_managed_python_install_dir()),
+        "AI_MIME_BROWSER_SKILL_NAME": os.environ.get("AI_MIME_BROWSER_SKILL_NAME") or "browser",
+        "AI_MIME_BROWSER_SKILL_PATH": os.environ.get("AI_MIME_BROWSER_SKILL_PATH") or str(get_bundled_browser_harness_dir()),
+    }
+    if is_frozen():
+        # uv isolation (tool/cache dirs, no user config) and the sanitized PATH only
+        # apply in the packaged app. In dev, APP_DATA_DIR is the repo root, so
+        # redirecting these would pollute the working tree and the dev's uv cache.
+        env["UV_TOOL_DIR"] = str(get_tool_dir())
+        env["UV_TOOL_BIN_DIR"] = str(get_tool_bin_dir())
+        env["UV_CACHE_DIR"] = str(get_uv_cache_dir())
+        env["UV_NO_CONFIG"] = "1"
+        tool_bin = str(get_tool_bin_dir())
+        bundled_bin = str(get_bundled_resource("bin"))
+        env["PATH"] = os.pathsep.join([tool_bin, bundled_bin, *_FROZEN_SYSTEM_PATHS])
+        env["AI_MIME_BROWSER_SKILL_NAME"] = "browser"
+        env["AI_MIME_BROWSER_SKILL_PATH"] = str(get_bundled_browser_harness_dir())
+        # Propagate the PyInstaller bundle root to the python subprocesses
+        # so they can import the packaged modules.
+        env["PYTHONPATH"] = str(sys._MEIPASS)  # type: ignore[attr-defined]
+    return env
 
 
 # ---------------------------------------------------------------------------

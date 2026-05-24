@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AI Mime - Tasks</title>
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/icon_16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icon_32.png" />
+    <link rel="icon" type="image/png" sizes="128x128" href="/static/icon_128.png" />
+    <link rel="apple-touch-icon" sizes="256x256" href="/static/icon_256.png" />
+    <link rel="stylesheet" href="/static/tasks.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <div class="brand">AI Mime</div>
+          <h1>Tasks</h1>
+        </div>
+        <div class="toolbar">
+          <div class="sync" id="syncState">Loading</div>
+          <button class="btn" id="agentModeBtn">Agent Mode</button>
+          <button class="btn primary" id="startRecordingBtn">Start recording</button>
+          <button class="btn" id="refreshBtn">Refresh</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="summary" aria-label="Task summary">
+          <div class="metric">
+            <div class="metric-value" id="totalCount">0</div>
+            <div class="metric-label">Total</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value" id="readyCount">0</div>
+            <div class="metric-label">Ready</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value" id="attentionCount">0</div>
+            <div class="metric-label">Needs reflection</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value" id="activeCount">0</div>
+            <div class="metric-label">Active</div>
+          </div>
+        </section>
+
+        <section class="task-surface">
+          <div class="list-head">
+            <div>Task</div>
+            <div>Status</div>
+            <div class="actions-head">Actions</div>
+          </div>
+          <div class="task-list" id="taskList">
+            <div class="empty">Loading tasks...</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/tasks.js"></script>
+  </body>
+</html>

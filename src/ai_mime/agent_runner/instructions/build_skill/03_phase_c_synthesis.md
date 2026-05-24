@@ -1,0 +1,45 @@
+# Phase C — Synthesize and validate `scripts/run.py`
+
+In this phase, you will write the final deterministic python execution script, run tests against it, and iterate until it runs clean.
+
+## Instructions
+1. Create or overwrite the skill script at `{skill_dir}/scripts/run.py` using details from `agent/learned_notes.md`. (You can refer to the example script at `instructions/example_skill/scripts/run.py` to see a working reference for how to parse inputs and format progress logs).
+2. Per-step code shape must match its `executor` in the optimized plan:
+   - `script` → inline Python.
+   - `browser_harness` → shell out to `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'` (or import helpers directly).
+   - `ui_agent` → shell out to `"$AI_MIME_UI_AGENT_CMD" "<task>" [--schema '<json>'] --json` and parse `result_json` from stdout.
+     - **Python Invocation Example**:
+       ```python
+       import os, shlex, subprocess, json
+       ui_agent_cmd = os.environ.get("AI_MIME_UI_AGENT_CMD")
+       task_prompt = "In the open web browser: 1. Click search input, 2. Type 'weather', 3. Press Enter key."
+       cmd = shlex.split(ui_agent_cmd) + [task_prompt, "--json"]
+       proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+       result = json.loads(proc.stdout)
+       # result is a dict containing {"status": "success"|"failed", "result_json": {...}, "summary": "..."}
+       ```
+3. Code Contract:
+   - Invocation: `"$AI_MIME_PYTHON_PATH" scripts/run.py --inputs-json /path/to/inputs.json` or `./run.sh /path/to/inputs.json`. Read all inputs up front, do not prompt for inputs.
+   - For irreducible judgment, call `ask_gemini` with an explicit JSON schema. Pattern:
+     ```python
+     from browser_harness.helpers import ask_gemini
+     pick = ask_gemini(prompt, schema={"type":"object","properties":{"id":{"type":["string","null"]},"reason":{"type":"string"}},"required":["id","reason"]})
+     ```
+     Branch deterministically on the returned dict. Document each call site in `SKILL.md`.
+   - Emit progress logs continuously (step id + title) on stderr:
+     - `{"event":"step_start","id":"<step_id>","title":"…"}`
+     - `{"event":"step_done","id":"<step_id>","outputs":{…},"summary":"…"}`
+     - `{"event":"step_failed","id":"<step_id>","error":"…","recoverable":true|false}`
+     - `{"event":"workflow_done","outputs":{…}}`
+     Free-form human logs may be interleaved. Exit non-zero on `step_failed`.
+4. Clear any Phase-B side effects before testing. Print a one-line request to the user to confirm that `agent/side_effects.md` entries are cleared.
+5. Run the assembled script end-to-end against `agent/confirmed_inputs.json` (e.g. via `"$AI_MIME_PYTHON_PATH" scripts/run.py --inputs-json agent/confirmed_inputs.json`). Verify that the same end state Phase B reached is achieved.
+6. If it fails: diagnose, patch `scripts/run.py`, ask the user to clear new side effects, and re-run. Loop until it runs end-to-end cleanly.
+
+## Success Criteria / Gating
+Before moving to Phase D, you must verify that:
+- `{skill_dir}/scripts/run.py` exists and is syntactically valid Python.
+- The script has run end-to-end successfully against `agent/confirmed_inputs.json`.
+- When the e2e script runs clean, do not ask for packaging approval. Send one short progress update such as "The full automation ran successfully. I'm turning it into a reusable skill now."
+
+Once these criteria are met, proceed to Phase D by reading `04_phase_d_packaging.md`.

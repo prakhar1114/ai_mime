@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AI Mime - Reflect</title>
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/icon_16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icon_32.png" />
+    <link rel="icon" type="image/png" sizes="128x128" href="/static/icon_128.png" />
+    <link rel="apple-touch-icon" sizes="256x256" href="/static/icon_256.png" />
+    <link rel="stylesheet" href="/static/agent.css" />
+  </head>
+  <body>
+    <div class="agent-shell reflect-shell" data-task-id="__TASK_ID__">
+      <aside class="sidebar">
+        <div class="side-top">
+          <h1>Reflect</h1>
+        </div>
+        <button class="new-chat" id="newChatBtn">New Chat</button>
+        <div class="sessions" id="sessionsList">
+          <div class="empty">Loading sessions...</div>
+        </div>
+      </aside>
+
+      <main class="chat">
+        <header class="chat-head">
+          <div class="chat-title" id="chatTitle">Reflection Chat</div>
+          <label class="bash-toggle">
+            <input type="checkbox" id="bashApprovalToggle" />
+            <span>Require approval for Bash</span>
+          </label>
+        </header>
+
+        <section class="reflect-progress" aria-label="Reflection progress">
+          <div class="progress-topline">
+            <div>
+              <div class="progress-title" id="progressTitle">Preparing reflection</div>
+              <div class="progress-subtitle" id="progressSubtitle">Loading task status...</div>
+            </div>
+            <button class="start-reflect" id="startReflectBtn" type="button" hidden>Start reflection</button>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <div class="progress-steps">
+            <span id="passALabel">Pass A</span>
+            <span id="passBLabel">Pass B</span>
+            <span id="optimizedLabel">Optimized plan</span>
+          </div>
+        </section>
+
+        <section class="messages" id="messages">
+          <div class="empty-state">Ask about the reflected plan when you are ready.</div>
+        </section>
+
+        <footer class="composer">
+          <div class="error" id="errorBox" hidden></div>
+          <form id="chatForm">
+            <textarea id="messageInput" rows="1" placeholder="Write a message..."></textarea>
+            <div class="composer-actions">
+              <select class="model-select" id="modelSelect" aria-label="Claude model"></select>
+              <button class="stop" id="stopBtn" type="button" hidden>Stop</button>
+              <button class="send" id="sendBtn" type="submit">Send</button>
+            </div>
+          </form>
+        </footer>
+      </main>
+    </div>
+
+    <script src="/static/reflect.js"></script>
+    <script src="/static/agent.js"></script>
+  </body>
+</html>

@@ -5,7 +5,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PIL import Image, ImageDraw
 
@@ -163,6 +163,7 @@ def reflect_session(
     *,
     style: ClickAnnotationStyle | None = None,
     clean_manifest_tail: bool = False,
+    force: bool = False,
 ) -> Path:
     """
     Convert a recording session dir into a reusable workflow folder.
@@ -193,7 +194,7 @@ def reflect_session(
     manifest_dst = workflow_dir / "manifest.jsonl"
     metadata_dst = workflow_dir / "metadata.json"
 
-    if workflow_dir.exists() and manifest_dst.exists() and metadata_dst.exists():
+    if not force and workflow_dir.exists() and manifest_dst.exists() and metadata_dst.exists():
         log(f"Workflow already reflected: {workflow_dir} (skipping reflect_session)")
         return workflow_dir
 
@@ -230,8 +231,9 @@ def reflect_session(
 def compile_schema_for_workflow_dir(
     workflow_dir: str | os.PathLike[str],
     llm_cfg: ResolvedReflectConfig,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """
     Compile a parametrizable, coordinate-free schema into <workflow_dir>/schema.json.
     """
-    return compile_workflow_schema(workflow_dir=workflow_dir, llm_cfg=llm_cfg)
+    return compile_workflow_schema(workflow_dir=workflow_dir, llm_cfg=llm_cfg, progress_callback=progress_callback)

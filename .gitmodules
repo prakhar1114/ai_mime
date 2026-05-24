@@ -1,0 +1,4 @@
+[submodule "harness/browser-harness"]
+	path = harness/browser-harness
+	url = git@github.com:prakhar1114/browser-harness.git
+	branch = blinkit_primitives

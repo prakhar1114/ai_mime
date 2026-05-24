@@ -1,10 +1,8 @@
 import rumps
 import multiprocessing
 from pathlib import Path
-import logging
-import os
-import json
 import time
+import urllib.parse
 import urllib.request
 import webbrowser
 from lmnr import observe
@@ -17,45 +15,11 @@ from ai_mime.record.storage import SessionStorage
 from ai_mime.record.recorder_process import run_recorder_process
 from ai_mime.app_data import get_bundled_resource, get_recordings_dir
 
-from ai_mime.replay.catalog import list_replayable_workflows
-from ai_mime.user_config import ResolvedLLMConfig, ResolvedReflectConfig, ResolvedUserConfig, load_user_config
-from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
-from ai_mime.replay.engine import ReplayConfig, ReplayStopped, resolve_params, run_plan
-from ai_mime.replay.grounding import predict_computer_use_tool_call, tool_call_to_pixel_action
-from ai_mime.replay.os_executor import exec_computer_use_action
-from ai_mime.screenshot import ScreenshotRecorder
+from ai_mime.user_config import ResolvedReflectConfig, ResolvedUserConfig, load_user_config
+from ai_mime.reflect.runner import run_reflect_and_compile_schema
 from ai_mime.editor.server import start_editor_server
-from ai_mime.replay.overlay_ui import ReplayOverlay
 from ai_mime.record.overlay_ui import RecordingOverlay
 from ai_mime.debug_log import log
-
-
-def _list_pending_recordings(recordings_dir: Path, workflows_dir: Path) -> list[Path]:
-    """
-    Find all recording sessions that don't have a completed workflow (no schema.json).
-    Returns list of session directories sorted newest-first.
-    """
-    if not recordings_dir.exists():
-        return []
-
-    pending: list[Path] = []
-    for session_dir in recordings_dir.iterdir():
-        if not session_dir.is_dir():
-            continue
-
-        # Check if manifest.jsonl exists (valid recording)
-        if not (session_dir / "manifest.jsonl").exists():
-            continue
-
-        # Check if workflow exists and is complete
-        workflow_dir = workflows_dir / session_dir.name
-        has_schema = workflow_dir.exists() and (workflow_dir / "schema.json").exists()
-
-        if not has_schema:
-            pending.append(session_dir)
-
-    # Sort newest first
-    return sorted(pending, key=lambda p: p.name, reverse=True)
 
 
 @observe(name="reflect_and_compile_schema")
@@ -71,53 +35,12 @@ def _run_reflect_and_compile_schema(
     - reflect_session(session_dir) -> workflows/<session_name>/
     - compile schema.json inside that workflow dir
     """
-    log(f"=== Reflect subprocess started: {session_dir} ===")
-    log(f"reflect_llm_cfg.model={reflect_llm_cfg.model}")
-    log(f"clean_manifest_tail={clean_manifest_tail}")
-
-    # Ensure INFO logs from schema compiler show up in this subprocess.
-    try:
-        logging.basicConfig(level=logging.INFO)
-    except Exception:
-        pass
-
-    def _emit(obj: dict[str, Any]) -> None:
-        if event_queue is None:
-            return
-        try:
-            if hasattr(event_queue, "put_nowait"):
-                event_queue.put_nowait(obj)
-            else:
-                event_queue.put(obj)
-        except Exception:
-            pass
-
-    try:
-        log("Starting reflect_session...")
-        session_dir_p = Path(session_dir)
-        session_name = session_dir_p.name
-        recordings_dir = session_dir_p.parent
-        workflows_root = recordings_dir.parent / "workflows"
-
-        # Notify start of reflect phase
-        _emit({"type": "reflect_phase_started", "session_name": session_name, "phase": "reflecting"})
-
-        out_dir = reflect_session(session_dir_p, workflows_root, clean_manifest_tail=clean_manifest_tail)
-        log(f"Reflect finished: {out_dir}")
-        print(f"Reflect finished: {out_dir}")
-
-        # Notify start of compile phase
-        _emit({"type": "reflect_phase_started", "session_name": session_name, "phase": "compiling"})
-
-        log("Starting compile_schema_for_workflow_dir...")
-        compile_schema_for_workflow_dir(out_dir, llm_cfg=reflect_llm_cfg)
-        log(f"Schema compiled: {out_dir / 'schema.json'}")
-        print(f"Schema compiled: {out_dir / 'schema.json'}")
-        _emit({"type": "reflect_compile_done", "workflow_dir": str(out_dir)})
-    except Exception as e:
-        log(f"FAILED reflect/compile: {e}", exc_info=True)
-        _emit({"type": "reflect_compile_failed", "error": str(e), "session_dir": str(session_dir)})
-        raise
+    run_reflect_and_compile_schema(
+        session_dir,
+        reflect_llm_cfg,
+        clean_manifest_tail=clean_manifest_tail,
+        event_queue=event_queue,
+    )
 
 
 def _resolve_menubar_icon_path() -> str | None:
@@ -131,101 +54,6 @@ def _resolve_menubar_icon_path() -> str | None:
     if fallback.exists():
         return str(fallback)
     return None
-
-
-def _run_replay_workflow_schema(
-    workflow_dir: str,
-    replay_llm_cfg: ResolvedLLMConfig,
-    overrides: dict[str, str] | None = None,
-    event_queue: Any | None = None,
-    exclude_window_id: int | None = None,
-    pause_event: Any | None = None,
-    stop_event: Any | None = None,
-) -> None:
-    """
-    Background task (runs in its own process): replay schema.json plan using Qwen tool calls.
-    """
-    log(f"=== Replay subprocess started: {workflow_dir} ===")
-    log(f"replay_llm_cfg.model={replay_llm_cfg.model}")
-    log(f"overrides={overrides}")
-
-    try:
-        wf_dir = Path(workflow_dir)
-        log(f"Loading schema from {wf_dir / 'schema.json'}")
-        schema = json.loads((wf_dir / "schema.json").read_text(encoding="utf-8"))
-        log(f"Schema loaded successfully")
-        params = resolve_params(schema, overrides=overrides or {})
-
-        cfg = ReplayConfig(
-            model=replay_llm_cfg.model,
-            base_url=replay_llm_cfg.api_base,
-            api_key_env=replay_llm_cfg.api_key_env,
-            llm_extra_kwargs=dict(replay_llm_cfg.extra_kwargs or {}),
-        )
-        screenshotter = ScreenshotRecorder()
-
-        def _capture(dst: Path) -> Path:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            saved = screenshotter.capture(dst, exclude_window_id=exclude_window_id)
-            if not saved:
-                raise RuntimeError("Screenshot capture failed (check Screen Recording permission).")
-            return Path(saved)
-
-        run_plan(
-            wf_dir,
-            params=params,
-            cfg=cfg,
-            predict_tool_call=predict_computer_use_tool_call,
-            tool_call_to_pixel_action=tool_call_to_pixel_action,
-            capture_screenshot=_capture,
-            exec_action=exec_computer_use_action,
-            log=print,
-            event_queue=event_queue,
-            pause_event=pause_event,
-            stop_event=stop_event,
-        )
-
-        # Final notification + exit.
-        rumps.notification(
-            title="Task Complete",
-            subtitle=wf_dir.name,
-            message="Replay finished",
-        )
-        print("Task Complete")
-    except ReplayStopped:
-        try:
-            if event_queue is not None:
-                try:
-                    if hasattr(event_queue, "put_nowait"):
-                        event_queue.put_nowait({"type": "replay_stopped"})
-                    else:
-                        event_queue.put({"type": "replay_stopped"})
-                except Exception:
-                    pass
-            rumps.notification(
-                title="Replay stopped",
-                subtitle=str(Path(workflow_dir).name),
-                message="Stopped by user",
-            )
-        finally:
-            print("Replay stopped by user.")
-    except Exception as e:
-        try:
-            if event_queue is not None:
-                try:
-                    if hasattr(event_queue, "put_nowait"):
-                        event_queue.put_nowait({"type": "replay_failed", "error": str(e)})
-                    else:
-                        event_queue.put({"type": "replay_failed", "error": str(e)})
-                except Exception:
-                    pass
-            rumps.notification(
-                title="Replay failed",
-                subtitle=str(Path(workflow_dir).name),
-                message=str(e),
-            )
-        finally:
-            print(f"Replay failed: {e}")
 
 
 class RecorderApp(rumps.App):
@@ -246,51 +74,36 @@ class RecorderApp(rumps.App):
         self.session_dir = None
         self.reflect_process = None
         self.reflect_event_q: multiprocessing.Queue | None = None
-        self.replay_process = None
-        self.replay_event_q: multiprocessing.Queue | None = None
-        self._replay_overlay: ReplayOverlay | None = None
-        self._replay_state: dict[str, Any] = {}
-        # multiprocessing.Event isn't typed cleanly across platforms; keep this as Any.
-        self._replay_pause_event: Any | None = None
-        self._replay_stop_event: Any | None = None
         self.refine_cmd_q: multiprocessing.Queue | None = None
         self.refine_resp_q: multiprocessing.Queue | None = None
         self._recording_overlay: RecordingOverlay | None = None
+        self._conversation_overlay: Any | None = None
         self._skip_reflect_once = False
         self.dummy_recording = False
 
         # Track workflows currently being processed (session_name -> status)
         self._processing_workflows: dict[str, str] = {}  # session_name -> "reflecting" | "compiling"
 
-        # Local workflow editor (FastAPI) subprocess
-        self.editor_process: multiprocessing.Process | None = None
-        self.editor_port: int | None = None
+        # Browser dashboard -> rumps app commands and app -> dashboard status.
+        self.dashboard_command_q: multiprocessing.Queue | None = multiprocessing.Queue()
+        self._dashboard_manager = multiprocessing.Manager()
+        self.dashboard_state = self._dashboard_manager.dict()
 
-        # Poll replay progress events from the replay worker.
-        self._replay_timer = rumps.Timer(self._poll_replay_events, 0.1)
-        self._replay_timer.start()
+        # Local task dashboard (FastAPI) subprocess.
+        self.dashboard_process: multiprocessing.Process | None = None
+        self.dashboard_port: int | None = None
 
         # Poll reflect/schema compilation completion from the reflect worker.
         self._reflect_timer = rumps.Timer(self._poll_reflect_events, 0.2)
         self._reflect_timer.start()
 
-        # Periodically refresh Reflect menu to show processing status
-        self._reflect_menu_refresh_timer = rumps.Timer(self._refresh_reflect_menu_if_processing, 1.0)
-        self._reflect_menu_refresh_timer.start()
+        self._dashboard_command_timer = rumps.Timer(self._poll_dashboard_commands, 0.25)
+        self._dashboard_command_timer.start()
+        self._publish_dashboard_state()
 
         # Menu Items
         self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
-        # Repopulate on demand when user clicks "Replay" (no polling).
-        self.replay_menu = rumps.MenuItem("Replay", callback=self._on_replay_menu_clicked)
-        self._populate_replay_menu()
-
-        # Workflow review / edit
-        self.edit_menu = rumps.MenuItem("Edit Workflow", callback=self._on_edit_menu_clicked)
-        self._populate_edit_menu()
-
-        # Reflect menu (process pending recordings)
-        self.reflect_menu = rumps.MenuItem("Reflect", callback=self._on_reflect_menu_clicked)
-        self._populate_reflect_menu()
+        self.tasks_button = rumps.MenuItem("Open Dashboard", callback=self._open_tasks_dashboard)
 
         # Options submenu (placed at the bottom, right above the default Quit item).
         self.options_menu = rumps.MenuItem("Options")
@@ -299,6 +112,7 @@ class RecorderApp(rumps.App):
 
         # Build the menu using rumps.Menu APIs (more robust across rumps versions than assigning a raw list).
         self._build_menu()
+        self.port = self._ensure_dashboard_server()
 
     def _log_to_tmp(self, msg: str) -> None:
         try:
@@ -318,12 +132,7 @@ class RecorderApp(rumps.App):
                 self.menu.clear()
 
                 self.menu.add(self.start_button)
-                self.menu.add(None)
-                self.menu.add(self.replay_menu)
-                self.menu.add(None)
-                self.menu.add(self.edit_menu)
-                self.menu.add(None)
-                self.menu.add(self.reflect_menu)
+                self.menu.add(self.tasks_button)
                 self.menu.add(None)
                 self.menu.add(self.options_menu)
                 return
@@ -331,12 +140,7 @@ class RecorderApp(rumps.App):
                 # Fallback path: assign list-style menu (works across rumps versions).
                 self.menu = [
                     self.start_button,
-                    None,
-                    self.replay_menu,
-                    None,
-                    self.edit_menu,
-                    None,
-                    self.reflect_menu,
+                    self.tasks_button,
                     None,
                     self.options_menu,
                 ]
@@ -349,6 +153,115 @@ class RecorderApp(rumps.App):
             except Exception:
                 pass
 
+    def _publish_dashboard_state(self, *, recording_requested: bool | None = None) -> None:
+        try:
+            existing = dict(self.dashboard_state.get("recording") or {})
+            if recording_requested is None:
+                requested = bool(existing.get("requested")) and not self.is_recording
+            else:
+                requested = bool(recording_requested)
+            session_name = None
+            if self.session_dir:
+                try:
+                    session_name = Path(str(self.session_dir)).name
+                except Exception:
+                    session_name = str(self.session_dir)
+            self.dashboard_state["recording"] = {
+                "is_recording": bool(self.is_recording),
+                "session_name": session_name,
+                "requested": requested,
+            }
+            self.dashboard_state["reflecting"] = dict(self._processing_workflows)
+        except Exception as e:
+            log(f"Error publishing dashboard state: {e}", exc_info=True)
+
+    def _poll_dashboard_commands(self, _):
+        q = self.dashboard_command_q
+        if q is None:
+            return
+        handled = False
+        while True:
+            try:
+                cmd = q.get_nowait()
+            except Empty:
+                break
+            except Exception as e:
+                log(f"Error polling command queue: {e}", exc_info=True)
+                break
+            try:
+                if not isinstance(cmd, dict):
+                    continue
+                if cmd.get("type") == "start_recording":
+                    handled = True
+                    if self.is_recording:
+                        self._publish_dashboard_state(recording_requested=False)
+                        continue
+                    try:
+                        self.start_recording()
+                    finally:
+                        self._publish_dashboard_state(recording_requested=False)
+                elif cmd.get("type") == "show_conversation_overlay":
+                    handled = True
+                    mode = cmd.get("mode") or "general"
+                    task_id = cmd.get("task_id") or ""
+                    if self._conversation_overlay is not None:
+                        try:
+                            self._conversation_overlay.close()
+                        except Exception:
+                            pass
+                    try:
+                        from ai_mime.overlay.conversation_overlay import ConversationOverlay
+                        self._conversation_overlay = ConversationOverlay(port=self.port, task_id=task_id, mode=mode)
+                        self._conversation_overlay.show()
+                    except Exception as e:
+                        log(f"Failed to create ConversationOverlay: {e}", exc_info=True)
+                elif cmd.get("type") == "update_conversation_overlay":
+                    handled = True
+                    if self._conversation_overlay is not None:
+                        try:
+                            if "text" in cmd:
+                                self._conversation_overlay.update_text(cmd["text"])
+                            if "tool" in cmd:
+                                self._conversation_overlay.update_tool(cmd["tool"])
+                        except Exception as e:
+                            log(f"Failed to update ConversationOverlay: {e}", exc_info=True)
+                elif cmd.get("type") == "hide_conversation_overlay":
+                    handled = True
+                    if self._conversation_overlay is not None:
+                        try:
+                            self._conversation_overlay.close()
+                        except Exception:
+                            pass
+                        self._conversation_overlay = None
+                elif cmd.get("type") == "toggle_conversation_overlay":
+                    handled = True
+                    self._toggle_conversation_overlay(None)
+                elif cmd.get("type") == "show_automation_overlay":
+                    handled = True
+                    task_id = cmd.get("task_id") or ""
+                    if self._conversation_overlay is not None:
+                        try:
+                            self._conversation_overlay.close()
+                        except Exception:
+                            pass
+                        self._conversation_overlay = None
+                    try:
+                        from ai_mime.overlay.conversation_overlay import AutomationOverlay
+                        self._conversation_overlay = AutomationOverlay(port=self.port, task_id=task_id)
+                    except Exception as e:
+                        log(f"Failed to create AutomationOverlay: {e}", exc_info=True)
+                elif cmd.get("type") == "update_automation_overlay":
+                    handled = True
+                    status = cmd.get("status") or "running"
+                    if self._conversation_overlay is not None and hasattr(self._conversation_overlay, "update_status"):
+                        try:
+                            self._conversation_overlay.update_status(status)
+                        except Exception as e:
+                            log(f"Failed to update AutomationOverlay: {e}", exc_info=True)
+            except Exception as e:
+                log(f"Error handling dashboard command {cmd}: {e}", exc_info=True)
+        if handled:
+            self._publish_dashboard_state()
 
     def _toggle_dummy_recording(self, _sender):
         # rumps supports a checkmark state via .state (0/1) on macOS.
@@ -358,161 +271,24 @@ class RecorderApp(rumps.App):
         except Exception:
             pass
 
-    def _ensure_replay_overlay(self) -> ReplayOverlay:
-        if self._replay_overlay is not None:
-            return self._replay_overlay
-
-        def _toggle_pause(paused: bool) -> None:
-            ev = self._replay_pause_event
-            if ev is None:
-                return
+    def _toggle_conversation_overlay(self, _sender=None):
+        if self._conversation_overlay is not None:
             try:
-                if paused:
-                    ev.clear()
+                if self._conversation_overlay.is_minimized:
+                    self._conversation_overlay.maximize()
                 else:
-                    ev.set()
-            except Exception:
-                pass
-
-        def _stop() -> None:
-            se = self._replay_stop_event
-            pe = self._replay_pause_event
-            try:
-                if se is not None:
-                    se.set()
-            finally:
-                # Ensure we're not stuck paused while trying to stop.
-                try:
-                    if pe is not None:
-                        pe.set()
-                except Exception:
-                    pass
-
-        self._replay_overlay = ReplayOverlay(on_toggle_pause=_toggle_pause, on_stop=_stop)
-        self._replay_overlay.show()
-        return self._replay_overlay
-
-    def _close_replay_overlay(self) -> None:
-        if self._replay_overlay is None:
-            return
-        try:
-            self._replay_overlay.close()
-        finally:
-            self._replay_overlay = None
-            self.replay_event_q = None
-            self._replay_state = {}
-            self._replay_pause_event = None
-            self._replay_stop_event = None
-
-    def _fmt_tool_call(self, name: Any, args: Any) -> str:
-        n = "" if name is None else str(name)
-        if not isinstance(args, dict):
-            return n
-
-        def _truncate(s: Any, nmax: int = 140) -> str:
-            t = "" if s is None else str(s)
-            t = t.replace("\n", " ").strip()
-            return (t[: nmax - 1] + "…") if len(t) > nmax else t
-
-        if n == "computer_use":
-            action = args.get("action")
-            coord = args.get("coordinate")
-            keys = args.get("keys")
-            text = args.get("text")
-            parts = [f"computer_use: {action}"]
-            if coord is not None:
-                parts.append(f"coord={coord}")
-            if keys is not None:
-                parts.append(f"keys={keys}")
-            if text:
-                parts.append(f"text={_truncate(text)}")
-            return " | ".join(parts)
-        if n == "extract":
-            vn = args.get("variable_name")
-            q = args.get("query")
-            return f"extract: {vn} | query={_truncate(q)}"
-        if n == "done":
-            return f"done: {_truncate(args.get('result'))}"
-        return f"{n}: {_truncate(args)}"
-
-    def _poll_replay_events(self, _):
-        # If the worker died unexpectedly, close overlay.
-        if self.replay_process is not None and hasattr(self.replay_process, "is_alive"):
-            try:
-                alive = bool(self.replay_process.is_alive())
-                if not alive and self._replay_overlay is not None:
-                    self._close_replay_overlay()
-            except Exception:
-                pass
-
-        if self.replay_event_q is None:
-            return
-
-        # Drain queue quickly; keep only latest values to reduce UI churn.
-        updated = False
-        while True:
-            try:
-                evt = self.replay_event_q.get_nowait()
-            except Empty:
-                break
-            except Exception:
-                break
-
-            if not isinstance(evt, dict):
-                continue
-            et = evt.get("type")
-
-            if et == "replay_started":
-                updated = True
-            elif et == "subtask_started":
-                self._replay_state["subtask_idx"] = evt.get("subtask_idx")
-                self._replay_state["subtask_total"] = evt.get("subtask_total")
-                self._replay_state["subtask_text"] = evt.get("subtask_text") or ""
-                updated = True
-            elif et == "predicted_tool_call":
-                self._replay_state["predicted_action"] = self._fmt_tool_call(evt.get("name"), evt.get("arguments"))
-                updated = True
-            elif et == "pixel_action":
-                updated = True
-            elif et == "extract_result":
-                # Keep memory updated; surface extraction in predicted_action if no better signal.
-                self._replay_state["predicted_action"] = f"extract: {evt.get('variable_name')} | query={evt.get('query')}"
-                updated = True
-            elif et == "done":
-                # IMPORTANT: "done" in engine events means the *current subtask* finished,
-                # not the whole replay. Keep the overlay running until replay_finished.
-                try:
-                    res = evt.get("result")
-                    if res:
-                        self._replay_state["predicted_action"] = f"done: {str(res)}"
-                except Exception:
-                    pass
-                updated = True
-            elif et == "replay_finished":
-                # Close overlay at the end of the entire replay run.
-                self._close_replay_overlay()
-                return
-            elif et == "replay_stopped":
-                self._close_replay_overlay()
-                return
-            elif et == "replay_failed":
-                # Close overlay on failure; show error via menubar notification already.
-                self._close_replay_overlay()
-                return
-
-        if updated and self._replay_overlay is not None:
-            try:
-                self._replay_overlay.update(**self._replay_state)
-            except Exception:
-                pass
-
-    def _refresh_reflect_menu_if_processing(self, _):
-        """Periodically refresh Reflect menu if there are processing workflows."""
-        if self._processing_workflows:
-            try:
-                self._populate_reflect_menu()
+                    self._conversation_overlay.minimize()
             except Exception as e:
-                log(f"Error refreshing Reflect menu: {e}")
+                log(f"Failed to toggle ConversationOverlay: {e}", exc_info=True)
+        else:
+            try:
+                rumps.notification(
+                    title="AI Mime",
+                    subtitle="No active overlay",
+                    message="Overlay is only active during agent conversations.",
+                )
+            except Exception:
+                pass
 
     def _poll_reflect_events(self, _):
         # Drain reflect queue quickly; emit a single notification from the UI process.
@@ -536,12 +312,8 @@ class RecorderApp(rumps.App):
                 phase = evt.get("phase")
                 if session_name and phase:
                     self._processing_workflows[session_name] = phase
+                    self._publish_dashboard_state()
                     log(f"Updated {session_name} status to {phase}")
-                    # Refresh menu to show updated phase
-                    try:
-                        self._populate_reflect_menu()
-                    except Exception as e:
-                        log(f"Error refreshing menu on phase change: {e}")
                 continue
 
             if et == "reflect_compile_done":
@@ -554,19 +326,12 @@ class RecorderApp(rumps.App):
                 # Remove from processing state
                 if name in self._processing_workflows:
                     del self._processing_workflows[name]
-
-                # Refresh menus to show updated state
-                try:
-                    self._populate_reflect_menu()
-                    self._populate_replay_menu()
-                    self._populate_edit_menu()
-                except Exception as e:
-                    log(f"Error refreshing menus after reflect complete: {e}")
+                self._publish_dashboard_state()
 
                 rumps.notification(
-                    title="Processing complete ✓",
+                    title="Processing complete",
                     subtitle=name,
-                    message="Task available for editing and replay",
+                    message="Task updated in dashboard",
                 )
                 # Cleanup queue after completion.
                 try:
@@ -581,15 +346,10 @@ class RecorderApp(rumps.App):
                     session_name = Path(session_dir).name
                     if session_name in self._processing_workflows:
                         del self._processing_workflows[session_name]
-
-                # Refresh menus to show updated state
-                try:
-                    self._populate_reflect_menu()
-                except Exception as e:
-                    log(f"Error refreshing menus after reflect failure: {e}")
+                self._publish_dashboard_state()
 
                 rumps.notification(
-                    title="Processing failed ✗",
+                    title="Processing failed",
                     subtitle="Reflect/compile error",
                     message=msg,
                 )
@@ -599,221 +359,23 @@ class RecorderApp(rumps.App):
                     pass
                 return
 
-    def _on_replay_menu_clicked(self, sender):
-        # Refresh available workflows right before showing the submenu.
-        self._populate_replay_menu()
-
-    def _on_edit_menu_clicked(self, sender):
-        # Refresh available workflows right before showing the submenu.
-        self._populate_edit_menu()
-
-    def _on_reflect_menu_clicked(self, sender):
-        # Refresh pending recordings right before showing the submenu.
-        self._populate_reflect_menu()
-
     def _workflows_root(self) -> Path:
         return Path(self.storage.base_dir).parent / "workflows"
 
-    def _read_json(self, path: Path) -> dict:
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+    def _ensure_dashboard_server(self) -> int:
+        if self.dashboard_process is not None and self.dashboard_process.is_alive() and self.dashboard_port is not None:
+            return self.dashboard_port
 
-    def _write_json_atomic(self, path: Path, obj: dict) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
-
-    def _populate_edit_menu(self):
-
-        try:
-            self.edit_menu.clear()
-        except Exception:
-            pass
-
-        workflows = list_replayable_workflows(self._workflows_root())
-        # Add processing workflows that don't have schema yet
-        for session_name, status in self._processing_workflows.items():
-            # Check if this workflow is already in the list
-            if not any(w.workflow_dir.name == session_name for w in workflows):
-                # Add a placeholder for the processing workflow
-                from ai_mime.replay.catalog import WorkflowRef
-                workflows.append(WorkflowRef(
-                    workflow_dir=self._workflows_root() / session_name,
-                    display_name=f"{session_name} (processing...)",
-                ))
-
-        workflows = sorted(workflows, key=lambda w: w.workflow_dir.name, reverse=True)
-
-        if not workflows:
-            empty = rumps.MenuItem("No workflows found", callback=None)
-            empty.set_callback(None)
-            self.edit_menu["No workflows found"] = empty
-            return
-
-        for wf in workflows:
-            # Check if this workflow is being processed
-            is_processing = wf.workflow_dir.name in self._processing_workflows
-
-            if is_processing:
-                # Show as disabled with loading indicator
-                display = f"{wf.workflow_dir.name} ⏳"
-                item = rumps.MenuItem(display, callback=None)
-                item.set_callback(None)  # Disabled
-                self.edit_menu[display] = item
-            else:
-                def _cb(sender, wf=wf):
-                    try:
-                        self._open_workflow_editor(wf.workflow_dir, wf.display_name)
-                    except Exception as e:
-                        rumps.alert(f"Edit failed: {e}")
-
-                self.edit_menu[wf.display_name] = rumps.MenuItem(wf.display_name, callback=_cb)
-
-    def _populate_reflect_menu(self):
-        """Populate the Reflect menu with pending recordings and processing status."""
-        try:
-            self.reflect_menu.clear()
-        except Exception:
-            pass
-
-        recordings_dir = get_recordings_dir()
-        workflows_dir = self._workflows_root()
-
-        # Get all pending recordings
-        pending = _list_pending_recordings(recordings_dir, workflows_dir)
-
-        # Update menu title to show active processing
-        processing_count = len(self._processing_workflows)
-        if processing_count > 0:
-            self.reflect_menu.title = f"Reflect ({processing_count} ⏳)"
-        else:
-            self.reflect_menu.title = "Reflect"
-
-        if not pending and not self._processing_workflows:
-            empty = rumps.MenuItem("All recordings processed ✓", callback=None)
-            empty.set_callback(None)
-            self.reflect_menu["All recordings processed ✓"] = empty
-            return
-
-        # Show pending recordings
-        for session_dir in pending:
-            session_name = session_dir.name
-            is_processing = session_name in self._processing_workflows
-
-            log(f"Reflect menu: {session_name} - is_processing={is_processing}, status={self._processing_workflows.get(session_name)}")
-
-            if is_processing:
-                # Show with progress indicator based on phase
-                status = self._processing_workflows[session_name]
-                phase_display = {
-                    "reflecting": "⏳ Reflecting...",
-                    "compiling": "🔄 Compiling schema...",
-                }.get(status, "⏳ Processing...")
-
-                display = f"{session_name} - {phase_display}"
-                item = rumps.MenuItem(display, callback=None)
-                item.set_callback(None)  # Disabled while processing
-                self.reflect_menu[display] = item
-            else:
-                # Not processing - allow user to click to start reflect
-                def _cb(sender, session_dir=session_dir):
-                    try:
-                        self._trigger_reflect(session_dir)
-                    except Exception as e:
-                        log(f"Error triggering reflect: {e}", exc_info=True)
-                        rumps.alert(f"Reflect failed to start: {e}")
-
-                self.reflect_menu[session_name] = rumps.MenuItem(session_name, callback=_cb)
-
-        # Add a separator and "Reflect All" button if there are unprocessed items
-        unprocessed_count = sum(1 for sd in pending if sd.name not in self._processing_workflows)
-        if unprocessed_count > 0:
-            self.reflect_menu[f"_sep_{unprocessed_count}"] = None  # Separator
-
-            def _reflect_all(sender):
-                try:
-                    self._trigger_reflect_all(pending)
-                except Exception as e:
-                    log(f"Error triggering reflect all: {e}", exc_info=True)
-                    rumps.alert(f"Reflect all failed: {e}")
-
-            self.reflect_menu[f"Reflect All ({unprocessed_count})"] = rumps.MenuItem(
-                f"Reflect All ({unprocessed_count})",
-                callback=_reflect_all
-            )
-
-    def _trigger_reflect(self, session_dir: Path):
-        """Trigger reflect for a single recording."""
-        log(f"Triggering reflect for {session_dir.name}")
-        session_name = session_dir.name
-
-        # Check if already processing
-        if session_name in self._processing_workflows:
-            rumps.alert(f"{session_name} is already being processed")
-            return
-
-        # Mark as processing
-        self._processing_workflows[session_name] = "reflecting"
-        log(f"Added {session_name} to processing workflows: {self._processing_workflows}")
-
-        # Refresh menu to show processing state immediately
-        try:
-            self._populate_reflect_menu()
-        except Exception as e:
-            log(f"Error refreshing menu after trigger: {e}")
-
-        # Queue used to notify completion back to the UI process
-        if self.reflect_event_q is None:
-            self.reflect_event_q = multiprocessing.Queue()
-
-        # Start reflect process
-        self.reflect_process = multiprocessing.Process(
-            target=_run_reflect_and_compile_schema,
-            args=(str(session_dir), self._user_cfg.reflect),
-            kwargs={
-                "clean_manifest_tail": False,  # Don't clean for manual reflect
-                "event_queue": self.reflect_event_q,
-            },
+        proc, port = start_editor_server(
+            workflows_root=self._workflows_root(),
+            recordings_root=get_recordings_dir(),
+            reflect_llm_cfg=self._user_cfg.reflect,
+            replay_llm_cfg=self._user_cfg.replay,
+            app_command_queue=self.dashboard_command_q,
+            app_state=self.dashboard_state,
         )
-        self.reflect_process.start()
-
-        rumps.notification(
-            title="⏳ Reflect started",
-            subtitle=session_name,
-            message="Processing recording... Check Reflect menu for status",
-        )
-
-    def _trigger_reflect_all(self, pending_sessions: list[Path]):
-        """Trigger reflect for all pending recordings sequentially."""
-        unprocessed = [s for s in pending_sessions if s.name not in self._processing_workflows]
-
-        if not unprocessed:
-            rumps.alert("No unprocessed recordings found")
-            return
-
-        log(f"Triggering reflect for {len(unprocessed)} recordings")
-
-        # For now, just trigger the first one and let the user know
-        # In the future, we could queue them all
-        if unprocessed:
-            self._trigger_reflect(unprocessed[0])
-            if len(unprocessed) > 1:
-                rumps.notification(
-                    title="Reflect All",
-                    subtitle=f"Started with {unprocessed[0].name}",
-                    message=f"{len(unprocessed) - 1} more will process after this completes",
-                )
-
-    def _ensure_editor_server(self) -> int:
-        if self.editor_process is not None and self.editor_process.is_alive() and self.editor_port is not None:
-            return self.editor_port
-
-        proc, port = start_editor_server(workflows_root=self._workflows_root())
-        self.editor_process = proc
-        self.editor_port = port
+        self.dashboard_process = proc
+        self.dashboard_port = port
 
         # Best-effort: wait briefly for /health so the browser doesn't immediately 404/connection-refuse.
         health_url = f"http://127.0.0.1:{port}/health"
@@ -827,152 +389,25 @@ class RecorderApp(rumps.App):
 
         return port
 
-    def _open_workflow_editor(self, workflow_dir: Path, display_name: str) -> None:
-        port = self._ensure_editor_server()
-        url = f"http://127.0.0.1:{port}/workflows/{workflow_dir.name}"
-        ok = webbrowser.open(url, new=1)
-        if not ok:
-            raise RuntimeError(f"Failed to open browser for: {url}")
-
-    def _populate_replay_menu(self):
-        # Clear existing submenu items
+    def _open_tasks_dashboard(self, _sender=None) -> None:
         try:
-            self.replay_menu.clear()
-        except Exception:
-            pass
+            url = f"http://127.0.0.1:{self.port}/tasks"
+            ok = webbrowser.open(url, new=1)
+            if not ok:
+                raise RuntimeError(f"Failed to open browser for: {url}")
+        except Exception as e:
+            rumps.alert(f"Open Tasks failed: {e}")
 
-        workflows_root = Path(self.storage.base_dir).parent / "workflows"
-        workflows = list_replayable_workflows(workflows_root)
-
-        # Add processing workflows that don't have schema yet
-        for session_name, status in self._processing_workflows.items():
-            # Check if this workflow is already in the list
-            if not any(w.workflow_dir.name == session_name for w in workflows):
-                # Add a placeholder for the processing workflow
-                from ai_mime.replay.catalog import WorkflowRef
-                workflows.append(WorkflowRef(
-                    workflow_dir=workflows_root / session_name,
-                    display_name=f"{session_name} (processing...)",
-                ))
-
-        # Newest-first so newly reflected sessions show at the top.
-        workflows = sorted(workflows, key=lambda w: w.workflow_dir.name, reverse=True)
-
-        if not workflows:
-            empty = rumps.MenuItem("No workflows found", callback=None)
-            empty.set_callback(None)
-            self.replay_menu["No workflows found"] = empty
-            return
-
-        for wf in workflows:
-            # Check if this workflow is being processed
-            is_processing = wf.workflow_dir.name in self._processing_workflows
-
-            if is_processing:
-                # Show as disabled with loading indicator
-                display = f"{wf.workflow_dir.name} ⏳"
-                item = rumps.MenuItem(display, callback=None)
-                item.set_callback(None)  # Disabled
-                self.replay_menu[display] = item
-                continue
-
-            # Normal workflow - fully processed and ready to replay
-            def _cb(sender, wf=wf):
-                logging.basicConfig(level=logging.INFO)
-                # Start replay in background so UI stays responsive.
-                try:
-                    if self.replay_process is not None and getattr(self.replay_process, "is_alive", lambda: False)():
-                        rumps.alert("Replay already running. Please wait for it to finish.")
-                        return
-
-                    schema_path = wf.workflow_dir / "schema.json"
-                    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-                    task_params = schema.get("task_params") or []
-                    task_name = str(schema.get("task_name") or wf.display_name or "").strip()
-
-                    overrides: dict[str, str] = {}
-                    if isinstance(task_params, list) and task_params:
-                        # One-window form: multiline key=default (defaults from schema examples).
-                        lines: list[str] = []
-                        for p in task_params:
-                            name = p.get("name")
-                            if not isinstance(name, str) or not name.strip():
-                                continue
-                            default = p.get("example")
-                            default_s = "" if default is None else str(default)
-                            lines.append(f"{name}={default_s}")
-
-                        window = rumps.Window(
-                            message="Edit parameters (format: key=value, one per line). Leave empty to use default.",
-                            title=f"Replay Params — {wf.display_name}",
-                            default_text="\n".join(lines),
-                            ok="Run",
-                            cancel="Cancel",
-                        )
-                        response = window.run()
-                        if not response.clicked:
-                            return
-
-                        raw = (response.text or "").strip()
-                        if raw:
-                            # Parse key=value lines; blank values mean use default (skip override).
-                            for line in raw.splitlines():
-                                line = line.strip()
-                                if not line or line.startswith("#"):
-                                    continue
-                                if "=" not in line:
-                                    continue
-                                k, v = line.split("=", 1)
-                                k = k.strip()
-                                v = v.strip()
-                                if not k:
-                                    continue
-                                if v:
-                                    overrides[k] = v
-
-                    # Create overlay in the UI process and pass its window id to the worker so
-                    # screenshots can be captured *below* it (overlay never appears in agent images).
-                    pause_ev = multiprocessing.Event()
-                    pause_ev.set()  # running by default
-                    stop_ev = multiprocessing.Event()
-                    self._replay_pause_event = pause_ev
-                    self._replay_stop_event = stop_ev
-                    overlay = self._ensure_replay_overlay()
-                    overlay_id = overlay.window_id()
-                    if overlay_id <= 0:
-                        # Strong guarantee: if we can't get a window id, we can't safely exclude.
-                        raise RuntimeError("Failed to initialize replay overlay window id.")
-
-                    # Set up replay event queue for overlay updates.
-                    self.replay_event_q = multiprocessing.Queue()
-                    self._replay_state = {}
-
-                    log(f"Starting replay subprocess for {wf.workflow_dir}")
-                    self.replay_process = multiprocessing.Process(
-                        target=_run_replay_workflow_schema,
-                        args=(
-                            str(wf.workflow_dir),
-                            self._user_cfg.replay,
-                            overrides,
-                            self.replay_event_q,
-                            overlay_id,
-                            pause_ev,
-                            stop_ev,
-                        ),
-                    )
-                    self.replay_process.start()
-                    log("Replay subprocess started, showing notification")
-                    rumps.notification(
-                        title="Replay started",
-                        subtitle=wf.display_name,
-                        message="Replaying schema plan in background",
-                    )
-                    log("Notification shown")
-                except Exception as e:
-                    self._close_replay_overlay()
-                    rumps.alert(f"Replay failed to start: {e}")
-
-            self.replay_menu[wf.display_name] = rumps.MenuItem(wf.display_name, callback=_cb)
+    def _open_skill_build_for_task(self, task_id: str) -> None:
+        try:
+            encoded = urllib.parse.quote(task_id, safe="")
+            url = f"http://127.0.0.1:{self.port}/skill-build/{encoded}"
+            ok = webbrowser.open(url, new=1)
+            if not ok:
+                raise RuntimeError(f"Failed to open browser for: {url}")
+        except Exception as e:
+            log(f"Open skill build failed: {e}", exc_info=True)
+            rumps.alert(f"Open Skill Build failed: {e}")
 
     def toggle_recording(self, sender):
         if not self.is_recording:
@@ -1056,6 +491,7 @@ class RecorderApp(rumps.App):
             self.is_recording = True
             self.title = "🔴 Rec"
             self.start_button.title = "Stop Recording"
+            self._publish_dashboard_state(recording_requested=False)
         except Exception as e:
             # Best-effort cleanup if overlay/queues were partially created.
             try:
@@ -1066,6 +502,7 @@ class RecorderApp(rumps.App):
             self._recording_overlay = None
             self.refine_cmd_q = None
             self.refine_resp_q = None
+            self._publish_dashboard_state(recording_requested=False)
             rumps.alert(f"Error starting: {e}")
 
     def cancel_recording(self):
@@ -1110,6 +547,7 @@ class RecorderApp(rumps.App):
         self.is_recording = False
         self.title = "AI Mime"
         self.start_button.title = "Start Recording"
+        self._publish_dashboard_state(recording_requested=False)
 
         # Kick off reflect+schema compilation in the background (do not block UI).
         if self.session_dir and not self.dummy_recording and not self._skip_reflect_once and not cancelled:
@@ -1118,6 +556,7 @@ class RecorderApp(rumps.App):
                 session_name = Path(self.session_dir).name
                 # Mark as processing
                 self._processing_workflows[session_name] = "reflecting"
+                self._publish_dashboard_state()
 
                 # Queue used to notify completion back to the UI process (so notifications reliably show).
                 self.reflect_event_q = multiprocessing.Queue()
@@ -1130,6 +569,7 @@ class RecorderApp(rumps.App):
                     },
                 )
                 self.reflect_process.start()
+                self._open_skill_build_for_task(session_name)
                 log("Reflect subprocess started, showing notification")
                 rumps.notification(
                     title="Reflect started",
@@ -1141,6 +581,7 @@ class RecorderApp(rumps.App):
                 log(f"Error starting reflect: {e}", exc_info=True)
                 if session_name in self._processing_workflows:
                     del self._processing_workflows[session_name]
+                self._publish_dashboard_state()
                 rumps.alert(f"Error starting reflect: {e}")
         elif self.session_dir and self.dummy_recording:
             # Explicit notification so it's clear why the workflow doesn't appear.
@@ -1158,6 +599,7 @@ class RecorderApp(rumps.App):
 
         # Reset one-shot flag.
         self._skip_reflect_once = False
+        self._publish_dashboard_state()
 
         rumps.notification(
             title="Recording Saved" if not cancelled else "Recording stopped",
