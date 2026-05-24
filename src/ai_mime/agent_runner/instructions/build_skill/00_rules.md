@@ -3,7 +3,7 @@
 These rules apply to all phases of the skill-building process. Read this file first to understand the execution environment, runtime contract, and guidelines.
 
 ## Tools Available
-- **Bash** — for shelling out through app-managed tools only (e.g. `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`).
+- **Bash** — for running shell commands, CLI utilities, standard macOS tools (`open`, `defaults`, `osascript` for AppleScript/JXA), or app-managed tools (e.g. `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`).
 - **Browser Skill / Harness** — read the browser-harness folder (it has a `SKILL.md` file) to understand the APIs and helpers available for driving Chrome via CDP.
 - **Computer-use tools (`mcp__cua__*`)** — the cua MCP server is attached to THIS session for last-resort native-macOS control. Discover and call these tools directly (e.g. `computer_screenshot`, `computer_find_element`, `computer_click`, `computer_type`, `computer_hotkey`, `computer_launch_app`) to actually perform the subtask AND nail down the exact ordered steps; screenshot first, act, screenshot again to verify. Slowest — use only after WebSearch and browser-harness. Try to do as many things as possible with deterministic scripts only, leaving the non-deterministic parts or parts which cannot be done via other means to the computer-use agent (be efficient while doing these).
 
@@ -11,7 +11,7 @@ These rules apply to all phases of the skill-building process. Read this file fi
   - **In Phase B (Exploration)**: Use the attached `mcp__cua__*` tools directly in this session to drive the macOS GUI and complete the task. Record a detailed, high-level step-by-step log of what actions were successful (e.g., click search input, type query, hit enter) in `agent/learned_notes.md`.
   - **In Phase C (Synthesis)**: To execute a `ui_agent` step in your synthesized `scripts/run.py`, shell out to the standalone UI agent command: `"$AI_MIME_UI_AGENT_CMD" "<task_prompt>" [--schema '<json>'] --json`. Formulate a precise, high-level step-by-step prompt from the steps you recorded in Phase B and pass it as the task argument.
  Always delegate to the standalone UI agent command via `$AI_MIME_UI_AGENT_CMD`.
-- **WebSearch / WebFetch** — the open web. Use these BEFORE degrading to ui_agent.
+- **WebSearch / WebFetch** — the open web. WebSearch is critical: if you are ever unclear about how to perform a task deterministically (e.g., how to control an app via AppleScript, how to change a system preference via CLI, or what APIs exist), you **must** perform a web search first to discover optimal, fast, and deterministic pathways instead of resorting to UI automation. Use these BEFORE degrading to ui_agent.
 - **Read / Write / Edit / MultiEdit / Glob / Grep** — file ops, scoped to readable/writable roots.
 
 ## Python Runtime Contract
@@ -30,9 +30,9 @@ These rules apply to all phases of the skill-building process. Read this file fi
 
 ## Executor Model
 Each step in `optimized_plan.steps[].executor` is one of:
-- `script`: pure deterministic Python (file IO, HTTP, parsing, library calls, shelling out via subprocess). No UI. May call `ask_gemini` for stochastic JSON-schema decisions. **This is the preferred path.**
-- `browser_harness`: composable Chrome CDP script via the `browser` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. May also call `ask_gemini` for in-page judgment.
-- `ui_agent`: driving the Mac by shelling out to the standalone UI agent via `"$AI_MIME_UI_AGENT_CMD" "<task_prompt>" --json`. During exploration (Phase B), call the `mcp__cua__*` computer-use tools directly in this session to perform the subtask and learn the high-level steps. During synthesis (Phase C), write Python code in `scripts/run.py` that shells out to `"$AI_MIME_UI_AGENT_CMD"`, passing the recorded step-by-step actions as the task prompt. Do NOT search the codebase or import internal modules.
+- `script`: pure deterministic Python (file IO, HTTP, parsing, library calls, shelling out to shell/CLI commands, or executing AppleScript via `osascript` subprocess calls). No UI. May call `ask_gemini` for stochastic JSON-schema decisions. **This is the absolute preferred path (Priority 1: Bash/CLI/AppleScript/API/Direct Files).**
+- `browser_harness`: composable Chrome CDP script via the `browser` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. May also call `ask_gemini` for in-page judgment. **(Priority 2: Web Automation).**
+- `ui_agent`: driving the Mac by shelling out to the standalone UI agent via `"$AI_MIME_UI_AGENT_CMD" "<task_prompt>" --json`. During exploration (Phase B), call the `mcp__cua__*` computer-use tools directly in this session to perform the subtask and learn the high-level steps. During synthesis (Phase C), write Python code in `scripts/run.py` that shells out to `"$AI_MIME_UI_AGENT_CMD"`, passing the recorded step-by-step actions as the task prompt. Do NOT search the codebase or import internal modules. **(Priority 3: Last Resort GUI Automation).**
 
 `ask_gemini` (`from browser_harness.helpers import ask_gemini`) is the stochasticity escape hatch for *both* `script` and `browser_harness` steps — do not push a step to `ui_agent` just because it has one fuzzy decision. Give `ask_gemini` an explicit JSON schema and branch deterministically on its output.
 
