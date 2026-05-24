@@ -158,10 +158,6 @@
   if (improveSkillBtn) {
     improveSkillBtn.addEventListener("click", async () => {
       if (!agentSessionsLoaded) return;
-      const feedback = prompt("How would you like to improve this skill?");
-      if (feedback === null) return;
-      const feedbackTrimmed = feedback.trim();
-      if (!feedbackTrimmed) return;
 
       improveSkillBtn.disabled = true;
       hideStartPanel();
@@ -177,7 +173,24 @@
       const newChatBtn = document.getElementById("newChatBtn");
       try { newChatBtn && newChatBtn.click(); } catch { /* ignore */ }
 
-      submitAgentPrompt(`Improve the skill: ${feedbackTrimmed}`);
+      const emptyState = document.querySelector("#messages .empty-state");
+      if (emptyState) {
+        emptyState.textContent = "How would you like to improve this skill? Describe the changes or improvements you want to make, and the agent will update the existing skill package.";
+      }
+
+      const input = document.getElementById("messageInput");
+      if (input) {
+        input.placeholder = "Describe how to improve the skill...";
+        input.focus();
+      }
+    });
+  }
+
+  const mainNewChatBtn = document.getElementById("newChatBtn");
+  if (mainNewChatBtn) {
+    mainNewChatBtn.addEventListener("click", () => {
+      const input = document.getElementById("messageInput");
+      if (input) input.placeholder = "Write a message...";
     });
   }
 
@@ -195,8 +208,7 @@
       hideStartPanel();
       const newChatBtn = document.getElementById("newChatBtn");
       try { newChatBtn && newChatBtn.click(); } catch { /* ignore */ }
-      const input = document.getElementById("messageInput");
-      if (input) input.focus();
+      submitAgentPrompt("Start");
     });
   }
 
