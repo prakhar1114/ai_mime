@@ -142,4 +142,8 @@ def reflect(session, recordings_dir):
 if __name__ == "__main__":
     # CRITICAL: freeze_support() must be called early for PyInstaller + multiprocessing
     multiprocessing.freeze_support()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "computer-use":
+        from ai_mime.agent_runner.computer_use import main as run_computer_use
+        sys.exit(run_computer_use(sys.argv[2:]))
     start_app()
