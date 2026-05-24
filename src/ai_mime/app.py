@@ -13,7 +13,7 @@ from typing import Any
 from ai_mime.record.storage import SessionStorage
 # We don't import EventRecorder here anymore to avoid loading pynput in the UI process
 from ai_mime.record.recorder_process import run_recorder_process
-from ai_mime.app_data import get_bundled_resource, get_recordings_dir
+from ai_mime.app_data import get_bundled_resource, get_recordings_dir, get_workflows_dir
 
 from ai_mime.user_config import ResolvedReflectConfig, ResolvedUserConfig, load_user_config
 from ai_mime.reflect.runner import run_reflect_and_compile_schema
@@ -104,12 +104,13 @@ class RecorderApp(rumps.App):
         # Menu Items
         self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
         self.tasks_button = rumps.MenuItem("Open Dashboard", callback=self._open_tasks_dashboard)
+        self.workflows_button = rumps.MenuItem("Open Workflows Directory", callback=self._open_workflows_directory)
 
         # Options submenu (placed at the bottom, right above the default Quit item).
         self.options_menu = rumps.MenuItem("Options")
         self.dummy_toggle = rumps.MenuItem("Test Recording", callback=self._toggle_dummy_recording)
         self.options_menu["Test Recording"] = self.dummy_toggle
-        self.quit_button = rumps.MenuItem("Quit", callback=self.quit_app)
+        self.custom_quit_button = rumps.MenuItem("Quit", callback=self.quit_app)
 
         # Build the menu using rumps.Menu APIs (more robust across rumps versions than assigning a raw list).
         self._build_menu()
@@ -134,20 +135,22 @@ class RecorderApp(rumps.App):
 
                 self.menu.add(self.start_button)
                 self.menu.add(self.tasks_button)
+                self.menu.add(self.workflows_button)
                 self.menu.add(None)
                 self.menu.add(self.options_menu)
                 self.menu.add(None)
-                self.menu.add(self.quit_button)
+                self.menu.add(self.custom_quit_button)
                 return
             except Exception:
                 # Fallback path: assign list-style menu (works across rumps versions).
                 self.menu = [
                     self.start_button,
                     self.tasks_button,
+                    self.workflows_button,
                     None,
                     self.options_menu,
                     None,
-                    self.quit_button,
+                    self.custom_quit_button,
                 ]
                 return
         except Exception as e:
@@ -402,6 +405,15 @@ class RecorderApp(rumps.App):
                 raise RuntimeError(f"Failed to open browser for: {url}")
         except Exception as e:
             rumps.alert(f"Open Tasks failed: {e}")
+
+    def _open_workflows_directory(self, _sender=None) -> None:
+        try:
+            import subprocess
+            path = get_workflows_dir()
+            path.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["open", str(path)], check=True)
+        except Exception as e:
+            rumps.alert(f"Open Workflows Directory failed: {e}")
 
     def _open_skill_build_for_task(self, task_id: str) -> None:
         try:
