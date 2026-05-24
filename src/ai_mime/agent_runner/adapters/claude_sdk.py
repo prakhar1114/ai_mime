@@ -248,6 +248,20 @@ def _result_summary(message: Any) -> str | None:
     return None
 
 
+def _is_valid_session_id(session_id: str | None, workspace_dir: Path) -> bool:
+    if not session_id:
+        return False
+    try:
+        sessions = list_sessions(directory=str(workspace_dir))
+        for item in sessions or []:
+            sid = getattr(item, "session_id", None)
+            if sid == session_id:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 @dataclass(frozen=True)
 class ClaudeAgentSdkAdapter:
     allowed_tools: list[str] | None = None
@@ -256,6 +270,10 @@ class ClaudeAgentSdkAdapter:
         return asyncio.run(self._run_async(request, prompt))
 
     async def _run_async(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+        if request.session_id and not _is_valid_session_id(request.session_id, request.workspace_dir):
+            debug_log(f"Session {request.session_id} not found in {request.workspace_dir}. Starting a new session.")
+            request = request.model_copy(update={"session_id": None})
+
         try:
             options = ClaudeAgentOptions(**_options_kwargs_for(request, self.allowed_tools))
             assistant_parts: list[str] = []
@@ -386,6 +404,10 @@ async def stream_chat(
     setting_sources: list[str] | None = None,
     on_client: Callable[[ClaudeSDKClient], None] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
+    if request.session_id and not _is_valid_session_id(request.session_id, request.workspace_dir):
+        debug_log(f"Session {request.session_id} not found in {request.workspace_dir}. Starting a new session.")
+        request = request.model_copy(update={"session_id": None})
+
     options = ClaudeAgentOptions(
         **_options_kwargs_for(
             request,
