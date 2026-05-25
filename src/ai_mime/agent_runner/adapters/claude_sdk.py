@@ -1,4 +1,7 @@
 from __future__ import annotations
+import os
+import shutil
+from pathlib import Path
 
 import asyncio
 import json
@@ -322,6 +325,36 @@ def list_claude_sessions(directory: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _find_claude_exe() -> str | None:
+    """Find the local Claude Code executable path, checking common fallback directories.
+
+    This matches the detection logic in onboarding.py to ensure the path is consistent
+    across both onboarding and agent execution, even if the parent terminal's PATH
+    is stripped or not inherited.
+    """
+
+    exe = shutil.which("claude")
+    if exe:
+        return exe
+
+    fallback_dirs = (
+        ".local/bin",
+        "bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+    )
+    home = Path.home()
+    for candidate_dir in fallback_dirs:
+        candidate = Path(candidate_dir)
+        if not candidate.is_absolute():
+            candidate = home / candidate
+        candidate = candidate / "claude"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    return None
+
+
 def _options_kwargs_for(
     request: AgentRunRequest,
     allowed_tools: list[str] | None,
@@ -345,6 +378,9 @@ def _options_kwargs_for(
             }
         ),
     }
+    claude_path = _find_claude_exe()
+    if claude_path:
+        kwargs["cli_path"] = claude_path
     if request.mcp_servers:
         kwargs["mcp_servers"] = dict(request.mcp_servers)
     if skills is not None:
