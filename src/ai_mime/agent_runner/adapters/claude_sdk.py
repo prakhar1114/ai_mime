@@ -248,6 +248,20 @@ def _result_summary(message: Any) -> str | None:
     return None
 
 
+def _is_valid_session_id(session_id: str | None, workspace_dir: Path) -> bool:
+    if not session_id:
+        return False
+    try:
+        sessions = list_sessions(directory=str(workspace_dir))
+        for item in sessions or []:
+            sid = getattr(item, "session_id", None)
+            if sid == session_id:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 @dataclass(frozen=True)
 class ClaudeAgentSdkAdapter:
     allowed_tools: list[str] | None = None
@@ -256,6 +270,10 @@ class ClaudeAgentSdkAdapter:
         return asyncio.run(self._run_async(request, prompt))
 
     async def _run_async(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+        if request.session_id and not _is_valid_session_id(request.session_id, request.workspace_dir):
+            debug_log(f"Session {request.session_id} not found in {request.workspace_dir}. Starting a new session.")
+            request = request.model_copy(update={"session_id": None})
+
         try:
             options = ClaudeAgentOptions(**_options_kwargs_for(request, self.allowed_tools))
             assistant_parts: list[str] = []
@@ -386,6 +404,10 @@ async def stream_chat(
     setting_sources: list[str] | None = None,
     on_client: Callable[[ClaudeSDKClient], None] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
+    if request.session_id and not _is_valid_session_id(request.session_id, request.workspace_dir):
+        debug_log(f"Session {request.session_id} not found in {request.workspace_dir}. Starting a new session.")
+        request = request.model_copy(update={"session_id": None})
+
     options = ClaudeAgentOptions(
         **_options_kwargs_for(
             request,
@@ -490,3 +512,49 @@ def load_claude_session_messages(session_id: str, directory: Path) -> list[dict[
             }
         )
     return out
+
+
+def run_claude_sdk_structured(
+    *,
+    workflow_dir: Path,
+    system_prompt: str,
+    prompt_content: str,
+    response_schema: dict[str, Any],
+    model: str = "claude-sonnet-4-6",
+) -> str:
+    """
+    Run Claude Agent SDK to generate a structured output matching the provided response_schema.
+    Returns the raw string output from the assistant containing the JSON.
+    """
+    import asyncio
+    from ai_mime.agent_runner.models import AgentRunRequest
+    import json
+
+    schema_json = json.dumps(response_schema, indent=2)
+    prompt = (
+        f"{prompt_content}\n\n"
+        f"You MUST act as a precise compiler. Analyze the inputs and screenshots provided (using tools if needed).\n"
+        f"When you are done, output ONLY a single JSON object matching this schema. "
+        f"Do NOT wrap it in backticks, code fences, or include any conversational intro/outro. "
+        f"Output ONLY raw JSON:\n"
+        f"{schema_json}"
+    )
+
+    request = AgentRunRequest(
+        provider="claude",
+        mode="general",
+        model=model,
+        workflow_dir=workflow_dir,
+        workspace_dir=workflow_dir,
+        system_prompt=system_prompt,
+        readable_roots=[workflow_dir, Path.home()],
+        writable_roots=[workflow_dir / "agent"],
+    )
+
+    adapter = ClaudeAgentSdkAdapter()
+    result = adapter.run(request, prompt)
+
+    if result.status != "success":
+        raise RuntimeError(f"Claude SDK fallback agent failed: {result.error}\nSummary: {result.summary}")
+
+    return result.summary

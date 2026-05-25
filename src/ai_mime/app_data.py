@@ -6,6 +6,7 @@ import path helpers from here.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -231,6 +232,8 @@ def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> 
         env["PATH"] = os.pathsep.join([tool_bin, bundled_bin, *_FROZEN_SYSTEM_PATHS])
         env["AI_MIME_BROWSER_SKILL_NAME"] = "browser"
         env["AI_MIME_BROWSER_SKILL_PATH"] = str(get_bundled_browser_harness_dir())
+        # Override the UI agent command when frozen to invoke the frozen executable directly
+        env["AI_MIME_UI_AGENT_CMD"] = f"{shlex.quote(sys.executable)} computer-use"
         # Propagate the PyInstaller bundle root to the python subprocesses
         # so they can import the packaged modules.
         env["PYTHONPATH"] = str(sys._MEIPASS)  # type: ignore[attr-defined]

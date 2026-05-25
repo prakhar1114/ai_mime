@@ -934,6 +934,41 @@ class AgentRunnerTests(unittest.TestCase):
             finally:
                 service._turn_lock.release()
 
+    @patch("ai_mime.agent_runner.adapters.claude_sdk.list_sessions", return_value=[])
+    @patch("ai_mime.agent_runner.adapters.claude_sdk.query")
+    def test_claude_adapter_clears_invalid_session_id(self, mock_query, mock_list_sessions) -> None:
+        from ai_mime.agent_runner.adapters.claude_sdk import ClaudeAgentSdkAdapter
+        
+        async def mock_query_gen(*args, **kwargs):
+            from claude_agent_sdk import ResultMessage
+            msg = ResultMessage(
+                subtype="success",
+                duration_ms=0,
+                duration_api_ms=0,
+                is_error=False,
+                num_turns=1,
+                session_id="new-generated-session-id",
+                result="success",
+            )
+            yield msg
+            
+        mock_query.return_value = mock_query_gen()
+        
+        with tempfile.TemporaryDirectory() as td:
+            request = AgentRunRequest(
+                provider="claude",
+                mode="general",
+                workflow_dir=Path(td),
+                workspace_dir=Path(td),
+                session_id="stale-session-id",
+            )
+            adapter = ClaudeAgentSdkAdapter()
+            result = adapter.run(request, "hello")
+            self.assertEqual(result.status, "success")
+            mock_list_sessions.assert_called_once_with(directory=str(Path(td)))
+            called_options = mock_query.call_args[1]["options"]
+            self.assertIsNone(called_options.resume)
+
 
 if __name__ == "__main__":
     unittest.main()
