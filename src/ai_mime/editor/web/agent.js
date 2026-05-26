@@ -232,7 +232,12 @@
   }
 
   function sessionTitle(session) {
-    return session.summary || session.custom_title || session.first_prompt || session.session_id || "New chat";
+    const rawTitle = session.summary || session.custom_title || session.first_prompt || session.session_id || "New chat";
+    const mode = session.mode;
+    if (mode === "Build" || mode === "Improve" || mode === "Run") {
+      return `${mode}: ${rawTitle}`;
+    }
+    return rawTitle;
   }
 
   function renderSessions() {
@@ -411,6 +416,13 @@
       const data = await request(`${apiPrefix}/sessions/${encodeURIComponent(sessionId)}/messages`);
       messages = Array.isArray(data.messages) ? data.messages : [];
       renderMessages();
+      try {
+        window.dispatchEvent(new CustomEvent("agent-session-loaded", {
+          detail: { session_id: sessionId, messages },
+        }));
+      } catch {
+        // ignore
+      }
     } catch (e) {
       setError(e.message || String(e));
     }
@@ -424,6 +436,13 @@
     renderHeader();
     renderSessions();
     el.input.focus();
+    try {
+      window.dispatchEvent(new CustomEvent("agent-session-loaded", {
+        detail: { session_id: null, messages: [] },
+      }));
+    } catch {
+      // ignore
+    }
   }
 
   function findToolMessage(toolId) {

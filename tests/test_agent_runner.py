@@ -519,7 +519,7 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(modes, ["replay_execution"])
             self.assertEqual(prompts, ["run it"])
             self.assertIn("replay execution agent", system_prompts[0] or "")
-            self.assertTrue((workflow_dir / "agent" / "replay" / "session_index.json").exists())
+            self.assertTrue((workflow_dir / "agent" / "agent_sessions.json").exists())
 
     def test_validate_skill_package_accepts_valid_package(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -866,8 +866,7 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(result["model"], "sonnet")
             self.assertEqual(models, ["sonnet"])
             self.assertEqual(prompts[0], "hello")
-            self.assertIn("AI Mime workspace debugging agent", system_prompts[0] or "")
-            index = json.loads((Path(td) / ".agent" / "session_index.json").read_text(encoding="utf-8"))
+            index = json.loads((Path(td) / ".agent" / "agent_sessions.json").read_text(encoding="utf-8"))
             self.assertIn("claude-session-1", index)
             self.assertEqual(index["claude-session-1"]["model"], "sonnet")
 

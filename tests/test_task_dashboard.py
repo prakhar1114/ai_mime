@@ -376,7 +376,7 @@ class TaskDashboardTests(unittest.TestCase):
         created = client.post("/api/agent/sessions")
         self.assertEqual(created.status_code, 200, created.text)
         self.assertIsNone(created.json()["session_id"])
-        self.assertFalse((self.workflows / ".agent" / "session_index.json").exists())
+        self.assertFalse((self.workflows / ".agent" / "agent_sessions.json").exists())
 
         chat = client.post("/api/agent/chat", json={"message": "hello", "session_id": None, "model": "opus"})
         self.assertEqual(chat.status_code, 200, chat.text)

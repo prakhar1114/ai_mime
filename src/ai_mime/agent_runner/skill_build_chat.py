@@ -495,6 +495,9 @@ class WorkflowSkillBuildService:
         run_sh = skill_dir / "run.sh"
         return run_sh.is_file() and os.access(run_sh, os.X_OK)
 
+    def _agent_sessions_path(self) -> Path:
+        return self.agent_dir / "agent_sessions.json"
+
     def _record_session(
         self,
         *,
@@ -510,11 +513,16 @@ class WorkflowSkillBuildService:
         if previous_session_id and previous_session_id.startswith("draft-") and previous_session_id in index:
             index.pop(previous_session_id, None)
         existing = index.get(session_id) if isinstance(index.get(session_id), dict) else {}
+        
+        skill_dir = self._skill_dir_hint()
+        has_skill = self._has_runnable_skill(skill_dir)
+        mode = "Improve" if has_skill else "Build"
+
         index[session_id] = {
             "summary": existing.get("summary") or summary,
             "created_at": existing.get("created_at") or now,
             "updated_at": now,
-            "mode": "build_skill_chat",
+            "mode": mode,
             "model": model,
             "last_status": status,
             "last_error": error,
@@ -541,13 +549,15 @@ class WorkflowSkillBuildService:
         return options or list(DEFAULT_CLAUDE_MODEL_OPTIONS)
 
     def _read_index(self) -> dict[str, Any]:
-        path = self.agent_dir / "skill_build_sessions.json"
+        path = self._agent_sessions_path()
         if not path.exists():
             return {}
         return _read_json(path)
 
     def _write_index(self, index: dict[str, Any]) -> None:
-        _write_json(self.agent_dir / "skill_build_sessions.json", index)
+        path = self._agent_sessions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(path, index)
 
     def _read_active(self) -> dict[str, Any]:
         path = self.agent_dir / "skill_build_active.json"

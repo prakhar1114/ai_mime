@@ -451,6 +451,12 @@ class WorkspaceAgentChatService:
             writable_roots=[agent_dir],
         )
 
+    def _agent_sessions_path(self) -> Path:
+        agent_dir = self.workspace_dir / "agent"
+        if agent_dir.exists() or (self.workspace_dir / "schema.json").exists():
+            return agent_dir / "agent_sessions.json"
+        return self.agent_dir / "agent_sessions.json"
+
     def _record_session(
         self,
         *,
@@ -466,11 +472,12 @@ class WorkspaceAgentChatService:
         if previous_session_id and previous_session_id.startswith("draft-") and previous_session_id in index:
             index.pop(previous_session_id, None)
         existing = index.get(session_id) if isinstance(index.get(session_id), dict) else {}
+        mode = "Run" if self.mode == "replay_execution" else "Chat"
         index[session_id] = {
             "summary": existing.get("summary") or summary,
             "created_at": existing.get("created_at") or now,
             "updated_at": now,
-            "mode": self.mode,
+            "mode": mode,
             "model": model,
             "last_status": status,
             "last_error": error,
@@ -497,13 +504,15 @@ class WorkspaceAgentChatService:
         return options or list(DEFAULT_CLAUDE_MODEL_OPTIONS)
 
     def _read_index(self) -> dict[str, Any]:
-        path = self.agent_dir / "session_index.json"
+        path = self._agent_sessions_path()
         if not path.exists():
             return {}
         return _read_json(path)
 
     def _write_index(self, index: dict[str, Any]) -> None:
-        _write_json(self.agent_dir / "session_index.json", index)
+        path = self._agent_sessions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(path, index)
 
     def _read_active(self) -> dict[str, Any]:
         path = self.agent_dir / "active_session.json"

@@ -150,6 +150,13 @@
     agentSessionsLoaded = true;
     setStartButtonsDisabled(false);
   });
+
+  window.addEventListener("agent-session-loaded", (e) => {
+    const sessionId = e.detail && e.detail.session_id;
+    if (sessionId) {
+      hideStartPanel();
+    }
+  });
   setTimeout(() => {
     agentSessionsLoaded = true;
     setStartButtonsDisabled(false);
