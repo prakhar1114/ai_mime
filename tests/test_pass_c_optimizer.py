@@ -212,6 +212,60 @@ class PassCOptimizerTests(unittest.TestCase):
             self.assertEqual(result, schema)
             ensure_plan.assert_called_once()
 
+    def test_compile_workflow_schema_skips_pass_a_only_if_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "metadata.json").write_text(
+                json.dumps({"name": "Expense", "description": ""}), encoding="utf-8"
+            )
+            # Create a manifest with 2 events mapping to 2 actionable steps
+            (workflow_dir / "manifest.jsonl").write_text(
+                json.dumps({"action_type": "click", "screenshot": "0.png"}) + "\n" +
+                json.dumps({"action_type": "type", "action_details": {"text": "hello"}, "screenshot": "1.png"}) + "\n",
+                encoding="utf-8"
+            )
+            # Scenario 1: step_cards.json exists but is incomplete (only has index 0, missing index 1)
+            (workflow_dir / "step_cards.json").write_text(
+                json.dumps([{"i": 0, "intent": "click something"}]), encoding="utf-8"
+            )
+
+            llm_cfg = SimpleNamespace(
+                model="test-model",
+                pass_a_model=None,
+                pass_b_model=None,
+                api_base=None,
+                api_key_env=None,
+                extra_kwargs=None,
+                pass_b_max_tokens=None,
+            )
+            
+            with patch("ai_mime.reflect.schema_compiler.run_pass_a_step_cards") as mock_run_a, \
+                 patch("ai_mime.reflect.schema_compiler.run_pass_b_task_compiler") as mock_run_b, \
+                 patch("ai_mime.reflect.schema_compiler.create_optimized_plan") as mock_create_plan:
+                
+                # Mock screenshots exist checks inside any other functions if any, but since we mock run_pass_a_step_cards, it doesn't do filesystem checks
+                mock_run_a.return_value = [
+                    {"i": 0, "action_type": "CLICK", "action_value": None, "target": {"primary": "x"}},
+                    {"i": 1, "action_type": "TYPE", "action_value": "hello", "target": {"primary": "y"}}
+                ]
+                mock_run_b.return_value = {
+                    "detailed_task_description": "desc",
+                    "subtasks": ["subtask 1"],
+                    "task_params": [],
+                    "success_criteria": "success",
+                    "plan_step_updates": [
+                        {"i": 0, "subtask": "subtask 1", "action_value": None},
+                        {"i": 1, "subtask": "subtask 1", "action_value": "hello"}
+                    ]
+                }
+                mock_create_plan.return_value = {}
+                
+                compile_workflow_schema(workflow_dir=workflow_dir, llm_cfg=llm_cfg) # type: ignore[arg-type]
+                
+                # Should not have skipped Pass A because cards were incomplete
+                mock_run_a.assert_called_once()
+
+
 
 if __name__ == "__main__":
     unittest.main()

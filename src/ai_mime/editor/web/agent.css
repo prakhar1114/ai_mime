@@ -383,6 +383,9 @@ h1 {
   margin: 0 auto 8px;
   color: #a33d34;
   font-size: 14px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 form {

@@ -142,9 +142,13 @@
       validateForm();
     } catch (e) {
       const msg = e && e.message ? e.message : String(e);
+      const isCompileError = msg.includes("compile_workflow_schema") || msg.includes("schema_compiler") || msg.includes("Traceback");
+      const displayMsg = isCompileError 
+        ? "The workflow schema failed to compile. Please check the reflection logs." 
+        : escapeHtml(msg);
       el.paramFields.innerHTML = `
         <div class="empty">
-          Could not load <code>inputs/inputs.template.json</code>: ${escapeHtml(msg)}.
+          Could not load <code>inputs/inputs.template.json</code>: ${displayMsg}
           <div style="margin-top:6px">You can still run the agent below.</div>
         </div>`;
       state.params = [];

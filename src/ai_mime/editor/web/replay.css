@@ -589,3 +589,17 @@
   font-size: 14px;
 }
 .dock-close:hover { background: var(--hover, #ebe9e5); color: var(--text, #282523); }
+
+/* Ensure error and empty state elements wrap correctly and never cause horizontal scroll */
+.empty {
+  grid-column: 1 / -1;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.error {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

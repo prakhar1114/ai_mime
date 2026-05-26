@@ -1405,9 +1405,29 @@ def compile_workflow_schema(
 
     # Pass A: must be complete before Pass B.
     # Note: run_pass_a_step_cards() handles partial persistence + resume via step_cards.json.
+    events = load_events(workflow_dir_p)
+    steps = derive_step_inputs(workflow_dir_p, events)
     step_cards_path = workflow_dir_p / "step_cards.json"
     existing_step_cards = _read_json_if_exists(step_cards_path)
-    if isinstance(existing_step_cards, list) and existing_step_cards:
+
+    existing_indices = set()
+    if isinstance(existing_step_cards, list):
+        for item in existing_step_cards:
+            if isinstance(item, dict):
+                ii = item.get("i")
+                if isinstance(ii, int):
+                    existing_indices.add(ii)
+                elif isinstance(ii, str) and ii.isdigit():
+                    existing_indices.add(int(ii))
+
+    is_complete = (
+        isinstance(existing_step_cards, list)
+        and existing_step_cards
+        and len(steps) > 0
+        and all(s.i in existing_indices for s in steps)
+    )
+
+    if is_complete:
         step_cards = existing_step_cards
         debug_log(f"Pass A: found existing step_cards.json with {len(step_cards)} steps; skipping.")
         logger.info("Pass A: found existing step_cards.json; skipping.")
