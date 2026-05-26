@@ -10,7 +10,7 @@
 7. **Triage Options**: Decide from the logs, script, skill docs, and `references/fallback_plan.md` how to complete the task. You may continue manually, restore expected UI state, rerun only the remaining work, or complete the task directly from the fallback plan.
 8. **UI-agent Fallback**: For UI-only parts, call the `mcp__cua__*` computer-use tools directly. Prefer script/browser approaches when they are clear, but do not stop just because the original script failed.
 9. **Notes**: You may append durable domain findings to `agent/replay_notes.md` or `agent/domain_notes.md`. Keep these notes factual: selectors, URLs, payload shapes, input gotchas, and observed domain behavior.
-10. **Triage Code Edits**: Targeted edits inside the skill directory are allowed only when there is clear evidence from `run.sh`, logs, `scripts/run.py`, or repeated deterministic failure that the skill package itself is stale, incomplete, or wrong. Only edit the skill when needed; do not rewrite `run.sh` or `scripts/run.py` just because the first run failed.
+10. **Triage Code Edits**: Targeted edits inside the skill directory `{skill_dir}` (located at `<workflow_dir>/skills/<skill_name>/`) are allowed only when there is clear evidence from `run.sh`, logs, `scripts/run.py`, or repeated deterministic failure that the skill package itself is stale, incomplete, or wrong. Only edit the skill when needed; do not rewrite `run.sh` or `scripts/run.py` just because the first run failed.
 11. **Constraints**:
     - Do NOT edit `schema.json` or `optimized_plan.json`.
     - If completion is impossible with the available logs, skill, fallback plan, and UI-agent fallback, explain the concrete blocker and what user action is needed.

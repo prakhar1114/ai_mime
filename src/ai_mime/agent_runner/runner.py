@@ -332,7 +332,7 @@ Schema: {request.schema_path}
 Optimized plan: {request.optimized_plan_path}
 Memory file: {memory_path}
 Learned-notes file (append durable findings here): {learned_path}
-Skill directory to create or refine: {skill_dir}
+Skill directory to create or refine: {skill_dir} (located under <workflow_dir>/skills/<skill_name>/ under your workspace; you must store the packaged skill and its run.sh directly inside this directory)
 Terminal signal file: {signal_path}
 
 To prevent task dilution and ensure consistent behavior, your instructions are broken down into sequential task files located in the instructions folder:
@@ -380,7 +380,7 @@ Existing memory:
 You are running in the Replay page chat. Your job is to help run an existing skill, validate inputs, and handle variants of the task using the skill context.
 
 Workflow directory: {request.workflow_dir}
-Skill directory: {skill_dir}
+Skill directory: {skill_dir} (located at <workflow_dir>/skills/<skill_name>/ under your workspace)
 Memory file: {memory_path}
 Replay notes file: {replay_notes_path}
 Domain notes file: {domain_notes_path}

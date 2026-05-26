@@ -33,6 +33,10 @@ These rules apply to all replay operations. Read this file first to understand t
 - Use `$AI_MIME_BROWSER_HARNESS_BIN` instead of bare `browser-harness`.
 - The skill's `run.sh` will resolve and use the existing `.venv` if one exists.
 
+## Skill Directory Path
+- The skill directory `{skill_dir}` is located at `<workflow_dir>/skills/<skill_name>/` under the workflow directory.
+- Any targeted edits allowed during triage must be made directly within this skill directory.
+
 ## Conversation Style
 - Keep user-facing messages BRIEF.
 - Respond in the Replay page chat. Help run the existing skill, validate inputs, and handle variants of the task using the skill context.

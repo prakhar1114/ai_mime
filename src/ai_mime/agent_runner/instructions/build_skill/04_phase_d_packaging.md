@@ -16,7 +16,7 @@ You can refer to the complete example skill package reference at `instructions/e
        ```
    - State clearly that the install commands are for skill build or manual repair. Runtime does not create or repair `.venv`.
 
-2. Write the final layout at `{skill_dir}/`. Required files (validated by `validate_skill_package`):
+2. Write the final layout directly at `{skill_dir}/` (which is located at `<workflow_dir>/skills/<skill_name>/` under the workflow directory). Required files (validated by `validate_skill_package`):
    - `SKILL.md`                       — skill-creator format, sections above.
    - `scripts/run.py`                 — from Phase C.
    - `requirements.txt`               — optional, only when `scripts/run.py` needs third-party Python packages. If present, you must create `.venv` and install it during skill build before signalling.

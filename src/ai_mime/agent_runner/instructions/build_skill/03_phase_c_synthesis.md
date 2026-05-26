@@ -3,7 +3,7 @@
 In this phase, you will write the final deterministic python execution script, run tests against it, and iterate until it runs clean.
 
 ## Instructions
-1. Create or overwrite the skill script at `{skill_dir}/scripts/run.py` using details from `agent/learned_notes.md`. (You can refer to the example script at `instructions/example_skill/scripts/run.py` to see a working reference for how to parse inputs and format progress logs).
+1. Create or overwrite the skill script at `{skill_dir}/scripts/run.py` using details from `agent/learned_notes.md`. (Note: The skill directory `{skill_dir}` is located at `<workflow_dir>/skills/<skill_name>/` under the workflow directory. You can refer to the example script at `instructions/example_skill/scripts/run.py` to see a working reference for how to parse inputs and format progress logs).
 2. Per-step code shape must match its `executor` in the optimized plan:
    - `script` → inline Python.
    - `browser_harness` → shell out to `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'` (or import helpers directly).
@@ -38,7 +38,7 @@ In this phase, you will write the final deterministic python execution script, r
 
 ## Success Criteria / Gating
 Before moving to Phase D, you must verify that:
-- `{skill_dir}/scripts/run.py` exists and is syntactically valid Python.
+- `{skill_dir}/scripts/run.py` exists and is syntactically valid Python (stored in `<workflow_dir>/skills/<skill_name>/scripts/run.py`).
 - The script has run end-to-end successfully against `agent/confirmed_inputs.json`.
 - When the e2e script runs clean, do not ask for packaging approval. Send one short progress update such as "The full automation ran successfully. I'm turning it into a reusable skill now."
 

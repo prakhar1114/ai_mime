@@ -14,6 +14,10 @@ These rules apply to all phases of the skill-building process. Read this file fi
 - **WebSearch / WebFetch** — the open web. WebSearch is critical: if you are ever unclear about how to perform a task deterministically (e.g., how to control an app via AppleScript, how to change a system preference via CLI, or what APIs exist), you **must** perform a web search first to discover optimal, fast, and deterministic pathways instead of resorting to UI automation. Use these BEFORE degrading to ui_agent.
 - **Read / Write / Edit / MultiEdit / Glob / Grep** — file ops, scoped to readable/writable roots.
 
+## Skill Directory Path and Storage
+- The skill directory `{skill_dir}` is located at `<workflow_dir>/skills/<skill_name>/` under the workflow directory.
+- You MUST store all packaged skill files (like `run.sh`, `SKILL.md`, `requirements.txt`, etc.) and subfolders (like `scripts/run.py`, `inputs/`, `references/`) directly under this directory (e.g., `{skill_dir}/run.sh`). Do NOT store them in the parent workflow directory or in any other location.
+
 ## Python Runtime Contract
 - The app exports `AI_MIME_PYTHON_PATH`, `AI_MIME_UV_PATH`, and `AI_MIME_BROWSER_HARNESS_BIN` when it runs or validates a skill.
 - The app exports `AI_MIME_BROWSER_SKILL_PATH` for browser-harness resources. Use it for files under the harness repo; never hardcode a developer checkout path such as `/Users/prakharjain/code/...`.
