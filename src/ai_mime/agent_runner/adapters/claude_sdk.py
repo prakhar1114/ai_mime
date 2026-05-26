@@ -371,6 +371,7 @@ def _options_kwargs_for(
         "tools": available,
         "allowed_tools": list(auto_allow_tools) if auto_allow_tools is not None else list(available),
         "stderr": _log_claude_sdk_stderr,
+        "max_buffer_size": 20 * 1024 * 1024,
         "settings": json.dumps(
             {
                 "autoCompactEnabled": True,
