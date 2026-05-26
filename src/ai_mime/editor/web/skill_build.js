@@ -146,9 +146,64 @@
     setStartButtonsDisabled(!agentSessionsLoaded);
   }
 
-  window.addEventListener("agent-sessions-loaded", () => {
+  let actionProcessed = false;
+  async function processUrlAction(activeSessionId) {
+    if (actionProcessed) return;
+    const urlParams = new URLSearchParams(window.location.search);
+    const action = urlParams.get("action");
+    if (!action) return;
+    actionProcessed = true;
+
+    // Strip action from URL
+    try {
+      const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+      window.history.replaceState({ path: cleanUrl }, "", cleanUrl);
+    } catch (err) {
+      // ignore
+    }
+
+    if (action === "new") {
+      hideStartPanel();
+      if (banner) {
+        banner.hidden = true;
+        banner.innerHTML = "";
+      }
+      try {
+        await fetch(`/api/tasks/${encodeURIComponent(taskId)}/skill-build/reset`, { method: "POST" });
+      } catch (err) {
+        console.error("Failed to reset skill build:", err);
+      }
+      if (typeof window.AgentChat?.newChat === "function") {
+        window.AgentChat.newChat();
+        setTimeout(() => {
+          submitAgentPrompt("Start");
+        }, 150);
+      }
+    } else if (action === "continue") {
+      hideStartPanel();
+      if (activeSessionId) {
+        if (typeof window.AgentChat?.loadMessages === "function") {
+          window.AgentChat.loadMessages(activeSessionId);
+          setTimeout(() => {
+            submitAgentPrompt("continue");
+          }, 150);
+        }
+      } else {
+        if (typeof window.AgentChat?.newChat === "function") {
+          window.AgentChat.newChat();
+          setTimeout(() => {
+            submitAgentPrompt("Start");
+          }, 150);
+        }
+      }
+    }
+  }
+
+  window.addEventListener("agent-sessions-loaded", (e) => {
     agentSessionsLoaded = true;
     setStartButtonsDisabled(false);
+    const activeSessionId = e.detail && e.detail.active_session_id;
+    processUrlAction(activeSessionId);
   });
 
   window.addEventListener("agent-session-loaded", (e) => {

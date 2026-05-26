@@ -13,7 +13,9 @@
   <body>
     <div class="agent-shell">
       <aside class="sidebar">
-        <div class="side-top">
+        <div class="side-top" style="display: flex; align-items: center; gap: 8px;">
+          <a class="back-link" href="/tasks" style="color: var(--muted, #7a746d); text-decoration: none; font-size: 13px; font-weight: 500; display: inline-flex; align-items: center;" onmouseover="this.style.color='var(--text, #282523)'" onmouseout="this.style.color='var(--muted, #7a746d)'">← Tasks</a>
+          <span style="color: var(--sidebar-line, #e4e1dc);">|</span>
           <h1>Agent Mode</h1>
         </div>
         <button class="new-chat" id="newChatBtn">New Chat</button>

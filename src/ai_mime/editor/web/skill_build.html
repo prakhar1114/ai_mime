@@ -19,9 +19,13 @@
       data-empty-message="Resume the build session or start a new one. The agent will continue from the reflected workflow plan."
     >
       <aside class="sidebar">
-        <div class="side-top">
-          <h1>Build Skill</h1>
-          <div class="sub">Iteratively turn this workflow into a reusable, deterministic skill.</div>
+        <div class="side-top" style="display: flex; flex-direction: column; align-items: flex-start; height: auto; min-height: 44px; padding: 4px 8px; justify-content: center;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <a class="back-link" href="/tasks" style="color: var(--muted, #7a746d); text-decoration: none; font-size: 13px; font-weight: 500; display: inline-flex; align-items: center;" onmouseover="this.style.color='var(--text, #282523)'" onmouseout="this.style.color='var(--muted, #7a746d)'">← Tasks</a>
+            <span style="color: var(--sidebar-line, #e4e1dc);">|</span>
+            <h1 style="margin: 0;">Build Skill</h1>
+          </div>
+          <div class="sub" style="margin-top: 4px;">Iteratively turn this workflow into a reusable, deterministic skill.</div>
         </div>
         <button class="new-chat" id="newChatBtn">New Session</button>
         <div class="sessions" id="sessionsList">

@@ -55,7 +55,7 @@
   function defaultProgress(task) {
     if (task && task.status === "ready") return { value: 100, label: "Optimized plan", phase: "optimized_plan_complete" };
     if (task && task.status === "compiling") return { value: 8, label: "Compiling", phase: "compiling" };
-    if (task && task.status === "reflecting") return { value: 5, label: "Reflecting", phase: "reflecting" };
+    if (task && task.status === "reflecting") return { value: 15, label: "Reflecting (this may take a minute)", phase: "reflecting" };
     return { value: 0, label: "Pending", phase: "pending_reflection" };
   }
 
@@ -81,7 +81,10 @@
       el.progressSubtitle.textContent = `${statusLabel(status)}${error}`;
       el.progressSubtitle.title = task.error || "";
     }
-    if (el.progressFill) el.progressFill.style.width = `${value}%`;
+    if (el.progressFill) {
+      el.progressFill.style.width = `${value}%`;
+      el.progressFill.classList.toggle("active", status === "reflecting" || status === "compiling");
+    }
     markStep(el.passALabel, value >= 33 || phase === "pass_a_complete");
     markStep(el.passBLabel, value >= 66 || phase === "pass_b_complete");
     markStep(el.optimizedLabel, value >= 100 || phase === "optimized_plan_complete");

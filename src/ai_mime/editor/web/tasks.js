@@ -4,6 +4,8 @@
     refreshBtn: document.getElementById("refreshBtn"),
     startRecordingBtn: document.getElementById("startRecordingBtn"),
     agentModeBtn: document.getElementById("agentModeBtn"),
+    openWorkflowsBtn: document.getElementById("openWorkflowsBtn"),
+    quitAppBtn: document.getElementById("quitAppBtn"),
     syncState: document.getElementById("syncState"),
     totalCount: document.getElementById("totalCount"),
     readyCount: document.getElementById("readyCount"),
@@ -78,10 +80,15 @@
     el.taskList.innerHTML = tasks.map((task) => {
       const status = escapeHtml(task.status);
       const error = task.error ? `<div class="error">${escapeHtml(task.error)}</div>` : "";
-      const reflectText = task.status === "failed_reflection" ? "Retry reflection" : "Reflect";
-      const reflectDisabled = ACTIVE.has(task.status) ? "disabled" : "";
+      let reflectText = "Reflect";
+      if (task.status === "failed_reflection") {
+        reflectText = "Retry reflection";
+      } else if (task.status === "reflecting" || task.status === "compiling") {
+        reflectText = "Reflecting...";
+      }
+      const canShowReflect = task.can_reflect || task.status === "reflecting" || task.status === "compiling";
       const menuItems = [
-        task.can_reflect ? `<button class="menu-item" data-action="reflect" ${reflectDisabled}>${reflectText}</button>` : "",
+        canShowReflect ? `<button class="menu-item" data-action="reflect">${escapeHtml(reflectText)}</button>` : "",
         task.can_delete ? `<button class="menu-item danger" data-action="delete">Delete</button>` : "",
       ].filter(Boolean).join("");
       const menuOpen = openMenuTaskId === task.id;
@@ -146,13 +153,75 @@
     }
   }
 
+  function showReflectOptionsModal(task) {
+    const encoded = encodeURIComponent(task.id);
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) {
+        document.body.removeChild(overlay);
+      }
+    });
+
+    const card = document.createElement("div");
+    card.className = "modal-card";
+    card.innerHTML = `
+      <div class="modal-header">
+        <h3 class="modal-title">Optimized Plan Exists</h3>
+        <p class="modal-desc">This task already has an optimized plan and a built skill. What would you like to do next?</p>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn primary" id="continueImproveBtn">Continue Improving Skill</button>
+        <button class="modal-btn" id="editSkillBtn">Edit Skill (New Session)</button>
+        <button class="modal-btn" id="runSkillBtn">Run</button>
+        <button class="modal-btn secondary" id="cancelModalBtn">Cancel</button>
+      </div>
+    `;
+
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    card.querySelector("#continueImproveBtn").addEventListener("click", () => {
+      window.location.href = `/skill-build/${encoded}?action=continue`;
+      document.body.removeChild(overlay);
+    });
+
+    card.querySelector("#editSkillBtn").addEventListener("click", () => {
+      window.location.href = `/skill-build/${encoded}?action=new`;
+      document.body.removeChild(overlay);
+    });
+
+    card.querySelector("#runSkillBtn").addEventListener("click", () => {
+      window.location.href = `/replay/${encoded}`;
+      document.body.removeChild(overlay);
+    });
+
+    card.querySelector("#cancelModalBtn").addEventListener("click", () => {
+      document.body.removeChild(overlay);
+    });
+  }
+
   async function runAction(taskId, action) {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
     const encoded = encodeURIComponent(taskId);
     try {
       if (action === "delete") {
         if (!confirm(`Delete ${taskId}? This removes the workflow and recording folders when present.`)) return;
         await request(`/api/tasks/${encoded}`, { method: "DELETE" });
       } else if (action === "reflect") {
+        if (task.status === "reflecting" || task.status === "compiling") {
+          window.location.href = `/reflect/${encoded}`;
+          return;
+        }
+        if (task.has_optimized_plan) {
+          if (task.has_skill) {
+            showReflectOptionsModal(task);
+          } else {
+            window.location.href = `/skill-build/${encoded}?action=continue`;
+          }
+          return;
+        }
         await request(`/api/tasks/${encoded}/reflect`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -204,6 +273,27 @@
   el.refreshBtn.addEventListener("click", loadTasks);
   el.agentModeBtn.addEventListener("click", () => {
     window.location.href = "/agent";
+  });
+  el.openWorkflowsBtn.addEventListener("click", async () => {
+    try {
+      await request("/api/app/open-workflows", { method: "POST" });
+    } catch (e) {
+      alert(e.message || String(e));
+    }
+  });
+  el.quitAppBtn.addEventListener("click", async () => {
+    if (!confirm("Are you sure you want to quit the application and close all processes?")) return;
+    try {
+      await request("/api/app/quit", { method: "POST" });
+      document.body.innerHTML = `
+        <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0b0f14; color: #e8eef5; font-family: sans-serif; flex-direction: column; gap: 10px;">
+          <h2 style="margin: 0; font-weight: 700;">Quitting Application</h2>
+          <p style="color: #9baabb; margin: 0;">You can close this tab now.</p>
+        </div>
+      `;
+    } catch (e) {
+      alert(e.message || String(e));
+    }
   });
   el.startRecordingBtn.addEventListener("click", async () => {
     try {

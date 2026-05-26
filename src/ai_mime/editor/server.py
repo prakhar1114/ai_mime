@@ -404,8 +404,8 @@ class TaskRunner:
         with self._lock:
             self._refresh_locked()
             if task_id in self._reflect_processes:
-                _task_log(f"reflect rejected: task_id={task_id} reason=already_running")
-                raise HTTPException(status_code=409, detail="Reflection already running")
+                _task_log(f"reflect requested while already running: task_id={task_id}")
+                return self._task_row_locked(task_id)
             if task_id in self._replay_processes:
                 _task_log(f"reflect rejected: task_id={task_id} reason=replay_running")
                 raise HTTPException(status_code=409, detail="Replay already running")
@@ -714,9 +714,9 @@ class TaskRunner:
     @staticmethod
     def _progress_from_phase(phase: str) -> dict[str, Any]:
         mapping: dict[str, tuple[int, str]] = {
-            "reflecting": (5, "Reflecting"),
-            "compiling": (8, "Compiling"),
-            "pass_a_started": (10, "Pass A"),
+            "reflecting": (15, "Reflecting (this may take a minute)"),
+            "compiling": (18, "Compiling"),
+            "pass_a_started": (20, "Pass A"),
             "pass_a_complete": (33, "Pass A"),
             "pass_b_started": (45, "Pass B"),
             "pass_b_complete": (66, "Pass B"),
@@ -990,6 +990,27 @@ def create_app(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to queue recording start: {e}")
         return {"ok": True, "queued": True}
+
+    @app.post("/api/app/quit")
+    def api_quit_app():
+        if app_command_queue is None:
+            raise HTTPException(status_code=503, detail="App control is unavailable")
+        try:
+            app_command_queue.put({"type": "quit_app"})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to queue quit command: {e}")
+        return {"ok": True}
+
+    @app.post("/api/app/open-workflows")
+    def api_open_workflows():
+        if app_command_queue is None:
+            raise HTTPException(status_code=503, detail="App control is unavailable")
+        try:
+            app_command_queue.put({"type": "open_workflows_directory"})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to queue open workflows command: {e}")
+        return {"ok": True}
+
 
     @app.get("/api/tasks/{task_id}/status")
     def api_task_status(task_id: str):

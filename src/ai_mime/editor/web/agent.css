@@ -186,6 +186,17 @@ h1 {
   transition: width 220ms ease;
 }
 
+.progress-fill.active {
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.15) 50%, rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent);
+  background-size: 1rem 1rem;
+  animation: progress-bar-stripes 1s linear infinite;
+}
+
+@keyframes progress-bar-stripes {
+  from { background-position: 1rem 0; }
+  to { background-position: 0 0; }
+}
+
 .progress-steps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -273,11 +284,17 @@ h1 {
 .permission-prompt button.deny { color: #a33d34; }
 
 .chat-title {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 18px;
   font-weight: 640;
+}
+
+.chat-head-right {
+  flex-shrink: 0 !important;
 }
 
 .messages {

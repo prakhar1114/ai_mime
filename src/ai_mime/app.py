@@ -115,6 +115,7 @@ class RecorderApp(rumps.App):
         # Build the menu using rumps.Menu APIs (more robust across rumps versions than assigning a raw list).
         self._build_menu()
         self.port = self._ensure_dashboard_server()
+        self._open_tasks_dashboard()
 
     def _log_to_tmp(self, msg: str) -> None:
         try:
@@ -266,6 +267,12 @@ class RecorderApp(rumps.App):
                             self._conversation_overlay.update_status(status)
                         except Exception as e:
                             log(f"Failed to update AutomationOverlay: {e}", exc_info=True)
+                elif cmd.get("type") == "quit_app":
+                    handled = True
+                    self.quit_app()
+                elif cmd.get("type") == "open_workflows_directory":
+                    handled = True
+                    self._open_workflows_directory()
             except Exception as e:
                 log(f"Error handling dashboard command {cmd}: {e}", exc_info=True)
         if handled:

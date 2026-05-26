@@ -710,5 +710,12 @@
     }
   }
 
+  window.AgentChat = {
+    newChat,
+    loadMessages,
+    sendMessage,
+    currentSessionId: () => currentSessionId,
+  };
+
   loadModels().then(loadSessions);
 })();
