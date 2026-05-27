@@ -14,7 +14,7 @@ In this phase, you will write the final deterministic python execution script, r
        ui_agent_cmd = os.environ.get("AI_MIME_UI_AGENT_CMD")
        task_prompt = "In the open web browser: 1. Click search input, 2. Type 'weather', 3. Press Enter key."
        cmd = shlex.split(ui_agent_cmd) + [task_prompt, "--json"]
-       proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+       proc = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, check=True)
        result = json.loads(proc.stdout)
        # result is a dict containing {"status": "success"|"failed", "result_json": {...}, "summary": "..."}
        ```

@@ -13,12 +13,12 @@ def log_event(event_type, **kwargs):
 def run_browser_harness_step(step_id, step_title, script_code):
     """Reference helper showing how to shell out to browser-harness for browser automation."""
     log_event("step_start", id=step_id, title=step_title)
-    
+
     harness_bin = os.environ.get("AI_MIME_BROWSER_HARNESS_BIN")
     if not harness_bin:
         log_event("step_failed", id=step_id, error="AI_MIME_BROWSER_HARNESS_BIN not configured", recoverable=False)
         sys.exit(1)
-        
+
     cmd = [harness_bin, "-c", script_code]
     try:
         # Run browser script in subprocess
@@ -31,29 +31,29 @@ def run_browser_harness_step(step_id, step_title, script_code):
 
 def run_ui_agent_step(step_id, step_title, task_prompt, response_schema=None):
     """Reference helper showing how to shell out to the UI Agent for native macOS automation.
-    
+
     Pass the high-level step-by-step instructions you recorded during Phase B exploration
     directly as the natural language task prompt. The UI Agent will drive the exact same
     cua MCP server to execute them. Optionally pass a response_schema dict to enforce
     structured JSON output.
     """
     log_event("step_start", id=step_id, title=step_title)
-    
+
     ui_agent_cmd = os.environ.get("AI_MIME_UI_AGENT_CMD")
     if not ui_agent_cmd:
         log_event("step_failed", id=step_id, error="AI_MIME_UI_AGENT_CMD not configured", recoverable=False)
         sys.exit(1)
-        
+
     # Split the command string (handles both bare executable or prefixed python -m calls)
     cmd = shlex.split(ui_agent_cmd) + [task_prompt]
     if response_schema:
         cmd += ["--schema", json.dumps(response_schema)]
     cmd += ["--json"]
-    
+
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, check=True)
         result = json.loads(proc.stdout)
-        
+
         if result.get("status") == "success":
             log_event("step_done", id=step_id, outputs=result.get("result_json") or {}, summary=result.get("summary", ""))
             return result.get("result_json") or {}
@@ -61,7 +61,7 @@ def run_ui_agent_step(step_id, step_title, task_prompt, response_schema=None):
             log_event("step_failed", id=step_id, error=result.get("error") or "UI Agent task failed", recoverable=False)
             sys.exit(1)
     except subprocess.CalledProcessError as e:
-        log_event("step_failed", id=step_id, error=f"UI Agent command failed to run: {e.stderr or e}", recoverable=False)
+        log_event("step_failed", id=step_id, error=f"UI Agent command failed to run: {e}", recoverable=False)
         sys.exit(1)
     except json.JSONDecodeError:
         log_event("step_failed", id=step_id, error="UI Agent returned invalid JSON output", recoverable=False)
@@ -115,7 +115,7 @@ def main():
         },
         "required": ["temperature", "condition"]
     }
-    
+
     # Run the UI Agent to perform the native actions autonomously (using the response schema)
     # result_data = run_ui_agent_step(
     #     "input_weather_details",

@@ -20,7 +20,7 @@ These rules apply to all replay operations. Read this file first to understand t
       }
       
       cmd = shlex.split(ui_agent_cmd) + [task_prompt, "--schema", json.dumps(schema), "--json"]
-      proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+      proc = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, check=True)
       result = json.loads(proc.stdout)
       print("Paris Temperature:", result["result_json"]["temperature"])
       ``` 
