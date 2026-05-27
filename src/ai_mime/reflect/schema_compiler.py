@@ -1224,7 +1224,6 @@ def cleanup_reflect_artifacts(
             removed.append(path)
 
     for name in (
-        # "manifest.jsonl",
         "step_cards.json",
         "plan_creation.json",
         "schema.draft.json",

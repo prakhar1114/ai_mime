@@ -64,6 +64,30 @@
     labelEl.classList.toggle("done", !!done);
   }
 
+  function setSubtitle(text, hasError = false) {
+    if (!el.progressSubtitle) return;
+    el.progressSubtitle.classList.remove("expanded");
+    el.progressSubtitle.title = text || "";
+
+    if (hasError && text && text.length > 50) {
+      el.progressSubtitle.innerHTML = `
+        <span class="error-text">${escapeHtml(text)}</span>
+        <button class="error-expand-btn" style="margin-left: 8px; background: none; border: none; padding: 0; color: #2f6df6; cursor: pointer; font-size: 11px; text-decoration: underline;" type="button">Expand</button>
+      `;
+      const btn = el.progressSubtitle.querySelector(".error-expand-btn");
+      if (btn) {
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const isExpanded = el.progressSubtitle.classList.toggle("expanded");
+          btn.textContent = isExpanded ? "Collapse" : "Expand";
+        });
+      }
+    } else {
+      el.progressSubtitle.textContent = text || "";
+    }
+  }
+
   function renderStatus(task) {
     const progress = task && task.progress && typeof task.progress === "object"
       ? task.progress
@@ -77,9 +101,8 @@
     document.title = `AI Mime - Reflect - ${name}`;
     if (el.progressTitle) el.progressTitle.textContent = label;
     if (el.progressSubtitle) {
-      const error = task.error ? ` - ${task.error}` : "";
-      el.progressSubtitle.textContent = `${statusLabel(status)}${error}`;
-      el.progressSubtitle.title = task.error || "";
+      const errorText = task.error ? `${statusLabel(status)} - ${task.error}` : statusLabel(status);
+      setSubtitle(errorText, !!task.error);
     }
     if (el.progressFill) {
       el.progressFill.style.width = `${value}%`;
@@ -105,7 +128,7 @@
       renderStatus(task);
     } catch (e) {
       if (el.progressTitle) el.progressTitle.textContent = "Unable to load reflection";
-      if (el.progressSubtitle) el.progressSubtitle.innerHTML = escapeHtml(e.message || String(e));
+      setSubtitle(e.message || String(e), true);
     }
   }
 
@@ -120,7 +143,7 @@
       });
       renderStatus(task);
     } catch (e) {
-      if (el.progressSubtitle) el.progressSubtitle.textContent = e.message || String(e);
+      setSubtitle(e.message || String(e), true);
     } finally {
       el.startReflectBtn.disabled = false;
     }

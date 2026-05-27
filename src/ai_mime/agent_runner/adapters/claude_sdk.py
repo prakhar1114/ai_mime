@@ -566,6 +566,7 @@ def run_claude_sdk_structured(
     import asyncio
     from ai_mime.agent_runner.models import AgentRunRequest
     import json
+    import tempfile
 
     schema_json = json.dumps(response_schema, indent=2)
     prompt = (
@@ -577,21 +578,23 @@ def run_claude_sdk_structured(
         f"{schema_json}"
     )
 
-    request = AgentRunRequest(
-        provider="claude",
-        mode="general",
-        model=model,
-        workflow_dir=workflow_dir,
-        workspace_dir=workflow_dir,
-        system_prompt=system_prompt,
-        readable_roots=[workflow_dir, Path.home()],
-        writable_roots=[workflow_dir / "agent"],
-    )
+    with tempfile.TemporaryDirectory(prefix="ai-mime-compiler-") as td:
+        temp_dir = Path(td)
+        request = AgentRunRequest(
+            provider="claude",
+            mode="general",
+            model=model,
+            workflow_dir=workflow_dir,
+            workspace_dir=temp_dir,
+            system_prompt=system_prompt,
+            readable_roots=[workflow_dir, Path.home()],
+            writable_roots=[temp_dir],
+        )
 
-    adapter = ClaudeAgentSdkAdapter()
-    result = adapter.run(request, prompt)
+        adapter = ClaudeAgentSdkAdapter()
+        result = adapter.run(request, prompt)
 
-    if result.status != "success":
-        raise RuntimeError(f"Claude SDK fallback agent failed: {result.error}\nSummary: {result.summary}")
+        if result.status != "success":
+            raise RuntimeError(f"Claude SDK fallback agent failed: {result.error}\nSummary: {result.summary}")
 
-    return result.summary
+        return result.summary
