@@ -666,33 +666,70 @@ class RecorderApp(rumps.App):
         import subprocess
 
         current_pid = os.getpid()
+        
+        # 1. Gather all descendants of the current process
+        descendants = set()
+        try:
+            output = subprocess.check_output(["ps", "-ax", "-o", "pid,ppid"], text=True)
+            children_map = {}
+            for line in output.strip().splitlines()[1:]:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    try:
+                        pid = int(parts[0])
+                        ppid = int(parts[1])
+                        children_map.setdefault(ppid, []).append(pid)
+                    except ValueError:
+                        continue
+            def gather(p):
+                for child in children_map.get(p, []):
+                    if child not in descendants:
+                        descendants.add(child)
+                        gather(child)
+            gather(current_pid)
+        except Exception:
+            pass
+
+        # 2. Gather processes matching specific keywords
+        keyword_pids = set()
         try:
             output = subprocess.check_output(["ps", "-ax", "-o", "pid,command"], text=True)
             for line in output.strip().splitlines()[1:]:
                 parts = line.strip().split(None, 1)
                 if len(parts) < 2:
                     continue
-                pid_str, cmd = parts
                 try:
-                    pid = int(pid_str)
+                    pid = int(parts[0])
                 except ValueError:
                     continue
-
-                if pid == current_pid:
+                
+                cmd = parts[1]
+                cmd_lower = cmd.lower()
+                
+                # Exclude IDEs and helpers
+                if any(x in cmd_lower for x in ["cursor", "vscode", "helper", "extension-host", "grep"]):
                     continue
 
-                cmd_lower = cmd.lower()
-                if "mime" in cmd_lower:
-                    if any(x in cmd_lower for x in ["cursor", "vscode", "helper", "extension-host", "grep"]):
-                        continue
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    except Exception:
-                        pass
+                if ("mime" in cmd_lower or
+                    "run_computer_use" in cmd_lower or
+                    "computer_server" in cmd_lower or
+                    ("run.sh" in cmd_lower and ("ai_mime" in cmd_lower or "workflows" in cmd_lower)) or
+                    ("run.py" in cmd_lower and ("ai_mime" in cmd_lower or "workflows" in cmd_lower))):
+                    keyword_pids.add(pid)
         except Exception:
             pass
+
+        all_to_kill = descendants.union(keyword_pids)
+        if current_pid in all_to_kill:
+            all_to_kill.remove(current_pid)
+
+        for pid in all_to_kill:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
 
 
 def run_app():

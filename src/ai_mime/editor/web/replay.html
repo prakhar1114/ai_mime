@@ -65,7 +65,10 @@
               <button class="tab active" data-tab="logs" role="tab">Logs</button>
               <button class="tab" data-tab="outputs" role="tab">Outputs</button>
             </div>
-            <div class="run-status" id="runStatus">Running…</div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <div class="run-status" id="runStatus">Running…</div>
+              <button class="btn danger small" id="killTaskBtn" type="button" hidden style="padding: 2px 8px; font-size: 12px; height: 24px;">Kill</button>
+            </div>
           </div>
 
           <div class="tab-panels">

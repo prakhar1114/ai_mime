@@ -643,6 +643,8 @@ def create_app(
     replay_agent_services: dict[str, WorkspaceAgentChatService] = {}
     skill_build_services: dict[str, WorkflowSkillBuildService] = {}
 
+    _running_automations: dict[str, subprocess.Popen[str]] = {}
+
     app = FastAPI(title="AI Mime Task Dashboard", docs_url=None, redoc_url=None)
 
     web_dir = Path(__file__).parent / "web"
@@ -879,6 +881,12 @@ def create_app(
     def api_quit_app():
         if app_command_queue is None:
             raise HTTPException(status_code=503, detail="App control is unavailable")
+        for tid, proc in list(_running_automations.items()):
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+            _running_automations.pop(tid, None)
         try:
             app_command_queue.put({"type": "quit_app"})
         except Exception as e:
@@ -1230,7 +1238,9 @@ def create_app(
                         stderr=subprocess.PIPE,
                         text=True,
                         bufsize=1,
+                        start_new_session=True,
                     )
+                    _running_automations[task_id] = proc
                 except Exception as e:
                     message = f"Failed to start run.sh: {e}"
                     _finish_run_log(status="failed", exit_code=None, error=message)
@@ -1336,7 +1346,12 @@ def create_app(
                     return
                 finally:
                     if proc is not None and proc.poll() is None:
+                        try:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        except Exception:
+                            pass
                         proc.terminate()
+                    _running_automations.pop(task_id, None)
                     if not overlay_completed and app_command_queue is not None:
                         app_command_queue.put({"type": "hide_conversation_overlay"})
 
@@ -1345,6 +1360,20 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/api/tasks/{task_id}/skill/kill")
+    def api_kill_skill_run(task_id: str):
+        _safe_task_id(task_id)
+        proc = _running_automations.get(task_id)
+        if not proc:
+            return {"ok": False, "message": "No active skill run for this task"}
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to kill process group: {e}")
+        return {"ok": True, "message": "Skill run terminated"}
 
     @app.get("/replay/{task_id}", response_class=HTMLResponse)
     def replay_page(task_id: str):

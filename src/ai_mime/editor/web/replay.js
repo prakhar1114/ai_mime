@@ -22,6 +22,7 @@
     newRunBtn: document.getElementById("newRunBtn"),
     runOutput: document.getElementById("runOutput"),
     runStatus: document.getElementById("runStatus"),
+    killTaskBtn: document.getElementById("killTaskBtn"),
     logsPre: document.getElementById("logsPre"),
     outputsPanel: document.getElementById("outputsPanel"),
     failureBanner: document.getElementById("failureBanner"),
@@ -49,6 +50,7 @@
     agentPromptSeeded: false,
     agentContextPrompt: "",
     agentFallbackStarted: false,
+    killedByUser: false,
   };
 
   // ---------- helpers ----------
@@ -499,11 +501,13 @@
     state.lastRunValues = values;
     state.runActive = true;
     state.runTerminal = false;
+    state.killedByUser = false;
     resetOutputs();
     el.runOutput.hidden = false;
     selectTab("logs");
     el.runStatus.textContent = "Running…";
     el.runStatus.dataset.state = "running";
+    if (el.killTaskBtn) el.killTaskBtn.hidden = false;
     el.summaryParams.textContent = formatSummary(values);
     el.scriptSummary.hidden = false;
     setMode("running_script");
@@ -604,6 +608,7 @@
     if (state.runTerminal) return;
     state.runTerminal = true;
     state.runActive = false;
+    if (el.killTaskBtn) el.killTaskBtn.hidden = true;
     if (kind === "done") {
       el.runStatus.textContent = "Succeeded";
       el.runStatus.dataset.state = "done";
@@ -617,10 +622,13 @@
     if (state.runTerminal) return;
     state.runTerminal = true;
     state.runActive = false;
-    el.runStatus.textContent = "Failed";
+    if (el.killTaskBtn) el.killTaskBtn.hidden = true;
+    el.runStatus.textContent = state.killedByUser ? "Killed" : "Failed";
     el.runStatus.dataset.state = "failed";
-    el.failureBanner.hidden = false;
+    el.failureBanner.hidden = state.killedByUser;
     setMode("script_failed");
+
+    if (state.killedByUser) return;
 
     const payload = {
       taskId,
@@ -729,11 +737,28 @@
     state.lastRunValues = null;
     el.runOutput.hidden = true;
     el.scriptSummary.hidden = true;
+    if (el.killTaskBtn) el.killTaskBtn.hidden = true;
     el.scriptCard.classList.remove("is-compact");
     resetOutputs();
     setMode("idle");
     validateForm();
   });
+
+  if (el.killTaskBtn) {
+    el.killTaskBtn.addEventListener("click", async () => {
+      try {
+        state.killedByUser = true;
+        const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/skill/kill`, {
+          method: "POST"
+        });
+        if (!response.ok) {
+          console.warn("[replay] failed to kill task", await response.text());
+        }
+      } catch (err) {
+        console.warn("[replay] failed to kill task", err);
+      }
+    });
+  }
 
   // ---------- agent dock ----------
 
