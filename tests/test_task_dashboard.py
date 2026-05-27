@@ -80,7 +80,6 @@ class TaskDashboardTests(unittest.TestCase):
             workflows_root=self.workflows,
             recordings_root=self.recordings,
             reflect_llm_cfg=None,
-            replay_llm_cfg=None,
         )
         rows = {row["id"]: row for row in runner.list_tasks()}
 
@@ -114,14 +113,13 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertFalse(rec.exists())
 
-    def test_reflect_and_replay_reject_missing_configs(self) -> None:
+    def test_reflect_reject_missing_configs(self) -> None:
         self._ready_workflow("20260513T000000Z-ready")
         self._recording("20260513T000100Z-pending")
         app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
         client = TestClient(app)
 
         self.assertEqual(client.post("/api/tasks/20260513T000100Z-pending/reflect").status_code, 500)
-        self.assertEqual(client.post("/api/tasks/20260513T000000Z-ready/replay").status_code, 500)
 
     def test_force_reflect_rewrites_existing_workflow_manifest(self) -> None:
         task_id = "20260513T000100Z-pending"
@@ -247,7 +245,6 @@ class TaskDashboardTests(unittest.TestCase):
             workflows_root=self.workflows,
             recordings_root=self.recordings,
             reflect_llm_cfg=None,
-            replay_llm_cfg=None,
         )
         q: queue.Queue = queue.Queue()
         q.put({"type": "reflect_phase_started", "phase": "compiling", "label": "Compiling", "progress": 8})

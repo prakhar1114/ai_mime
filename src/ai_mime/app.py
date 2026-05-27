@@ -385,7 +385,6 @@ class RecorderApp(rumps.App):
             workflows_root=self._workflows_root(),
             recordings_root=get_recordings_dir(),
             reflect_llm_cfg=self._user_cfg.reflect,
-            replay_llm_cfg=self._user_cfg.replay,
             app_command_queue=self.dashboard_command_q,
             app_state=self.dashboard_state,
         )
