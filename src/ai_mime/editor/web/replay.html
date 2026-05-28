@@ -58,11 +58,11 @@
           </div>
         </section>
 
-        <!-- SCRIPT OUTPUT: logs + outputs -->
+        <!-- SCRIPT OUTPUT: logs + outputs (stays right below input form) -->
         <section class="run-output" id="runOutput" hidden>
           <div class="run-head">
             <div class="tabs" role="tablist">
-              <button class="tab active" data-tab="logs" role="tab">Logs</button>
+              <button class="tab active" data-tab="logs" role="tab" id="logsTabBtn">Logs</button>
               <button class="tab" data-tab="outputs" role="tab">Outputs</button>
             </div>
             <div style="display: flex; gap: 8px; align-items: center;">
@@ -87,6 +87,55 @@
               Script failed. Handing off to the UI agent to complete the task…
             </div>
             <div class="failure-spinner" aria-hidden="true"></div>
+          </div>
+        </section>
+
+        <!-- TOGGLE OLDER RUNS BUTTON -->
+        <div class="older-runs-toggle-row">
+          <button class="btn secondary full" id="toggleOlderRunsBtn" type="button">Show Older Runs</button>
+        </div>
+
+        <!-- OLDER RUNS: history of past executions (toggled via button) -->
+        <section class="older-runs-card" id="olderRunsCard" hidden>
+          <div class="card-head">
+            <div>
+              <div class="card-title">Older runs</div>
+              <div class="card-sub">History of past execution attempts of this skill.</div>
+            </div>
+          </div>
+          <div class="runs-list" id="runsList">
+            <div class="empty">Loading older runs…</div>
+          </div>
+        </section>
+
+        <!-- OLDER RUN DETAIL: separate panel to view logs/outputs of a selected older run -->
+        <section class="older-run-detail-card" id="olderRunDetailCard" hidden>
+          <div class="run-head">
+            <div class="tabs" role="tablist">
+              <button class="tab active" data-tab="older-logs" role="tab" id="olderLogsTabBtn">Logs</button>
+              <button class="tab" data-tab="older-outputs" role="tab" id="olderOutputsTabBtn">Outputs</button>
+            </div>
+            <div style="display: flex; gap: 12px; align-items: center;">
+              <div class="run-status" id="olderRunStatus">Status…</div>
+              <button class="close-btn" id="closeOlderDetailBtn" type="button" aria-label="Close older details">✕</button>
+            </div>
+          </div>
+
+          <div class="tab-panels">
+            <div class="tab-panel active" data-tab="older-logs">
+              <pre class="logs" id="olderLogsPre"></pre>
+            </div>
+            <div class="tab-panel" data-tab="older-outputs">
+              <div class="outputs" id="olderOutputsPanel">
+                <div class="empty">No outputs yet.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="failure-banner" id="olderFailureBanner" hidden>
+            <div class="failure-text">
+              Run failed. Click the agent button at the bottom to complete the task with agent handoff…
+            </div>
           </div>
         </section>
       </main>

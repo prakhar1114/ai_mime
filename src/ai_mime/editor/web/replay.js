@@ -35,6 +35,18 @@
     sendBtn: document.getElementById("sendBtn"),
     tabs: document.querySelectorAll(".tab"),
     tabPanels: document.querySelectorAll(".tab-panel"),
+    olderRunsCard: document.getElementById("olderRunsCard"),
+    runsList: document.getElementById("runsList"),
+    logsTabBtn: document.getElementById("logsTabBtn"),
+    toggleOlderRunsBtn: document.getElementById("toggleOlderRunsBtn"),
+    olderRunDetailCard: document.getElementById("olderRunDetailCard"),
+    olderLogsTabBtn: document.getElementById("olderLogsTabBtn"),
+    olderOutputsTabBtn: document.getElementById("olderOutputsTabBtn"),
+    olderRunStatus: document.getElementById("olderRunStatus"),
+    olderLogsPre: document.getElementById("olderLogsPre"),
+    olderOutputsPanel: document.getElementById("olderOutputsPanel"),
+    olderFailureBanner: document.getElementById("olderFailureBanner"),
+    closeOlderDetailBtn: document.getElementById("closeOlderDetailBtn"),
   };
 
   const state = {
@@ -46,6 +58,7 @@
     runTerminal: false,
     stdoutLines: [],
     stderrLines: [],
+    logLines: [],
     lastExitCode: null,
     agentPromptSeeded: false,
     agentContextPrompt: "",
@@ -155,6 +168,12 @@
         </div>`;
       state.params = [];
       el.runBtn.disabled = true;
+    }
+
+    try {
+      await loadOlderRuns();
+    } catch (err) {
+      console.warn("[replay] loadOlderRuns failed:", err);
     }
   }
 
@@ -460,12 +479,20 @@
 
   // ---------- tabs ----------
 
-  function selectTab(name) {
-    el.tabs.forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
-    el.tabPanels.forEach((p) => p.classList.toggle("active", p.dataset.tab === name));
+  function selectTab(name, container = document) {
+    const tabs = container.querySelectorAll(".tab");
+    const panels = container.querySelectorAll(".tab-panel");
+    tabs.forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+    panels.forEach((p) => p.classList.toggle("active", p.dataset.tab === name));
   }
 
-  el.tabs.forEach((t) => t.addEventListener("click", () => selectTab(t.dataset.tab)));
+  el.runOutput.querySelectorAll(".tab").forEach((t) => {
+    t.addEventListener("click", () => selectTab(t.dataset.tab, el.runOutput));
+  });
+
+  el.olderRunDetailCard.querySelectorAll(".tab").forEach((t) => {
+    t.addEventListener("click", () => selectTab(t.dataset.tab, el.olderRunDetailCard));
+  });
 
   // ---------- script run (STUB) ----------
 
@@ -494,6 +521,7 @@
     el.failureBanner.hidden = true;
     state.stdoutLines = [];
     state.stderrLines = [];
+    state.logLines = [];
     state.lastExitCode = null;
   }
 
@@ -504,7 +532,8 @@
     state.killedByUser = false;
     resetOutputs();
     el.runOutput.hidden = false;
-    selectTab("logs");
+    if (el.logsTabBtn) el.logsTabBtn.style.display = "";
+    selectTab("logs", el.runOutput);
     el.runStatus.textContent = "Running…";
     el.runStatus.dataset.state = "running";
     if (el.killTaskBtn) el.killTaskBtn.hidden = false;
@@ -572,12 +601,16 @@
     if (!event || typeof event !== "object") return;
     if (state.runTerminal && event.event !== "stdout" && event.event !== "stderr") return;
     if (event.event === "started") {
-      appendLog(`$ cd ${event.skill_dir || state.skillDir || "."} && ${event.command || "./run.sh"}`);
+      const startCmd = `$ cd ${event.skill_dir || state.skillDir || "."} && ${event.command || "./run.sh"}`;
+      appendLog(startCmd);
+      state.logLines.push(startCmd);
     } else if (event.event === "stdout") {
       state.stdoutLines.push(event.line || "");
+      state.logLines.push(event.line || "");
       appendLog(event.line || "", "stdout");
     } else if (event.event === "stderr") {
       state.stderrLines.push(event.line || "");
+      state.logLines.push(`[stderr] ${event.line || ""}`);
       appendLog(event.line || "", "stderr");
     } else if (event.event === "output") {
       appendOutput(event.key || "output", event.value);
@@ -597,6 +630,7 @@
         state.lastExitCode = event.exit_code == null ? null : event.exit_code;
         if (typeof event.stdout_log === "string") state.stdoutLines = event.stdout_log.split("\n");
         if (typeof event.stderr_log === "string") state.stderrLines = event.stderr_log.split("\n");
+        if (typeof event.combined_log === "string") state.logLines = event.combined_log.split("\n");
         handleScriptFailure(`run.sh exited with code ${code}`);
       }
     } else if (event.event === "error") {
@@ -616,6 +650,7 @@
       selectTab("outputs");
     }
     validateForm();
+    loadOlderRuns();
   }
 
   function handleScriptFailure(message) {
@@ -627,6 +662,7 @@
     el.runStatus.dataset.state = "failed";
     el.failureBanner.hidden = state.killedByUser;
     setMode("script_failed");
+    loadOlderRuns();
 
     if (state.killedByUser) return;
 
@@ -635,9 +671,7 @@
       error: message,
       exitCode: state.lastExitCode,
       params: state.lastRunValues || {},
-      logsTail: tailLogs(120),
-      stdoutTail: tailLines(state.stdoutLines, 120),
-      stderrTail: tailLines(state.stderrLines, 120),
+      logsTail: tailLines(state.logLines, 120),
       skillDir: state.skillDir,
       at: new Date().toISOString(),
     };
@@ -816,9 +850,7 @@
 
   function buildUiAgentFallbackPrompt(payload) {
     const params = payload.params || {};
-    const stdout = payload.stdoutTail || "(no stdout captured)";
-    const stderr = payload.stderrTail || "(no stderr captured)";
-    const logs = payload.logsTail || "(no combined logs captured)";
+    const logs = payload.logsTail || "(no logs captured)";
     return [
       `The deterministic replay script failed. Stay in replay execution mode and complete this task now.`,
       ``,
@@ -832,17 +864,7 @@
       `Exit code: ${payload.exitCode == null ? "(unknown)" : payload.exitCode}`,
       `Error: ${payload.error || "(no error message)"}`,
       ``,
-      `Recent stdout:`,
-      "```",
-      stdout,
-      "```",
-      ``,
-      `Recent stderr:`,
-      "```",
-      stderr,
-      "```",
-      ``,
-      `Combined log tail:`,
+      `Recent logs:`,
       "```",
       logs,
       "```",
@@ -905,9 +927,227 @@
     state.agentPromptSeeded = true;
   }
 
+  async function loadOlderRuns() {
+    try {
+      const resp = await request(`/api/tasks/${encodeURIComponent(taskId)}/runs`);
+      if (resp && Array.isArray(resp.runs) && resp.runs.length > 0) {
+        if (el.toggleOlderRunsBtn) {
+          el.toggleOlderRunsBtn.style.display = "";
+          el.toggleOlderRunsBtn.hidden = false;
+        }
+        el.runsList.innerHTML = resp.runs.map((r) => {
+          const statusClass = r.status === "success" ? "success" : (r.status === "failed" ? "failed" : "running");
+          const dateStr = r.started ? new Date(r.started).toLocaleString() : r.run_id;
+          return `
+            <div class="run-item" data-run-id="${escapeHtml(r.run_id)}">
+              <div class="run-item-left">
+                <span class="run-badge ${statusClass}">${escapeHtml(r.status)}</span>
+                <span class="run-item-id">${escapeHtml(r.run_id)}</span>
+              </div>
+              <div class="run-item-right">
+                <span class="run-item-date">${escapeHtml(dateStr)}</span>
+                <button class="btn small primary retry-run-btn" data-run-id="${escapeHtml(r.run_id)}" style="padding: 2px 10px; font-size: 11.5px; height: 26px; min-height: 26px; font-weight: 600; margin-left: 12px; border-radius: 6px; cursor: pointer;">Retry ↻</button>
+              </div>
+            </div>
+          `;
+        }).join("");
+      } else {
+        if (el.toggleOlderRunsBtn) {
+          el.toggleOlderRunsBtn.style.display = "none";
+          el.toggleOlderRunsBtn.hidden = true;
+        }
+        el.olderRunsCard.hidden = true;
+      }
+    } catch (e) {
+      console.warn("[replay] failed to load older runs:", e);
+      if (el.toggleOlderRunsBtn) {
+        el.toggleOlderRunsBtn.style.display = "none";
+        el.toggleOlderRunsBtn.hidden = true;
+      }
+      el.olderRunsCard.hidden = true;
+    }
+  }
+
+  function parseRunMarkdown(md) {
+    const res = {
+      status: "unknown",
+      started: "",
+      duration: "",
+      exitCode: null,
+      command: "",
+      input: null,
+      output: null,
+      error: "",
+      stdout: "",
+      stderr: ""
+    };
+
+    const statusMatch = md.match(/-\s*Status:\s*([^\n]+)/i);
+    if (statusMatch) res.status = statusMatch[1].trim();
+
+    const startedMatch = md.match(/-\s*Started:\s*([^\n]+)/i);
+    if (startedMatch) res.started = startedMatch[1].trim();
+
+    const durationMatch = md.match(/-\s*Duration:\s*([^\n]+)/i);
+    if (durationMatch) res.duration = durationMatch[1].trim();
+
+    const exitMatch = md.match(/-\s*Exit code:\s*([^\n]+)/i);
+    if (exitMatch) res.exitCode = parseInt(exitMatch[1].trim(), 10);
+
+    const extractSection = (title) => {
+      const escapedTitle = title.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      const regex = new RegExp(`##\\s*${escapedTitle}\\s*\\n([\\s\\S]*?)(?:\\n##|$)`, 'i');
+      const match = md.match(regex);
+      if (!match) return "";
+      let content = match[1].trim();
+      if (content.startsWith("```")) {
+        content = content.replace(/^```[a-zA-Z]*\n/, "").replace(/\n```$/, "");
+      }
+      return content.trim();
+    };
+
+    res.command = extractSection("Command Executed");
+    res.error = extractSection("Error");
+    res.stdout = extractSection("Standard Output");
+    res.stderr = extractSection("Standard Error");
+
+    const inputStr = extractSection("Input");
+    if (inputStr) {
+      try { res.input = JSON.parse(inputStr); } catch (e) { res.input = inputStr; }
+    }
+
+    const outputStr = extractSection("Output");
+    if (outputStr) {
+      try { res.output = JSON.parse(outputStr); } catch (e) { res.output = outputStr; }
+    }
+
+    return res;
+  }
+
+  function appendOlderLog(line, kind) {
+    const span = document.createElement("span");
+    if (kind === "stderr") span.className = "log-stderr";
+    span.textContent = (line || "") + "\n";
+    el.olderLogsPre.appendChild(span);
+    el.olderLogsPre.scrollTop = el.olderLogsPre.scrollHeight;
+  }
+
+  function appendOlderOutput(key, value) {
+    if (el.olderOutputsPanel.querySelector(".empty")) el.olderOutputsPanel.innerHTML = "";
+    const row = document.createElement("div");
+    row.className = "output-row";
+    row.innerHTML = `
+      <div class="output-key">${escapeHtml(key)}</div>
+      <div class="output-value">${escapeHtml(typeof value === "string" ? value : JSON.stringify(value, null, 2))}</div>
+    `;
+    el.olderOutputsPanel.appendChild(row);
+  }
+
+  function resetOlderOutputs() {
+    el.olderLogsPre.innerHTML = "";
+    el.olderOutputsPanel.innerHTML = `<div class="empty">No outputs yet.</div>`;
+    el.olderFailureBanner.hidden = true;
+  }
+
+  function loadRunDetailsFromMarkdown(md) {
+    const parsed = parseRunMarkdown(md);
+    
+    resetOlderOutputs();
+    el.olderRunDetailCard.hidden = false;
+    selectTab("older-logs", el.olderRunDetailCard);
+    
+    el.olderRunStatus.textContent = parsed.status === "success" ? "Succeeded" : (parsed.status === "failed" ? "Failed" : "Unknown");
+    el.olderRunStatus.dataset.state = parsed.status;
+    
+    if (parsed.command) {
+      appendOlderLog(`$ ${parsed.command}`);
+    }
+    if (parsed.stdout) {
+      parsed.stdout.split("\n").forEach(line => appendOlderLog(line, "stdout"));
+    }
+    if (parsed.stderr) {
+      parsed.stderr.split("\n").forEach(line => appendOlderLog(line, "stderr"));
+    }
+    
+    if (parsed.input) {
+      appendOlderOutput("Input Parameters", parsed.input);
+    }
+    if (parsed.output) {
+      appendOlderOutput("Output Data", parsed.output);
+    }
+    if (parsed.error) {
+      appendOlderOutput("Error", parsed.error);
+    }
+
+    if (parsed.status === "failed") {
+      el.olderFailureBanner.hidden = false;
+    } else {
+      el.olderFailureBanner.hidden = true;
+    }
+  }
+
+  async function retryRun(runId) {
+    try {
+      const resp = await request(`/api/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}`);
+      if (resp && resp.data_md) {
+        const parsed = parseRunMarkdown(resp.data_md);
+        if (parsed.input) {
+          renderParamFields(parsed.input);
+          validateForm();
+          startScriptRun(parsed.input);
+        } else {
+          alert("No inputs found in this run to retry.");
+        }
+      }
+    } catch (err) {
+      alert("Failed to retry run: " + err.message);
+    }
+  }
+
+  el.runsList.addEventListener("click", async (e) => {
+    const retryBtn = e.target.closest(".retry-run-btn");
+    if (retryBtn) {
+      e.stopPropagation();
+      e.preventDefault();
+      const runId = retryBtn.dataset.runId;
+      if (runId) {
+        retryRun(runId);
+      }
+      return;
+    }
+
+    const item = e.target.closest(".run-item");
+    if (!item) return;
+    const runId = item.dataset.runId;
+    if (!runId) return;
+
+    try {
+      const resp = await request(`/api/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}`);
+      if (resp && resp.data_md) {
+        loadRunDetailsFromMarkdown(resp.data_md);
+      }
+    } catch (err) {
+      alert("Failed to load run details: " + err.message);
+    }
+  });
+
   el.messageInput.addEventListener("focus", () => {
     setMode("agent_typing");
   });
+
+  if (el.toggleOlderRunsBtn) {
+    el.toggleOlderRunsBtn.addEventListener("click", () => {
+      const isHidden = el.olderRunsCard.hidden;
+      el.olderRunsCard.hidden = !isHidden;
+      el.toggleOlderRunsBtn.textContent = isHidden ? "Hide Older Runs" : "Show Older Runs";
+    });
+  }
+
+  if (el.closeOlderDetailBtn) {
+    el.closeOlderDetailBtn.addEventListener("click", () => {
+      el.olderRunDetailCard.hidden = true;
+    });
+  }
 
   bootstrap();
 })();

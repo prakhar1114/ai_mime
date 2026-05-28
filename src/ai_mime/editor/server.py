@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue as thread_queue
+import re
 import shutil
 import signal
 import subprocess
@@ -259,6 +260,8 @@ def _write_direct_run_markdown(
     outputs: dict[str, Any],
     asset_rels: list[str],
     error: str | None = None,
+    log_lines: list[str] | None = None,
+    cmd: list[str] | None = None,
 ) -> None:
     lines = [
         f"# Run {run_id}",
@@ -270,12 +273,16 @@ def _write_direct_run_markdown(
         lines.append(f"- Duration: {duration_ms} ms")
     if exit_code is not None:
         lines.append(f"- Exit code: {exit_code}")
+    if cmd:
+        lines.extend(["", "## Command Executed", "", "```bash", " ".join(cmd), "```"])
     lines.extend(["", "## Input", "", _markdown_json(params), "", "## Output", "", _markdown_json(outputs)])
     if asset_rels:
         lines.extend(["", "## Assets", ""])
         lines.extend(_markdown_asset_link(rel) for rel in asset_rels)
     if error:
         lines.extend(["", "## Error", "", error])
+    if log_lines:
+        lines.extend(["", "## Logs", "", "```", "\n".join(log_lines), "```"])
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
@@ -904,6 +911,73 @@ def create_app(
         return {"ok": True}
 
 
+    @app.get("/api/tasks/{task_id}/runs")
+    def api_task_runs(task_id: str):
+        _safe_task_id(task_id)
+        row = task_runner.get_status(task_id)
+        workflow_dir_raw = row.get("workflow_dir")
+        if not isinstance(workflow_dir_raw, str) or not workflow_dir_raw:
+            raise HTTPException(status_code=404, detail="Workflow directory not found for task")
+        workflow_dir = Path(workflow_dir_raw)
+        runs_dir = workflow_dir / "runs"
+        if not runs_dir.exists() or not runs_dir.is_dir():
+            return {"runs": []}
+        
+        runs = []
+        for run_dir in sorted(runs_dir.iterdir(), key=lambda x: x.name, reverse=True):
+            if not run_dir.is_dir():
+                continue
+            data_path = run_dir / "data.md"
+            if not data_path.exists():
+                continue
+            
+            run_id = run_dir.name
+            status = "unknown"
+            started = ""
+            
+            try:
+                content = data_path.read_text(encoding="utf-8")
+                # Parse Status
+                status_match = re.search(r"-\s*Status:\s*([^\n]+)", content, re.IGNORECASE)
+                if status_match:
+                    status = status_match.group(1).strip()
+                # Parse Started
+                started_match = re.search(r"-\s*Started:\s*([^\n]+)", content, re.IGNORECASE)
+                if started_match:
+                    started = started_match.group(1).strip()
+            except Exception:
+                pass
+                
+            runs.append({
+                "run_id": run_id,
+                "status": status,
+                "started": started
+            })
+        return {"runs": runs}
+
+    @app.get("/api/tasks/{task_id}/runs/{run_id}")
+    def api_task_run_detail(task_id: str, run_id: str):
+        _safe_task_id(task_id)
+        if ".." in run_id or "/" in run_id or "\\" in run_id:
+            raise HTTPException(status_code=400, detail="Invalid run_id")
+        row = task_runner.get_status(task_id)
+        workflow_dir_raw = row.get("workflow_dir")
+        if not isinstance(workflow_dir_raw, str) or not workflow_dir_raw:
+            raise HTTPException(status_code=404, detail="Workflow directory not found for task")
+        workflow_dir = Path(workflow_dir_raw)
+        run_dir = workflow_dir / "runs" / run_id
+        data_path = run_dir / "data.md"
+        if not data_path.exists():
+            raise HTTPException(status_code=404, detail="Run data not found")
+        try:
+            data_md = data_path.read_text(encoding="utf-8")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read run data: {e}")
+        return {
+            "run_id": run_id,
+            "data_md": data_md
+        }
+
     @app.get("/api/tasks/{task_id}/status")
     def api_task_status(task_id: str):
         return task_runner.get_status(task_id)
@@ -1169,10 +1243,12 @@ def create_app(
             assets_before = _snapshot_asset_files(assets_dir)
             stdout_lines: list[str] = []
             stderr_lines: list[str] = []
+            log_lines: list[str] = []
             final_outputs: dict[str, Any] = {}
             q: thread_queue.Queue[tuple[str, str | int | None]] = thread_queue.Queue()
             proc: subprocess.Popen[str] | None = None
             overlay_completed = False
+            cmd: list[str] = []
 
             def _finish_run_log(
                 *,
@@ -1198,6 +1274,8 @@ def create_app(
                     outputs=final_outputs,
                     asset_rels=copied_assets,
                     error=error,
+                    log_lines=log_lines,
+                    cmd=cmd,
                 )
                 return copied_assets
 
@@ -1278,8 +1356,10 @@ def create_app(
                         line = "" if value is None else str(value)
                         if source == "stdout":
                             stdout_lines.append(line)
+                            log_lines.append(line)
                         else:
                             stderr_lines.append(line)
+                            log_lines.append(f"[stderr] {line}")
                         yield _sse_event({"event": source, "line": line})
 
                         progress = _parse_skill_progress_event(line)
@@ -1321,6 +1401,7 @@ def create_app(
                         "outputs": final_outputs,
                         "stdout_log": "\n".join(stdout_lines),
                         "stderr_log": "\n".join(stderr_lines),
+                        "combined_log": "\n".join(log_lines),
                         "run_id": run_id,
                         "run_dir": str(run_dir),
                     })
