@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -85,7 +84,6 @@ class WorkspaceAgentChatService:
             env_val = (os.getenv("AI_MIME_BASH_REQUIRES_APPROVAL") or "").strip().lower()
             bash_requires_approval = env_val in ("1", "true", "yes", "on")
         self.bash_requires_approval = bash_requires_approval
-        self._turn_lock = threading.Lock()
         self._active_client: Any | None = None
         self._active_loop: asyncio.AbstractEventLoop | None = None
         self._pending_permissions: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -164,38 +162,33 @@ class WorkspaceAgentChatService:
         if not text:
             raise ValueError("message must be non-empty")
         selected_model = self._validate_model(model)
-        if not self._turn_lock.acquire(blocking=False):
-            raise AgentBusyError("Workspace agent is already responding")
-        try:
-            resume_id = session_id if session_id and not session_id.startswith("draft-") else None
-            request = self._build_request(session_id=resume_id, model=selected_model)
-            if resume_id is None:
-                system_prompt = _build_prompt(request)
-                request = request.model_copy(update={"system_prompt": system_prompt})
-            prompt = text
-            with tempfile.TemporaryDirectory(prefix="ai-mime-agent-") as td:
-                request = request.model_copy(update={"temp_dir": Path(td)})
-                result: AgentRunResult = self.adapter.run(request, prompt)
-            sid = result.session_id or resume_id
-            if not sid:
-                raise RuntimeError("Claude did not return a session_id")
-            self._record_session(
-                session_id=sid,
-                previous_session_id=session_id,
-                summary=(text[:80] or sid),
-                status=result.status,
-                error=result.error,
-                model=selected_model,
-            )
-            return {
-                "session_id": sid,
-                "assistant_text": result.summary,
-                "status": result.status,
-                "error": result.error,
-                "model": selected_model,
-            }
-        finally:
-            self._turn_lock.release()
+        resume_id = session_id if session_id and not session_id.startswith("draft-") else None
+        request = self._build_request(session_id=resume_id, model=selected_model)
+        if resume_id is None:
+            system_prompt = _build_prompt(request)
+            request = request.model_copy(update={"system_prompt": system_prompt})
+        prompt = text
+        with tempfile.TemporaryDirectory(prefix="ai-mime-agent-") as td:
+            request = request.model_copy(update={"temp_dir": Path(td)})
+            result: AgentRunResult = self.adapter.run(request, prompt)
+        sid = result.session_id or resume_id
+        if not sid:
+            raise RuntimeError("Claude did not return a session_id")
+        self._record_session(
+            session_id=sid,
+            previous_session_id=session_id,
+            summary=(text[:80] or sid),
+            status=result.status,
+            error=result.error,
+            model=selected_model,
+        )
+        return {
+            "session_id": sid,
+            "assistant_text": result.summary,
+            "status": result.status,
+            "error": result.error,
+            "model": selected_model,
+        }
 
     async def chat_stream(
         self,
@@ -208,8 +201,6 @@ class WorkspaceAgentChatService:
         if not text:
             raise ValueError("message must be non-empty")
         selected_model = self._validate_model(model)
-        if not self._turn_lock.acquire(blocking=False):
-            raise AgentBusyError("Workspace agent is already responding")
 
         resume_id = session_id if session_id and not session_id.startswith("draft-") else None
         request = self._build_request(session_id=resume_id, model=selected_model)
@@ -303,7 +294,6 @@ class WorkspaceAgentChatService:
                 pass
             self._active_client = None
             self._active_loop = None
-            self._turn_lock.release()
 
         if final_session_id:
             self._record_session(

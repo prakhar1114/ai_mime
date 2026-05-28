@@ -386,10 +386,21 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertEqual(messages.status_code, 200, messages.text)
         self.assertEqual(messages.json()["messages"][0]["message"], "hello")
 
-    def test_agent_api_rejects_concurrent_turns(self) -> None:
+    def test_agent_api_accepts_sequential_recovery_turns(self) -> None:
+        seen_session_ids: list[str | None] = []
+
+        class ChatAdapter:
+            def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+                seen_session_ids.append(request.session_id)
+                return AgentRunResult(
+                    status="success",
+                    session_id=request.session_id or "session-1",
+                    summary="agent reply",
+                )
+
         service = WorkspaceAgentChatService(
             workspace_dir=self.workflows,
-            adapter=object(),
+            adapter=ChatAdapter(),
             session_lister=lambda _dir: [],
             message_loader=lambda _sid, _dir: [],
         )
@@ -400,12 +411,13 @@ class TaskDashboardTests(unittest.TestCase):
         )
         client = TestClient(app)
 
-        self.assertTrue(service._turn_lock.acquire(blocking=False))
-        try:
-            response = client.post("/api/agent/chat", json={"message": "hello", "session_id": None})
-            self.assertEqual(response.status_code, 409, response.text)
-        finally:
-            service._turn_lock.release()
+        first = client.post("/api/agent/chat", json={"message": "hello", "session_id": None})
+        self.assertEqual(first.status_code, 200, first.text)
+
+        second = client.post("/api/agent/chat", json={"message": "hello again", "session_id": first.json()["session_id"]})
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(second.json()["session_id"], "session-1")
+        self.assertEqual(seen_session_ids, [None, "session-1"])
 
     def test_tasks_page_has_agent_mode_button(self) -> None:
         app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)

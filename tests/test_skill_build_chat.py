@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ai_mime.agent_runner import WorkflowSkillBuildService
 
@@ -220,6 +222,25 @@ class WorkflowSkillBuildServiceTests(unittest.TestCase):
             self.assertIn("validate_skill_package", event["error"])
             self.assertIsNone(service._terminal_status)
             self.assertFalse((workflow_dir / "agent" / "build_signal.json").exists())
+
+    def test_chat_stream_runs_without_turn_lock(self) -> None:
+        async def fake_stream_chat(*_args, **_kwargs):
+            yield {"event": "text", "text": "ok"}
+            yield {"event": "done", "status": "success", "session_id": "skill-session-1", "summary": "done"}
+
+        async def collect_events(service: WorkflowSkillBuildService) -> list[dict]:
+            return [event async for event in service.chat_stream(message="continue build")]
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            service = _build_service(workflow_dir)
+
+            with patch("ai_mime.agent_runner.skill_build_chat.stream_chat", new=fake_stream_chat):
+                events = asyncio.run(collect_events(service))
+
+            self.assertEqual(events[-1]["event"], "done")
+            self.assertEqual(events[-1]["session_id"], "skill-session-1")
 
 
 class AuthorizeToolTests(unittest.TestCase):

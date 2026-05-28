@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import tempfile
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -61,7 +60,6 @@ class WorkflowSkillBuildService:
             env_val = (os.getenv("AI_MIME_BASH_REQUIRES_APPROVAL") or "").strip().lower()
             bash_requires_approval = env_val in ("1", "true", "yes", "on")
         self.bash_requires_approval = bash_requires_approval
-        self._turn_lock = threading.Lock()
         self._active_client: Any | None = None
         self._active_loop: asyncio.AbstractEventLoop | None = None
         self._pending_permissions: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -155,8 +153,6 @@ class WorkflowSkillBuildService:
         if self._terminal_status:
             raise AgentBusyError(f"Skill build already concluded ({self._terminal_status}); start a new workflow build to continue")
         selected_model = self._validate_model(model)
-        if not self._turn_lock.acquire(blocking=False):
-            raise AgentBusyError("Skill builder is already responding")
 
         resume_id = session_id if session_id and not session_id.startswith("draft-") else None
         request = self._build_request(session_id=resume_id, model=selected_model)
@@ -251,7 +247,6 @@ class WorkflowSkillBuildService:
                 pass
             self._active_client = None
             self._active_loop = None
-            self._turn_lock.release()
 
         if final_session_id:
             self._record_session(

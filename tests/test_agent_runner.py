@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import stat
@@ -521,6 +522,66 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertIn("replay execution agent", system_prompts[0] or "")
             self.assertTrue((workflow_dir / "agent" / "agent_sessions.json").exists())
 
+    def test_replay_execution_chat_accepts_sequential_recovery_turns(self) -> None:
+        session_ids: list[str | None] = []
+
+        class ChatAdapter:
+            def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+                session_ids.append(request.session_id)
+                return AgentRunResult(status="success", session_id=request.session_id or "replay-session-1", summary="ok")
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            schema = _schema()
+            plan = _optimized_plan()
+            (workflow_dir / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            _write_valid_skill_package(workflow_dir / "skills" / "record-expenses-in-a-sheet", schema, plan)
+            service = WorkspaceAgentChatService(
+                workspace_dir=workflow_dir,
+                mode="replay_execution",
+                agent_dir=workflow_dir / "agent" / "replay",
+                adapter=ChatAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            first = service.chat(message="continue replay")
+            result = service.chat(message="continue again", session_id=first["session_id"])
+
+            self.assertEqual(result["session_id"], "replay-session-1")
+            self.assertEqual(session_ids, [None, "replay-session-1"])
+
+    def test_replay_execution_stream_runs_without_turn_lock(self) -> None:
+        async def fake_stream_chat(*_args, **_kwargs):
+            yield {"event": "text", "text": "ok"}
+            yield {"event": "done", "status": "success", "session_id": "replay-session-1", "summary": "ok"}
+
+        async def collect_events(service: WorkspaceAgentChatService) -> list[dict]:
+            return [event async for event in service.chat_stream(message="continue replay")]
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            schema = _schema()
+            plan = _optimized_plan()
+            (workflow_dir / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            _write_valid_skill_package(workflow_dir / "skills" / "record-expenses-in-a-sheet", schema, plan)
+            service = WorkspaceAgentChatService(
+                workspace_dir=workflow_dir,
+                mode="replay_execution",
+                agent_dir=workflow_dir / "agent" / "replay",
+                adapter=object(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            with patch("ai_mime.agent_runner.chat.stream_chat", new=fake_stream_chat):
+                events = asyncio.run(collect_events(service))
+
+            self.assertEqual(events[-1]["event"], "done")
+            self.assertEqual(events[-1]["session_id"], "replay-session-1")
+
     def test_validate_skill_package_accepts_valid_package(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             skill_dir = Path(td) / "skills" / "record-expenses-in-a-sheet"
@@ -918,20 +979,48 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(service.list_sessions()[0]["session_id"], "old")
             self.assertEqual(service.load_messages("old")[0]["message"], "hi")
 
-    def test_workspace_chat_service_rejects_concurrent_turns(self) -> None:
+    def test_workspace_chat_service_accepts_sequential_recovery_turns(self) -> None:
+        session_ids: list[str | None] = []
+
+        class ChatAdapter:
+            def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+                session_ids.append(request.session_id)
+                return AgentRunResult(status="success", session_id=request.session_id or "workspace-session-1", summary="ok")
+
         with tempfile.TemporaryDirectory() as td:
             service = WorkspaceAgentChatService(
                 workspace_dir=Path(td),
-                adapter=FakeAdapter(),
+                adapter=ChatAdapter(),
                 session_lister=lambda _dir: [],
                 message_loader=lambda _sid, _dir: [],
             )
-            self.assertTrue(service._turn_lock.acquire(blocking=False))
-            try:
-                with self.assertRaisesRegex(RuntimeError, "already responding"):
-                    service.chat(message="hello")
-            finally:
-                service._turn_lock.release()
+            first = service.chat(message="hello")
+            second = service.chat(message="hello again", session_id=first["session_id"])
+
+            self.assertEqual(second["session_id"], "workspace-session-1")
+            self.assertEqual(session_ids, [None, "workspace-session-1"])
+
+    def test_workspace_chat_stream_runs_without_turn_lock(self) -> None:
+        async def fake_stream_chat(*_args, **_kwargs):
+            yield {"event": "text", "text": "ok"}
+            yield {"event": "done", "status": "success", "session_id": "workspace-session-1", "summary": "ok"}
+
+        async def collect_events(service: WorkspaceAgentChatService) -> list[dict]:
+            return [event async for event in service.chat_stream(message="continue workspace")]
+
+        with tempfile.TemporaryDirectory() as td:
+            service = WorkspaceAgentChatService(
+                workspace_dir=Path(td),
+                adapter=object(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            with patch("ai_mime.agent_runner.chat.stream_chat", new=fake_stream_chat):
+                events = asyncio.run(collect_events(service))
+
+            self.assertEqual(events[-1]["event"], "done")
+            self.assertEqual(events[-1]["session_id"], "workspace-session-1")
 
     @patch("ai_mime.agent_runner.adapters.claude_sdk.list_sessions", return_value=[])
     @patch("ai_mime.agent_runner.adapters.claude_sdk.query")
