@@ -20,11 +20,12 @@ In this phase, you will write the final deterministic python execution script, r
        ```
 3. Code Contract:
    - Invocation: `"$AI_MIME_PYTHON_PATH" scripts/run.py --inputs-json /path/to/inputs.json` or `./run.sh /path/to/inputs.json`. Read all inputs up front, do not prompt for inputs.
-   - For irreducible judgment, call `ask_gemini` with an explicit JSON schema. Pattern:
+   - For irreducible judgment, call `ask_llm` with an explicit JSON schema. Pattern:
      ```python
-     from browser_harness.helpers import ask_gemini
-     pick = ask_gemini(prompt, schema={"type":"object","properties":{"id":{"type":["string","null"]},"reason":{"type":"string"}},"required":["id","reason"]})
+     from llm_resolver import ask_llm
+     pick = ask_llm(prompt, schema={"type":"object","properties":{"id":{"type":["string","null"]},"reason":{"type":"string"}},"required":["id","reason"]})
      ```
+     Inside a browser-harness `-c` block ask_llm is preimported
      Branch deterministically on the returned dict. Document each call site in `SKILL.md`.
    - Emit progress logs continuously (step id + title) on stderr:
      - `{"event":"step_start","id":"<step_id>","title":"…"}`

@@ -23,19 +23,15 @@ dependencies = [
     "pyobjc-framework-ApplicationServices>=9.0",
     "pyobjc-framework-Cocoa>=9.0",
     "numpy>=1.20.0",
-    "openai>=1.0.0",
     "pydantic>=2.0.0",
-    "PyYAML>=6.0",
     "tqdm>=4.0.0",
-    "litellm>=1.57.0",
-    "instructor[litellm]>=1.14.3",
     "setuptools",
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
     "lmnr[all]",
+    "llm-resolver",
     "claude-agent-sdk==0.2.82",
     "cua-computer-server[mcp]>=0.1.25",
-    "browser-harness"
 ]
 
 [dependency-groups]
@@ -52,4 +48,4 @@ reflect = "ai_mime.cli:reflect"
 "ai_mime.editor.web" = ["*.html", "*.js", "*.css"]
 
 [tool.uv.sources]
-browser-harness = { path = "harness/browser-harness", editable = true }
+llm-resolver = { path = "packages/llm-resolver", editable = true }

@@ -11,7 +11,10 @@ import shutil
 import sys
 from pathlib import Path
 
+from llm_resolver.config import DEFAULT_USER_CONFIG as _DEFAULT_USER_CONFIG
+
 _BROWSER_HARNESS_REL = "harness/browser-harness"
+_LLM_RESOLVER_REL = "packages/llm-resolver"
 _FROZEN_SYSTEM_PATHS = (
     "/usr/bin",
     "/bin",
@@ -159,6 +162,11 @@ def get_bundled_browser_harness_dir() -> Path:
     return get_bundled_resource(_BROWSER_HARNESS_REL)
 
 
+def get_bundled_llm_resolver_dir() -> Path:
+    """Resolve the packaged llm-resolver source/resources directory."""
+    return get_bundled_resource(_LLM_RESOLVER_REL)
+
+
 def _find_managed_python(install_dir: Path | None = None) -> Path | None:
     root = install_dir or get_managed_python_install_dir()
     candidates: list[Path] = []
@@ -210,6 +218,7 @@ def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> 
     env = {
         "AI_MIME_UV_PATH": str(get_uv_path()),
         "AI_MIME_PYTHON_PATH": python_path,
+        "AI_MIME_CONFIG_PATH": str(get_user_config_path()),
         "AI_MIME_BROWSER_HARNESS_BIN": str(get_managed_browser_harness_path()),
         # Stable subprocess form of the UI agent (run_computer_use_task). Generated
         # skill scripts and the build/replay agents shell out to this for ui_agent
@@ -244,26 +253,6 @@ def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> 
 # Bootstrap
 # ---------------------------------------------------------------------------
 
-_DEFAULT_USER_CONFIG = """\
-reflect:
-  model: "gemini/gemini-3-pro-preview"
-  api_base: "https://generativelanguage.googleapis.com/v1beta/openai/"
-  api_key_env: "GEMINI_API_KEY"
-  extra_kwargs: {}
-  pass_a:
-    model: "gemini/gemini-3-pro-preview"
-    max_tokens: 2000
-  pass_b:
-    model: "gemini/gemini-3-pro-preview"
-    max_tokens: 7000
-
-replay:
-  model: "gemini/gemini-3-flash-preview"
-  api_base: "https://generativelanguage.googleapis.com/v1beta/openai/"
-  api_key_env: "GEMINI_API_KEY"
-"""
-
-
 def bootstrap_data_dir() -> None:
     """Idempotent: create APP_DATA_DIR layout and seed defaults.
 
@@ -276,6 +265,8 @@ def bootstrap_data_dir() -> None:
     cfg_path = get_user_config_path()
     if not cfg_path.exists():
         cfg_path.write_text(_DEFAULT_USER_CONFIG, encoding="utf-8")
+
+    os.environ.setdefault("AI_MIME_CONFIG_PATH", str(cfg_path))
 
     env_path = get_env_path()
     if not env_path.exists():

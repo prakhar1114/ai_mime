@@ -1,4 +1,4 @@
-"""PyInstaller hook for ai_mime — native libs + full litellm/instructor bundles."""
+"""PyInstaller hook for ai_mime — native libs + full litellm bundle."""
 
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_all
 
@@ -9,11 +9,10 @@ binaries = (
     + collect_dynamic_libs("PIL")
 )
 
-# litellm & instructor use importlib.resources and lazy __init__ re-exports;
-# collect_all is the only reliable way to pull in every submodule + data file.
+# litellm uses importlib.resources and lazy __init__ re-exports; collect_all is
+# the only reliable way to pull in every submodule + data file.
 _litellm_datas, _litellm_bins, _litellm_hidden = collect_all("litellm")
-_instr_datas, _instr_bins, _instr_hidden = collect_all("instructor")
 
-datas = _litellm_datas + _instr_datas
-binaries += _litellm_bins + _instr_bins
-hiddenimports = _litellm_hidden + _instr_hidden
+datas = _litellm_datas
+binaries += _litellm_bins
+hiddenimports = _litellm_hidden

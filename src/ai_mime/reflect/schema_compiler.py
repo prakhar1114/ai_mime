@@ -14,8 +14,7 @@ from typing import Any, Callable, Iterable, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field  # type: ignore[import-not-found]
 from tqdm import tqdm  # type: ignore[import-not-found]
 
-from ai_mime.user_config import ResolvedReflectConfig
-from ai_mime.litellm_client import LiteLLMChatClient
+from llm_resolver import LiteLLMChatClient, ResolvedReflectConfig
 from ai_mime.debug_log import log as debug_log
 
 logger = logging.getLogger(__name__)
@@ -269,17 +268,17 @@ You convert a completed UI replay schema into a compact executor-oriented plan.
 
 Executors (pick exactly one per step):
 - script: pure deterministic Python — file IO, HTTP, parsing, shell-outs, library
-  calls. No UI of any kind. May call ask_gemini() for irreducible judgment that
+  calls. No UI of any kind. May call ask_llm() for irreducible judgment that
   returns a JSON-schema-constrained answer. This is the preferred executor.
 - browser_harness: composable browser-harness CDP script (new_tab, js,
   click_at_xy, wait_for_*, etc.) when the workflow genuinely needs a tab. May
-  also call ask_gemini() for in-page judgment.
+  also call ask_llm() for in-page judgment.
 - ui_agent: live screenshot + click loop. Slowest and least reliable; last
   resort, for native macOS apps or web UIs whose DOM is too hostile for CDP.
 
-ask_gemini is the stochasticity escape hatch: if a step has one fuzzy decision
+ask_llm is the stochasticity escape hatch: if a step has one fuzzy decision
 (e.g. "pick the row that matches the user's query"), keep the step as script or
-browser_harness and let ask_gemini handle the decision — do NOT downgrade to
+browser_harness and let ask_llm handle the decision — do NOT downgrade to
 ui_agent just because one sub-decision is judgment-based.
 
 Prefer the smarter deterministic path over the recorded UI path.
@@ -346,7 +345,7 @@ Output requirements:
 - executor and fallback must be one of: script, browser_harness, ui_agent.
 - Prefer `script` for any work that does not require a browser tab or native UI.
 - Before emitting any `browser_harness` or `ui_agent` step, ask: is there a smarter, more deterministic way to reach the same end state that the recording happened to miss (direct file read/write, CLI, URL-scheme, shortcut, library call, etc.)? If yes, emit a single `script` step using that path and state the chosen shortcut in `goal`. Only keep UI-level steps when no shortcut is viable.
-- If a receipt/PDF/bill is opened only for extraction, collapse file opening + extraction into a single `script` step that parses the file directly; mention ask_gemini in `goal` if semantic OCR is needed.
+- If a receipt/PDF/bill is opened only for extraction, collapse file opening + extraction into a single `script` step that parses the file directly; mention ask_llm in `goal` if semantic OCR is needed.
 - If Chrome/browser/Google Sheets/web tabs are unavoidable, collapse the browser work into a single `browser_harness` step.
 """
 
@@ -1109,7 +1108,7 @@ def run_pass_c_optimizer(
     task_description_user = str(schema.get("task_description_user") or "")
     events = load_events(workflow_dir_p)
 
-    pass_c_model = llm_cfg.pass_b_model or llm_cfg.model
+    pass_c_model = llm_cfg.pass_c_model or llm_cfg.model
     logger.info("Pass C: compiling optimized plan (model=%s)", pass_c_model)
     debug_log(f"Pass C: starting optimized plan generation model={pass_c_model}")
 
@@ -1145,7 +1144,7 @@ def run_pass_c_optimizer(
     event = client.create(
         response_model=PassCOutput,
         messages=messages,
-        max_tokens=llm_cfg.pass_b_max_tokens,
+        max_tokens=llm_cfg.pass_c_max_tokens or 7000,
     )
     optimized_plan = event.model_dump()
     validate_optimized_plan(optimized_plan, schema)

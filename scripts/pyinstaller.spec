@@ -42,6 +42,8 @@ a = Analysis(
         (os.path.join(_src, "ai_mime", "editor", "web"), os.path.join("ai_mime", "editor", "web")),
         # Bundled browser-harness skill, linked into ~/.claude/skills during onboarding
         (os.path.join(_repo, "harness", "browser-harness"), os.path.join("harness", "browser-harness")),
+        # Local packages needed by app-managed uv tool installs.
+        (os.path.join(_repo, "packages", "llm-resolver"), os.path.join("packages", "llm-resolver")),
         # Menubar icons (resolved at runtime via get_bundled_resource)
         (os.path.join(_repo, "docs", "logo", "icon32.png"), os.path.join("docs", "logo")),
         (os.path.join(_repo, "docs", "logo", "icon60.png"), os.path.join("docs", "logo")),
@@ -105,8 +107,9 @@ a = Analysis(
         "ai_mime.agent_runner.adapters",
         "ai_mime.agent_runner.adapters.claude_sdk",
         # --- LLM / inference ------------------------------------------------
+        "llm_resolver",
         "litellm",
-        "instructor",
+        "openai",
         # --- Observability --------------------------------------------------
         "lmnr",
         # --- Editor server (FastAPI + uvicorn) ------------------------------

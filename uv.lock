@@ -7,24 +7,20 @@ name = "ai-mime"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "browser-harness" },
     { name = "claude-agent-sdk" },
     { name = "click" },
     { name = "cua-computer-server" },
     { name = "fastapi" },
-    { name = "instructor", extra = ["litellm"] },
-    { name = "litellm" },
+    { name = "llm-resolver" },
     { name = "lmnr", extra = ["all"] },
     { name = "mss" },
     { name = "numpy" },
-    { name = "openai" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "pynput" },
     { name = "pyobjc-framework-applicationservices" },
     { name = "pyobjc-framework-cocoa" },
     { name = "python-dotenv" },
-    { name = "pyyaml" },
     { name = "rumps" },
     { name = "setuptools" },
     { name = "sounddevice" },
@@ -41,24 +37,20 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "browser-harness", editable = "harness/browser-harness" },
     { name = "claude-agent-sdk", specifier = "==0.2.82" },
     { name = "click", specifier = ">=8.0.0" },
     { name = "cua-computer-server", extras = ["mcp"], specifier = ">=0.1.25" },
     { name = "fastapi", specifier = ">=0.110.0" },
-    { name = "instructor", extras = ["litellm"], specifier = ">=1.14.3" },
-    { name = "litellm", specifier = ">=1.57.0" },
+    { name = "llm-resolver", editable = "packages/llm-resolver" },
     { name = "lmnr", extras = ["all"] },
     { name = "mss", specifier = ">=9.0.1" },
     { name = "numpy", specifier = ">=1.20.0" },
-    { name = "openai", specifier = ">=1.0.0" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pynput", specifier = ">=1.7.6" },
     { name = "pyobjc-framework-applicationservices", specifier = ">=9.0" },
     { name = "pyobjc-framework-cocoa", specifier = ">=9.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
     { name = "rumps", specifier = ">=0.4.0" },
     { name = "setuptools" },
     { name = "sounddevice", specifier = ">=0.4.6" },
@@ -229,29 +221,6 @@ wheels = [
 ]
 
 [[package]]
-name = "browser-harness"
-version = "0.1.0"
-source = { editable = "harness/browser-harness" }
-dependencies = [
-    { name = "anthropic" },
-    { name = "cdp-use" },
-    { name = "claude-agent-sdk" },
-    { name = "fetch-use" },
-    { name = "pillow" },
-    { name = "websockets" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = ">=0.101.0" },
-    { name = "cdp-use", specifier = "==1.4.5" },
-    { name = "claude-agent-sdk", specifier = "==0.2.82" },
-    { name = "fetch-use", specifier = "==0.4.0" },
-    { name = "pillow", specifier = "==12.2.0" },
-    { name = "websockets", specifier = "==15.0.1" },
-]
-
-[[package]]
 name = "burner-redis"
 version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
@@ -274,20 +243,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f4/8b/0d3945a13955303b81272f759a0331e54c5c793da455e6f5706b89d2639c/cachetools-7.1.4.tar.gz", hash = "sha256:437f55a4e0c1b01a4f3077cc470e6991d47430970e36fbcb77e2be0df4fc1cd6", size = 40085, upload-time = "2026-05-21T22:40:43.376Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8c/7b/1fc1c09cc0756cf25861a3be10565915953876da48bb228fb9a672b20a42/cachetools-7.1.4-py3-none-any.whl", hash = "sha256:323dc4127934744db5b54eb4924482d7edafbf9554e820d1531c2e08c0e4ef54", size = 16761, upload-time = "2026-05-21T22:40:41.845Z" },
-]
-
-[[package]]
-name = "cdp-use"
-version = "1.4.5"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "httpx" },
-    { name = "typing-extensions" },
-    { name = "websockets" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f7/7a/c549417e8c5e4dface6d5d828cd7dc72502dcea33a99f5324abf5a853ce9/cdp_use-1.4.5.tar.gz", hash = "sha256:0da3a32df46336a03ff5a22bc6bc442cd7d2f2d50a118fd4856f29d37f6d26a0", size = 193961, upload-time = "2026-02-22T04:32:50.574Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/56/12/386d8c6bf0448c43674e24d6194c3b57d62e5361e90bca3d58108819ad32/cdp_use-1.4.5-py3-none-any.whl", hash = "sha256:8f8e2435e3a20e4009d2974144192cf3c132f6c2971338e156198814d9b91ecb", size = 350504, upload-time = "2026-02-22T04:32:49.22Z" },
 ]
 
 [[package]]
@@ -679,15 +634,6 @@ wheels = [
 ]
 
 [[package]]
-name = "fetch-use"
-version = "0.4.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5d/2d/66784fa8b66a04f170ad8f6598688b30b3a194dad4185b36d53da4ae1505/fetch_use-0.4.0.tar.gz", hash = "sha256:9511987d4907ec6dac501e21d66946d10098f66b5d21bc2aba4189cd81ba189a", size = 8974, upload-time = "2026-04-09T04:02:44.384Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/57/97/d4104692aa5c99a30fea22b5adffd2ce35b1ad86ae5236766cfc1ae468f1/fetch_use-0.4.0-py3-none-any.whl", hash = "sha256:b7885f2907e7920373fa75dcdb00afd6e603a25a9ee2151aa2881f5465e1a2c0", size = 9468, upload-time = "2026-04-09T04:02:43.458Z" },
-]
-
-[[package]]
 name = "filelock"
 version = "3.29.0"
 source = { registry = "https://pypi.org/simple" }
@@ -918,33 +864,6 @@ wheels = [
 ]
 
 [[package]]
-name = "instructor"
-version = "1.15.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "docstring-parser" },
-    { name = "jinja2" },
-    { name = "jiter" },
-    { name = "openai" },
-    { name = "pydantic" },
-    { name = "pydantic-core" },
-    { name = "requests" },
-    { name = "rich" },
-    { name = "tenacity" },
-    { name = "typer" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/dc/a4/832cfb15420360e26d2d85bd9d5fe1e4b839d52587574d389bc31284bf6f/instructor-1.15.1.tar.gz", hash = "sha256:c72406469d9025b742e83cf0c13e914b317db2089d08d889944e74fcd659ef94", size = 69948370, upload-time = "2026-04-03T01:51:30.107Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/c8/36c5d9b80aaf40ba9a7084a8fc18c967db6bf248a4cc8d0f0816b14284be/instructor-1.15.1-py3-none-any.whl", hash = "sha256:be81d17ba2b154a04ab4720808f24f9d6b598f80992f82eaf9cc79006099cf6c", size = 178156, upload-time = "2026-04-03T01:51:23.098Z" },
-]
-
-[package.optional-dependencies]
-litellm = [
-    { name = "litellm" },
-]
-
-[[package]]
 name = "jaraco-classes"
 version = "3.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1124,6 +1043,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/22/92/6ce9737554994ca8e536e5f4f6a87cc7c4774b656c9eb9add071caf7d54b/litellm-1.83.0.tar.gz", hash = "sha256:860bebc76c4bb27b4cf90b4a77acd66dba25aced37e3db98750de8a1766bfb7a", size = 17333062, upload-time = "2026-03-31T05:08:25.331Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/19/2c/a670cc050fcd6f45c6199eb99e259c73aea92edba8d5c2fc1b3686d36217/litellm-1.83.0-py3-none-any.whl", hash = "sha256:88c536d339248f3987571493015784671ba3f193a328e1ea6780dbebaa2094a8", size = 15610306, upload-time = "2026-03-31T05:08:21.987Z" },
+]
+
+[[package]]
+name = "llm-resolver"
+version = "0.1.0"
+source = { editable = "packages/llm-resolver" }
+dependencies = [
+    { name = "litellm" },
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "litellm", specifier = ">=1.57.0" },
+    { name = "openai", specifier = ">=1.0.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]

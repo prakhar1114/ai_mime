@@ -40,12 +40,12 @@ The script outputs JSON log events on `stderr` to track execution progress.
 ## Fallback
 If the weather API fails or is unreachable, the execution falls back to performing a Google search for current weather and scraping the temperature using `browser_harness`. See `references/fallback_plan.md` for manual or automated fallback instructions.
 
-## ask_gemini decision points
+## ask_llm decision points
 1. **Weather Condition Parsing**:
-   If the weather condition string returned by the API is fuzzy, the script calls `ask_gemini` to categorize the weather condition into standard types ("Sunny", "Cloudy", "Rainy", "Snowy", "Unknown").
+   If the weather condition string returned by the API is fuzzy, the script calls `ask_llm` to categorize the weather condition into standard types ("Sunny", "Cloudy", "Rainy", "Snowy", "Unknown").
    ```python
-   from browser_harness.helpers import ask_gemini
-   decision = ask_gemini(
+   from llm_resolver import ask_llm
+   decision = ask_llm(
        prompt=f"Categorize this weather description: '{raw_desc}'",
        schema={
            "type": "object",

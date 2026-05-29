@@ -29,8 +29,8 @@ For each `optimized_plan.steps[i]` in order, work autonomously, verify internall
 
 1. Look up the matching `schema.plan.subtasks[].steps[]` via `source_subtask_ids` for fine-grained intent. `step.goal` may describe a smarter path than the recording (API / CLI / file / URL-scheme); honor it. Active exploration via AppleScript, bash commands, system plists, SQLite DBs, and APIs is highly encouraged.
 2. Match `step.executor` to the execution shape:
-   - `script` → Python via Bash (subprocess / requests / pdfplumber / file IO / `osascript` AppleScript / direct system commands). `ask_gemini` for stochastic JSON decisions.
-   - `browser_harness` → Chrome via the `browser` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. `ask_gemini` for in-page judgment.
+   - `script` → Python via Bash (subprocess / requests / pdfplumber / file IO / `osascript` AppleScript / direct system commands). `ask_llm` for stochastic JSON decisions.
+   - `browser_harness` → Chrome via the `browser` skill / `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'`. `ask_llm` for in-page judgment.
    - `ui_agent` → call the `mcp__cua__*` computer-use tools directly (screenshot → find_element → click/type, re-screenshot to verify) to perform the step live.
    If you swap `ui_agent` → `browser_harness` or swap either to `script` because you found a smarter deterministic or CDP-based way to handle the target, update the `optimized_plan.json` step's `executor` to match. Mention the user-visible effect only if it matters, e.g. "I found a more reliable way to do this in the browser." or "I optimized this step to run deterministically via command-line shell script."
 3. Execute against the live environment using `agent/confirmed_inputs.json`. Verify success (screenshots / page_info / shell output) before declaring the step done.

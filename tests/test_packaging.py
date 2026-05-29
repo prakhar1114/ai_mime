@@ -22,6 +22,13 @@ class PackagingTests(unittest.TestCase):
         self.assertIn('os.path.join(_repo, "harness", "browser-harness")', spec)
         self.assertNotIn('"browser-harness", "SKILL.md"', spec)
 
+    def test_pyinstaller_spec_bundles_llm_resolver_package(self) -> None:
+        spec = (Path(__file__).resolve().parents[1] / "scripts" / "pyinstaller.spec").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('os.path.join(_repo, "packages", "llm-resolver")', spec)
+
     def test_build_script_exports_uv_binary_path(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "scripts" / "build.sh").read_text(
             encoding="utf-8"
