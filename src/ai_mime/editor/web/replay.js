@@ -672,6 +672,8 @@
       exitCode: state.lastExitCode,
       params: state.lastRunValues || {},
       logsTail: tailLines(state.logLines, 120),
+      stdoutTail: tailLines(state.stdoutLines, 60),
+      stderrTail: tailLines(state.stderrLines, 60),
       skillDir: state.skillDir,
       at: new Date().toISOString(),
     };
@@ -908,6 +910,9 @@
       `;
     }
     setMode("agent_active");
+    if (window.AgentChat && typeof window.AgentChat.newChat === "function") {
+      window.AgentChat.newChat();
+    }
 
     function trySubmit() {
       if (submitAgentPrompt(state.agentContextPrompt)) return;
