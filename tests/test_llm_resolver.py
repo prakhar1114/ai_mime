@@ -90,7 +90,7 @@ class LLMResolverConfigTests(unittest.TestCase):
             self.assertEqual(cfg.runtime.api_key_env, "GEMINI_API_KEY")
             self.assertEqual(cfg.reflect.model, "gemini/gemini-3-pro-preview")
             self.assertEqual(cfg.reflect.pass_a_max_tokens, 123)
-            self.assertEqual(cfg.reflect.pass_a_model, "gemini/gemini-3-pro-preview")
+            self.assertIsNone(cfg.reflect.pass_a_model)
             self.assertEqual(cfg.reflect.pass_b_max_tokens, 7000)
 
     def test_default_user_config_is_valid(self) -> None:
@@ -103,6 +103,7 @@ class LLMResolverConfigTests(unittest.TestCase):
 
             self.assertEqual(cfg.runtime.model, "gemini/gemini-3-flash-preview")
             self.assertEqual(cfg.reflect.pass_c_max_tokens, 7000)
+            self.assertIsNone(cfg.reflect.pass_c_model)
 
     def test_ask_llm_uses_runtime_config(self) -> None:
         class FakeCompletions:
@@ -154,6 +155,14 @@ class LLMResolverConfigTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         fallback.assert_called_once()
         self.assertEqual(fallback.call_args.kwargs["where"], "ask_llm")
+
+    def test_ask_llm_rejects_model_argument(self) -> None:
+        with self.assertRaises(TypeError):
+            ask_llm(  # type: ignore[call-arg]
+                "Return ok",
+                {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+                model="openai/override",
+            )
 
     def test_ask_llm_fallback_forwards_images_as_data_urls(self) -> None:
         with tempfile.TemporaryDirectory() as td:

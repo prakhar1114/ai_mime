@@ -15,7 +15,7 @@ from ai_mime.record.storage import SessionStorage
 from ai_mime.record.recorder_process import run_recorder_process
 from ai_mime.app_data import get_bundled_resource, get_recordings_dir, get_workflows_dir
 
-from ai_mime.user_config import ResolvedReflectConfig, ResolvedUserConfig, load_user_config
+from ai_mime.user_config import ResolvedUserConfig, load_user_config
 from ai_mime.reflect.runner import run_reflect_and_compile_schema
 from ai_mime.editor.server import start_editor_server
 from ai_mime.record.overlay_ui import RecordingOverlay
@@ -25,7 +25,6 @@ from ai_mime.debug_log import log
 @observe(name="reflect_and_compile_schema")
 def _run_reflect_and_compile_schema(
     session_dir: str,
-    reflect_llm_cfg: ResolvedReflectConfig,
     *,
     clean_manifest_tail: bool = False,
     event_queue: Any | None = None,
@@ -37,7 +36,6 @@ def _run_reflect_and_compile_schema(
     """
     run_reflect_and_compile_schema(
         session_dir,
-        reflect_llm_cfg,
         clean_manifest_tail=clean_manifest_tail,
         event_queue=event_queue,
     )
@@ -384,7 +382,6 @@ class RecorderApp(rumps.App):
         proc, port = start_editor_server(
             workflows_root=self._workflows_root(),
             recordings_root=get_recordings_dir(),
-            reflect_llm_cfg=self._user_cfg.reflect,
             app_command_queue=self.dashboard_command_q,
             app_state=self.dashboard_state,
         )
@@ -585,7 +582,7 @@ class RecorderApp(rumps.App):
                 self.reflect_event_q = multiprocessing.Queue()
                 self.reflect_process = multiprocessing.Process(
                     target=_run_reflect_and_compile_schema,
-                    args=(self.session_dir, self._user_cfg.reflect),
+                    args=(self.session_dir,),
                     kwargs={
                         "clean_manifest_tail": bool(clean_manifest_tail),
                         "event_queue": self.reflect_event_q,

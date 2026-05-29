@@ -24,15 +24,15 @@ DEFAULT_LLM_CONFIG: dict[str, Any] = {
         "api_key_env": "GEMINI_API_KEY",
         "extra_kwargs": {},
         "pass_a": {
-            "model": "gemini/gemini-3-pro-preview",
+            "model": None,
             "max_tokens": 2000,
         },
         "pass_b": {
-            "model": "gemini/gemini-3-pro-preview",
+            "model": None,
             "max_tokens": 7000,
         },
         "pass_c": {
-            "model": "gemini/gemini-3-pro-preview",
+            "model": None,
             "max_tokens": 7000,
         },
     },

@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterable, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field  # type: ignore[import-not-found]
 from tqdm import tqdm  # type: ignore[import-not-found]
 
-from llm_resolver import LiteLLMChatClient, ResolvedReflectConfig
+from llm_resolver import LiteLLMChatClient, get_reflect_config
 from ai_mime.debug_log import log as debug_log
 
 logger = logging.getLogger(__name__)
@@ -515,13 +515,13 @@ def derive_step_inputs(workflow_dir: str | os.PathLike[str], events: list[dict[s
 def run_pass_a_step_cards(
     *,
     workflow_dir: str | os.PathLike[str],
-    llm_cfg: ResolvedReflectConfig,
 ) -> list[dict[str, Any]]:
     """
     Pass A: compile each actionable manifest step into a StepCard.
     Does one LLM call per step.
     """
     workflow_dir_p = Path(workflow_dir)
+    llm_cfg = get_reflect_config()
     task_name, task_description_user = load_task_metadata(workflow_dir_p)
     events = load_events(workflow_dir_p)
     steps = derive_step_inputs(workflow_dir_p, events)
@@ -678,12 +678,12 @@ def run_pass_b_task_compiler(
     *,
     workflow_dir: str | os.PathLike[str],
     step_cards: list[dict[str, Any]],
-    llm_cfg: ResolvedReflectConfig,
 ) -> dict[str, Any]:
     """
     Pass B: compile task-level schema from step cards.
     """
     workflow_dir_p = Path(workflow_dir)
+    llm_cfg = get_reflect_config()
     task_name, task_description_user = load_task_metadata(workflow_dir_p)
 
     pass_b_model = llm_cfg.pass_b_model or llm_cfg.model
@@ -1014,12 +1014,12 @@ def run_pass_c_optimizer(
     *,
     workflow_dir: str | os.PathLike[str],
     schema: dict[str, Any],
-    llm_cfg: ResolvedReflectConfig,
 ) -> dict[str, Any]:
     """
     Pass C: compile a completed schema into a compact optimized execution strategy.
     """
     workflow_dir_p = Path(workflow_dir)
+    llm_cfg = get_reflect_config()
     task_name = str(schema.get("task_name") or "")
     task_description_user = str(schema.get("task_description_user") or "")
     events = load_events(workflow_dir_p)
@@ -1061,7 +1061,6 @@ def create_optimized_plan(
     *,
     workflow_dir: str | os.PathLike[str],
     schema: dict[str, Any],
-    llm_cfg: ResolvedReflectConfig,
 ) -> dict[str, Any]:
     workflow_dir_p = Path(workflow_dir)
     path = workflow_dir_p / "optimized_plan.json"
@@ -1077,7 +1076,7 @@ def create_optimized_plan(
             debug_log(f"Pass C: existing optimized_plan.json invalid; regenerating: {e}")
             logger.info("Pass C: existing optimized_plan.json invalid; regenerating: %s", e)
 
-    optimized_plan = run_pass_c_optimizer(workflow_dir=workflow_dir_p, schema=schema, llm_cfg=llm_cfg)
+    optimized_plan = run_pass_c_optimizer(workflow_dir=workflow_dir_p, schema=schema)
     write_optimized_plan(workflow_dir_p, optimized_plan)
     cleanup_reflect_artifacts(workflow_dir_p, schema=schema, optimized_plan=optimized_plan)
     debug_log(f"Pass C complete: {path}")
@@ -1258,7 +1257,6 @@ def extract_param_templates(step_cards: Iterable[dict[str, Any]]) -> set[str]:
 def compile_workflow_schema(
     *,
     workflow_dir: str | os.PathLike[str],
-    llm_cfg: ResolvedReflectConfig,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """
@@ -1285,8 +1283,8 @@ def compile_workflow_schema(
         except Exception:
             pass
 
-    debug_log(f"Schema compile start: workflow_dir={workflow_dir_p} task={task_name} model={llm_cfg.model}")
-    logger.info("Schema compile start: workflow_dir=%s task_name=%s model=%s", workflow_dir_p, task_name, llm_cfg.model)
+    debug_log(f"Schema compile start: workflow_dir={workflow_dir_p} task={task_name}")
+    logger.info("Schema compile start: workflow_dir=%s task_name=%s", workflow_dir_p, task_name)
 
     # If final output exists, reuse it and avoid re-running any passes.
     schema_path = workflow_dir_p / "schema.json"
@@ -1303,7 +1301,7 @@ def compile_workflow_schema(
         _progress("reflect_progress", phase="pass_a_complete", label="Pass A", progress=33)
         _progress("reflect_progress", phase="pass_b_complete", label="Pass B", progress=66)
         _progress("reflect_progress", phase="optimized_plan_started", label="Optimized plan", progress=82)
-        optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=existing_schema, llm_cfg=llm_cfg)
+        optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=existing_schema)
         _progress("reflect_progress", phase="optimized_plan_complete", label="Optimized plan", progress=100)
         return existing_schema
 
@@ -1339,7 +1337,7 @@ def compile_workflow_schema(
     else:
         _progress("reflect_progress", phase="pass_a_started", label="Pass A", progress=10)
         debug_log("Pass A: starting step card generation...")
-        step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p, llm_cfg=llm_cfg)
+        step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p)
         write_step_cards(workflow_dir_p, step_cards)
         debug_log(f"Pass A complete: {len(step_cards)} steps")
         logger.info("Pass A complete: step_cards.json (%d steps)", len(step_cards))
@@ -1367,7 +1365,7 @@ def compile_workflow_schema(
     else:
         _progress("reflect_progress", phase="pass_b_started", label="Pass B", progress=45)
         debug_log("Pass B: starting task compilation...")
-        task_compiler_out = run_pass_b_task_compiler(workflow_dir=workflow_dir_p, step_cards=step_cards, llm_cfg=llm_cfg)
+        task_compiler_out = run_pass_b_task_compiler(workflow_dir=workflow_dir_p, step_cards=step_cards)
 
         plan_creation = dict(task_compiler_out)
         write_plan_creation(workflow_dir_p, plan_creation)
@@ -1507,7 +1505,7 @@ def compile_workflow_schema(
 
     write_schema(workflow_dir_p, final_schema)
     _progress("reflect_progress", phase="optimized_plan_started", label="Optimized plan", progress=82)
-    optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=final_schema, llm_cfg=llm_cfg)
+    optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=final_schema)
     _progress("reflect_progress", phase="optimized_plan_complete", label="Optimized plan", progress=100)
 
     debug_log(f"Schema compilation complete: {workflow_dir_p / 'schema.json'}")

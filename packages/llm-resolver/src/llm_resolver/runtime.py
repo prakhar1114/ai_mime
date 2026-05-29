@@ -54,14 +54,13 @@ def ask_llm(
     prompt: str,
     schema: dict[str, Any],
     images: list[str] | None = None,
-    model: str | None = None,
     thinking: str | None = None,
     timeout: float = 30.0,
     section: str = "runtime",
 ) -> object:
     """Ask the configured runtime LLM for schema-constrained JSON."""
     cfg = get_llm_section(section)
-    selected_model = (model or cfg.model).strip()
+    selected_model = cfg.model.strip()
     provider = selected_model.split("/", 1)[0] if "/" in selected_model else "openai"
     extra_kwargs = dict(cfg.extra_kwargs)
     if thinking is not None:

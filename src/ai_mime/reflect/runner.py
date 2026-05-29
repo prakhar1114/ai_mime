@@ -7,7 +7,6 @@ from typing import Any, Callable
 
 from ai_mime.debug_log import log
 from ai_mime.reflect.workflow import compile_schema_for_workflow_dir, reflect_session
-from ai_mime.user_config import ResolvedReflectConfig
 
 
 def emit_reflect_event(event_queue: Any | None, obj: dict[str, Any]) -> None:
@@ -24,7 +23,6 @@ def emit_reflect_event(event_queue: Any | None, obj: dict[str, Any]) -> None:
 
 def run_reflect_and_compile_schema(
     session_dir: str,
-    reflect_llm_cfg: ResolvedReflectConfig,
     *,
     workflows_root: str | Path | None = None,
     clean_manifest_tail: bool = False,
@@ -55,7 +53,6 @@ def run_reflect_and_compile_schema(
     try:
         logging.basicConfig(level=logging.INFO)
         _log(f"reflect subprocess started: session={session_name} session_dir={session_dir_p} workflows_root={workflows_root_p}")
-        _log(f"reflect_llm_cfg.model={reflect_llm_cfg.model}")
         _log(f"clean_manifest_tail={clean_manifest_tail}")
         _log(f"force={force}")
 
@@ -89,7 +86,7 @@ def run_reflect_and_compile_schema(
             _emit(event)
 
         _log("Starting compile_schema_for_workflow_dir...")
-        compile_schema_for_workflow_dir(out_dir, llm_cfg=reflect_llm_cfg, progress_callback=_progress)
+        compile_schema_for_workflow_dir(out_dir, progress_callback=_progress)
         _log(f"Schema compiled: {out_dir / 'schema.json'}")
         print(f"Schema compiled: {out_dir / 'schema.json'}")
         _emit({
