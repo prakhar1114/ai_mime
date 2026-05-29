@@ -7,6 +7,7 @@ from typing import Any
 
 from .client import (
     LiteLLMChatClient,
+    _claude_fallback_model,
     _load_litellm_completion,
     _load_openai,
     _missing_configured_api_key,
@@ -80,6 +81,7 @@ def ask_llm(
             messages=messages,
             response_schema=schema,
             where="ask_llm",
+            model=_claude_fallback_model(selected_model),
         )
 
     try:

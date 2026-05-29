@@ -13,15 +13,15 @@ CONFIG_ENV_VAR = "AI_MIME_CONFIG_PATH"
 
 DEFAULT_LLM_CONFIG: dict[str, Any] = {
     "runtime": {
-        "model": "gemini/gemini-3-flash-preview",
-        "api_base": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "api_key_env": "GEMINI_API_KEY",
+        "model": "anthropic/claude-sonnet-4-6",
+        "api_base": None,
+        "api_key_env": "ANTHROPIC_API_KEY",
         "extra_kwargs": {},
     },
     "reflect": {
-        "model": "gemini/gemini-3-pro-preview",
-        "api_base": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "api_key_env": "GEMINI_API_KEY",
+        "model": "anthropic/claude-sonnet-4-6",
+        "api_base": None,
+        "api_key_env": "ANTHROPIC_API_KEY",
         "extra_kwargs": {},
         "pass_a": {
             "model": None,
@@ -32,7 +32,7 @@ DEFAULT_LLM_CONFIG: dict[str, Any] = {
             "max_tokens": 7000,
         },
         "pass_c": {
-            "model": None,
+            "model": "anthropic/claude-opus-4-8",
             "max_tokens": 7000,
         },
     },

@@ -1,11 +1,22 @@
 config_version: 1
 
 llm:
+  runtime:
+    model: "anthropic/claude-sonnet-4-6"
+    api_base: null
+    api_key_env: "ANTHROPIC_API_KEY"
+    extra_kwargs: {}
   reflect:
-    model: "openai/gpt-5.4"
+    model: "anthropic/claude-sonnet-4-6"
+    api_base: null
+    api_key_env: "ANTHROPIC_API_KEY"
+    extra_kwargs: {}
     pass_a:
-      model: "openai/gpt-5.4-mini"
+      model: null
+      max_tokens: 2000
     pass_b:
-      model: "openai/gpt-5.4"
+      model: null
+      max_tokens: 7000
     pass_c:
-      model: "openai/gpt-5.4"
+      model: "anthropic/claude-opus-4-8"
+      max_tokens: 7000

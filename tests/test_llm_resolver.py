@@ -87,8 +87,8 @@ class LLMResolverConfigTests(unittest.TestCase):
                 cfg = load_llm_config()
 
             self.assertEqual(cfg.runtime.model, "openai/custom-runtime")
-            self.assertEqual(cfg.runtime.api_key_env, "GEMINI_API_KEY")
-            self.assertEqual(cfg.reflect.model, "gemini/gemini-3-pro-preview")
+            self.assertEqual(cfg.runtime.api_key_env, "ANTHROPIC_API_KEY")
+            self.assertEqual(cfg.reflect.model, "anthropic/claude-sonnet-4-6")
             self.assertEqual(cfg.reflect.pass_a_max_tokens, 123)
             self.assertIsNone(cfg.reflect.pass_a_model)
             self.assertEqual(cfg.reflect.pass_b_max_tokens, 7000)
@@ -101,9 +101,10 @@ class LLMResolverConfigTests(unittest.TestCase):
             with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
                 cfg = load_llm_config()
 
-            self.assertEqual(cfg.runtime.model, "gemini/gemini-3-flash-preview")
+            self.assertEqual(cfg.runtime.model, "anthropic/claude-sonnet-4-6")
+            self.assertEqual(cfg.runtime.api_key_env, "ANTHROPIC_API_KEY")
             self.assertEqual(cfg.reflect.pass_c_max_tokens, 7000)
-            self.assertIsNone(cfg.reflect.pass_c_model)
+            self.assertEqual(cfg.reflect.pass_c_model, "anthropic/claude-opus-4-8")
 
     def test_ask_llm_uses_runtime_config(self) -> None:
         class FakeCompletions:
@@ -155,6 +156,31 @@ class LLMResolverConfigTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         fallback.assert_called_once()
         self.assertEqual(fallback.call_args.kwargs["where"], "ask_llm")
+        self.assertIsNone(fallback.call_args.kwargs["model"])
+
+    def test_ask_llm_missing_anthropic_key_passes_configured_model_to_claude_code(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "user_config.yml"
+            path.write_text(
+                "llm:\n"
+                "  runtime:\n"
+                '    model: "anthropic/claude-opus-4-8"\n'
+                '    api_key_env: "ANTHROPIC_API_KEY"\n'
+                "    extra_kwargs: {}\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True), patch(
+                "llm_resolver.runtime._run_claude_structured_fallback",
+                return_value={"ok": True},
+            ) as fallback:
+                result = ask_llm(
+                    "Return ok",
+                    {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+                )
+
+        self.assertEqual(result, {"ok": True})
+        fallback.assert_called_once()
+        self.assertEqual(fallback.call_args.kwargs["model"], "claude-opus-4-8")
 
     def test_ask_llm_rejects_model_argument(self) -> None:
         with self.assertRaises(TypeError):
@@ -225,6 +251,26 @@ class LLMResolverConfigTests(unittest.TestCase):
 
         self.assertEqual(result.ok, True)
         fallback.assert_called_once()
+        self.assertIsNone(fallback.call_args.kwargs["model"])
+
+    def test_structured_client_missing_anthropic_key_passes_model_to_claude_code(self) -> None:
+        class Answer(BaseModel):
+            ok: bool
+
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "llm_resolver.client._run_claude_structured_fallback",
+            return_value={"ok": True},
+        ) as fallback:
+            client = LiteLLMChatClient(
+                model="anthropic/claude-opus-4-8",
+                api_base=None,
+                api_key_env="ANTHROPIC_API_KEY",
+            )
+            result = client.create(response_model=Answer, messages=[{"role": "user", "content": "Return ok"}])
+
+        self.assertEqual(result.ok, True)
+        fallback.assert_called_once()
+        self.assertEqual(fallback.call_args.kwargs["model"], "claude-opus-4-8")
 
     def test_structured_client_absent_api_key_env_does_not_use_fallback(self) -> None:
         class Answer(BaseModel):

@@ -29,6 +29,15 @@ def _missing_configured_api_key(api_key_env: str | None) -> bool:
     return value is None or not str(value).strip()
 
 
+def _claude_fallback_model(model: str) -> str | None:
+    value = str(model or "").strip()
+    if value.startswith("anthropic/"):
+        return value.split("/", 1)[1].strip() or None
+    if value.startswith("claude-"):
+        return value
+    return None
+
+
 def _messages_to_claude_inputs(messages: list[dict[str, Any]]) -> tuple[str | None, str, list[str]]:
     system_parts: list[str] = []
     prompt_parts: list[str] = []
@@ -337,6 +346,7 @@ class LiteLLMChatClient:
                 messages=messages,
                 response_schema=response_model_t.model_json_schema(),
                 where=f"Structured parse {response_model_t.__name__}",
+                model=_claude_fallback_model(model),
             )
             return response_model_t.model_validate(parsed)
 
