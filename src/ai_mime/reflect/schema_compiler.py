@@ -114,63 +114,6 @@ def _read_json_if_exists(path: Path) -> Any | None:
         return json.load(f)
 
 
-def _should_use_fallback(llm_cfg: ResolvedReflectConfig) -> bool:
-    if not llm_cfg.api_key_env:
-        return True
-    val = os.getenv(llm_cfg.api_key_env)
-    return val is None or not val.strip()
-
-
-def _extract_json_from_text(text: str) -> dict[str, Any] | None:
-    if not text:
-        return None
-    candidates: list[str] = [text.strip()]
-    fence = text.rsplit("```json", 1)
-    if len(fence) == 2:
-        candidates.append(fence[1].split("```", 1)[0].strip())
-    fence2 = text.rsplit("```", 1)
-    if len(fence2) == 2:
-        parts = text.split("```")
-        if len(parts) >= 3:
-            candidates.append(parts[1].strip())
-    start, end = text.find("{"), text.rfind("}")
-    if 0 <= start < end:
-        candidates.append(text[start : end + 1].strip())
-    for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-        except (ValueError, TypeError):
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    return None
-
-
-def _claude_sdk_structured_fallback(
-    workflow_dir: Path,
-    system_prompt: str,
-    prompt_content: str,
-    response_model: type[BaseModel],
-) -> dict[str, Any]:
-    from ai_mime.agent_runner.adapters.claude_sdk import run_claude_sdk_structured
-
-    raw_output = run_claude_sdk_structured(
-        workflow_dir=workflow_dir,
-        system_prompt=system_prompt,
-        prompt_content=prompt_content,
-        response_schema=response_model.model_json_schema(),
-    )
-
-    parsed_json = _extract_json_from_text(raw_output)
-    if parsed_json is None:
-        raise ValueError(f"Failed to extract valid JSON matching {response_model.__name__} from Claude response: {raw_output}")
-
-    validated = response_model.model_validate(parsed_json)
-    return validated.model_dump()
-
-
-
-
 PASS_A_SYSTEM_PROMPT = """You convert a UI trace step (screenshots + action) into a reusable, coordinate-free step instruction
 for a computer-use vision agent. You must be accurate and avoid inventing UI text.
 """
@@ -611,15 +554,13 @@ def run_pass_a_step_cards(
     )
 
     # Resolve + cache LLM config once; reused across all Pass A steps (thread-safe usage).
-    pass_a_client = None
-    if not _should_use_fallback(llm_cfg):
-        pass_a_client = LiteLLMChatClient(
-            model=pass_a_model,
-            api_base=llm_cfg.api_base,
-            api_key_env=llm_cfg.api_key_env,
-            extra_kwargs=llm_cfg.extra_kwargs,
-            max_retries=MAX_RETRIES,
-        )
+    pass_a_client = LiteLLMChatClient(
+        model=pass_a_model,
+        api_base=llm_cfg.api_base,
+        api_key_env=llm_cfg.api_key_env,
+        extra_kwargs=llm_cfg.extra_kwargs,
+        max_retries=MAX_RETRIES,
+    )
 
     def _compile_one(s: StepInput) -> dict[str, Any]:
 
@@ -642,38 +583,21 @@ def run_pass_a_step_cards(
             details_text=json.dumps(s.details, ensure_ascii=False),
         )
 
-        if pass_a_client is None:
-            card = _claude_sdk_structured_fallback(
-                workflow_dir=workflow_dir_p,
-                system_prompt=PASS_A_SYSTEM_PROMPT,
-                prompt_content=(
-                    f"Task name: {task_name}\n"
-                    f"User task description: {task_description_user}\n\n"
-                    f"Action: {json.dumps(s.action_json)}\n"
-                    f"Param Hint: {json.dumps(s.param_hint_json)}\n"
-                    f"Details: {s.details}\n"
-                    f"PRE screenshot is located at: {s.pre_screenshot}\n"
-                    f"POST screenshot is located at: {s.post_screenshot}\n\n"
-                    f"Instructions: {user}\n\n"
-                ),
-                response_model=StepCardModel,
-            )
-        else:
-            messages: list[dict[str, Any]] = [
-                {"role": "system", "content": PASS_A_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": user}]
-                    + [{"type": "image_url", "image_url": {"url": _png_data_url(p)}} for p in img_paths],
-                },
-            ]
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": PASS_A_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": user}]
+                + [{"type": "image_url", "image_url": {"url": _png_data_url(p)}} for p in img_paths],
+            },
+        ]
 
-            event = pass_a_client.create(
-                response_model=StepCardModel,
-                messages=messages,
-                max_tokens=llm_cfg.pass_a_max_tokens,
-            )
-            card = event.model_dump()
+        event = pass_a_client.create(
+            response_model=StepCardModel,
+            messages=messages,
+            max_tokens=llm_cfg.pass_a_max_tokens,
+        )
+        card = event.model_dump()
 
         card["i"] = s.i
         # Ensure we always carry forward the input details (null or string) even if the model omits it.
@@ -784,14 +708,6 @@ def run_pass_b_task_compiler(
         task_description_user=task_description_user,
         step_summaries_json=json.dumps(step_summaries, ensure_ascii=False),
     )
-
-    if _should_use_fallback(llm_cfg):
-        return _claude_sdk_structured_fallback(
-            workflow_dir=workflow_dir_p,
-            system_prompt=PASS_B_SYSTEM_PROMPT,
-            prompt_content=user,
-            response_model=PassBOutput,
-        )
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": PASS_B_SYSTEM_PROMPT},
@@ -1119,16 +1035,6 @@ def run_pass_c_optimizer(
         manifest_summary_json=json.dumps(_summarize_manifest_for_pass_c(events), ensure_ascii=False),
         file_hints_json=json.dumps(_discover_file_hints_for_pass_c(workflow_dir_p, schema, events), ensure_ascii=False),
     )
-
-    if _should_use_fallback(llm_cfg):
-        optimized_plan = _claude_sdk_structured_fallback(
-            workflow_dir=workflow_dir_p,
-            system_prompt=PASS_C_SYSTEM_PROMPT,
-            prompt_content=user,
-            response_model=PassCOutput,
-        )
-        validate_optimized_plan(optimized_plan, schema)
-        return optimized_plan
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": PASS_C_SYSTEM_PROMPT},

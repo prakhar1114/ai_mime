@@ -5,10 +5,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from litellm import completion  # type: ignore[import-not-found]
-from openai import OpenAI  # type: ignore[import-not-found]
-
-from .client import LiteLLMChatClient
+from .client import (
+    LiteLLMChatClient,
+    _load_litellm_completion,
+    _load_openai,
+    _missing_configured_api_key,
+    _run_claude_structured_fallback,
+)
 from .config import get_llm_section
 
 _IMAGE_MIME = {
@@ -70,12 +73,19 @@ def ask_llm(
         import os
 
         value = os.getenv(cfg.api_key_env)
-        if value is None or not value.strip():
-            raise RuntimeError(f"Missing API key env var {cfg.api_key_env!r} for model={selected_model!r}.")
-        key = value.strip()
+        if value is not None and value.strip():
+            key = value.strip()
+
+    if _missing_configured_api_key(cfg.api_key_env):
+        return _run_claude_structured_fallback(
+            messages=messages,
+            response_schema=schema,
+            where="ask_llm",
+        )
 
     try:
         if provider in {"openai", "gemini"}:
+            OpenAI = _load_openai()
             client = OpenAI(api_key=key, base_url=cfg.api_base, timeout=timeout)
             resp = client.chat.completions.create(
                 model=LiteLLMChatClient._strip_provider_prefix(selected_model),
@@ -88,6 +98,7 @@ def ask_llm(
                 raise RuntimeError(f"ask_llm: no text in LLM response: {resp}")
             return json.loads(text)
 
+        completion = _load_litellm_completion()
         resp = completion(
             model=selected_model,
             messages=messages,

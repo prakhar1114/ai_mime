@@ -11,19 +11,17 @@ import json
 import sys
 from pathlib import Path
 from typing import Any, Literal
-
 from claude_agent_sdk import ClaudeAgentOptions, TextBlock, ToolResultBlock, ToolUseBlock, query
-
 from ai_mime.agent_runner.adapters.claude_sdk import (
     _options_kwargs_for,
     _result_summary,
     _text_from_message,
-    cua_mcp_servers,
+    cua_mcp_servers
 )
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.debug_log import log as debug_log
 
-COMPUTER_USE_MODEL = "claude-opus-4-7"
+COMPUTER_USE_MODEL = "claude-sonnet-4-6"
 
 COMPUTER_USE_SYSTEM_PROMPT = """You drive this macOS computer through the `cua` MCP server's \
 `computer_*` tools to accomplish the user's task end-to-end, then report what you did.

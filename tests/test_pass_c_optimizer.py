@@ -11,6 +11,7 @@ from ai_mime.reflect.schema_compiler import (
     cleanup_reflect_artifacts,
     compile_workflow_schema,
     create_optimized_plan,
+    run_pass_a_step_cards,
     validate_optimized_plan,
 )
 
@@ -264,6 +265,57 @@ class PassCOptimizerTests(unittest.TestCase):
                 
                 # Should not have skipped Pass A because cards were incomplete
                 mock_run_a.assert_called_once()
+
+    def test_pass_a_client_receives_screenshot_image_blocks(self) -> None:
+        captured: dict = {}
+
+        class FakeClient:
+            def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+            def create(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    model_dump=lambda: {
+                        "i": 0,
+                        "expected_current_state": "screen",
+                        "intent": "click",
+                        "action_type": "CLICK",
+                        "action_value": None,
+                        "target": {"primary": "button", "fallback": None},
+                        "post_action": ["changed"],
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "metadata.json").write_text(
+                json.dumps({"name": "Task", "description": "Do it"}), encoding="utf-8"
+            )
+            (workflow_dir / "pre.png").write_bytes(b"pre")
+            (workflow_dir / "post.png").write_bytes(b"post")
+            (workflow_dir / "manifest.jsonl").write_text(
+                json.dumps({"action_type": "click", "screenshot": "pre.png"}) + "\n"
+                + json.dumps({"action_type": "end", "screenshot": "post.png"}) + "\n",
+                encoding="utf-8",
+            )
+            llm_cfg = SimpleNamespace(
+                model="openai/test",
+                pass_a_model=None,
+                api_base=None,
+                api_key_env="MISSING_KEY",
+                extra_kwargs={},
+                pass_a_max_tokens=123,
+            )
+
+            with patch("ai_mime.reflect.schema_compiler.LiteLLMChatClient", FakeClient):
+                cards = run_pass_a_step_cards(workflow_dir=workflow_dir, llm_cfg=llm_cfg)  # type: ignore[arg-type]
+
+        self.assertEqual(cards[0]["i"], 0)
+        content = captured["messages"][1]["content"]
+        image_urls = [item["image_url"]["url"] for item in content if item.get("type") == "image_url"]
+        self.assertEqual(len(image_urls), 2)
+        self.assertTrue(all(url.startswith("data:image/png;base64,") for url in image_urls))
 
 
 

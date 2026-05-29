@@ -12,7 +12,6 @@ from .config import (
     get_reflect_config,
     load_llm_config,
     load_user_config,
-    migrate_config_file,
 )
 from .runtime import ask_llm
 
@@ -31,5 +30,4 @@ __all__ = [
     "get_reflect_config",
     "load_llm_config",
     "load_user_config",
-    "migrate_config_file",
 ]

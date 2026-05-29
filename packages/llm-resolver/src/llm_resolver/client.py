@@ -5,11 +5,93 @@ import logging
 import os
 from typing import Any, cast
 
-from litellm import completion  # type: ignore[import-not-found]
-from openai import OpenAI  # type: ignore[import-not-found]
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+def _load_openai() -> Any:
+    from openai import OpenAI  # type: ignore[import-not-found]
+
+    return OpenAI
+
+
+def _load_litellm_completion() -> Any:
+    from litellm import completion  # type: ignore[import-not-found]
+
+    return completion
+
+
+def _missing_configured_api_key(api_key_env: str | None) -> bool:
+    if not api_key_env:
+        return False
+    value = os.getenv(api_key_env)
+    return value is None or not str(value).strip()
+
+
+def _messages_to_claude_inputs(messages: list[dict[str, Any]]) -> tuple[str | None, str, list[str]]:
+    system_parts: list[str] = []
+    prompt_parts: list[str] = []
+    images: list[str] = []
+
+    for message in messages:
+        role = str(message.get("role") or "user")
+        content = message.get("content")
+        text_parts: list[str] = []
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if item_type == "text":
+                    text_parts.append(str(item.get("text") or ""))
+                elif item_type == "image_url":
+                    image_url = item.get("image_url")
+                    url = image_url.get("url") if isinstance(image_url, dict) else None
+                    if isinstance(url, str) and url:
+                        images.append(url)
+        elif content is not None:
+            text_parts.append(str(content))
+
+        text = "\n".join(part for part in text_parts if part).strip()
+        if not text:
+            continue
+        if role == "system":
+            system_parts.append(text)
+        else:
+            prompt_parts.append(text if role == "user" else f"{role}: {text}")
+
+    return (
+        "\n\n".join(system_parts).strip() or None,
+        "\n\n".join(prompt_parts).strip(),
+        images,
+    )
+
+
+def _run_claude_structured_fallback(
+    *,
+    messages: list[dict[str, Any]],
+    response_schema: dict[str, Any],
+    where: str,
+    model: str | None = None,
+) -> Any:
+    from .claude_fallback import run_claude_agent_sdk_structured
+
+    system_prompt, prompt, images = _messages_to_claude_inputs(messages)
+    prompt = prompt or "Return JSON matching the requested schema."
+    try:
+        return run_claude_agent_sdk_structured(
+            prompt=prompt,
+            response_schema=response_schema,
+            images=images,
+            system_prompt=system_prompt,
+            model=model or "claude-sonnet-4-6",
+            error_prefix=where,
+        )
+    except Exception as e:
+        raise RuntimeError(f"{where}: Claude fallback failed: {e}") from e
 
 
 class LiteLLMChatClient:
@@ -31,11 +113,11 @@ class LiteLLMChatClient:
         self._api_base = self._normalize_api_base(api_base)
         self._api_key_env = api_key_env.strip() if isinstance(api_key_env, str) and api_key_env.strip() else None
         self._api_key: str | None = None
+        self._use_claude_fallback = _missing_configured_api_key(self._api_key_env)
         if self._api_key_env is not None:
             value = os.getenv(self._api_key_env)
-            if value is None or not str(value).strip():
-                raise RuntimeError(f"Missing API key env var {self._api_key_env!r} for model={self._model!r}.")
-            self._api_key = str(value).strip()
+            if value is not None and str(value).strip():
+                self._api_key = str(value).strip()
         self._extra_kwargs = dict(extra_kwargs or {})
         self._max_retries = int(max_retries)
         self._reasoning: Any | None = self._extra_kwargs.pop("reasoning", None)
@@ -214,7 +296,10 @@ class LiteLLMChatClient:
         reasoning = self._reasoning
 
         if response_model is None:
+            if self._use_claude_fallback:
+                raise RuntimeError(f"Missing API key env var {self._api_key_env!r} for model={model!r}.")
             if provider in {"openai", "gemini"}:
+                OpenAI = _load_openai()
                 client = OpenAI(base_url=base) if key is None else OpenAI(api_key=key, base_url=base)
                 if reasoning is not None:
                     resp = client.responses.create(
@@ -234,6 +319,7 @@ class LiteLLMChatClient:
                 )
                 return (resp.choices[0].message.content or "").strip()
 
+            completion = _load_litellm_completion()
             resp = completion(
                 model=model,
                 messages=messages,
@@ -246,7 +332,16 @@ class LiteLLMChatClient:
             return self._extract_text_from_litellm_response(resp)
 
         response_model_t = cast(type[BaseModel], response_model)
+        if self._use_claude_fallback:
+            parsed = _run_claude_structured_fallback(
+                messages=messages,
+                response_schema=response_model_t.model_json_schema(),
+                where=f"Structured parse {response_model_t.__name__}",
+            )
+            return response_model_t.model_validate(parsed)
+
         if provider == "openai":
+            OpenAI = _load_openai()
             client = OpenAI(base_url=base) if key is None else OpenAI(api_key=key, base_url=base)
             resp = self._responses_parse_with_retries(
                 where=f"Structured parse {response_model_t.__name__}",
@@ -271,6 +366,7 @@ class LiteLLMChatClient:
         last_err: Exception | None = None
         for attempt in range(max(1, retries + 1)):
             try:
+                completion = _load_litellm_completion()
                 resp = completion(
                     model=model,
                     messages=messages,

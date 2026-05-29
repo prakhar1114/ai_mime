@@ -196,5 +196,3 @@ def get_reflect_config() -> ResolvedReflectConfig:
 def load_user_config() -> ResolvedUserConfig:
     cfg = load_llm_config()
     return ResolvedUserConfig(runtime=cfg.runtime, reflect=cfg.reflect)
-
-
