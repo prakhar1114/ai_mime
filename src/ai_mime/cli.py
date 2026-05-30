@@ -41,6 +41,16 @@ def _run_computer_server(port: int) -> None:
     """Child-process entrypoint: serve the cua computer server (with MCP)."""
     log(f"Computer server: child process started, binding port {port}")
     try:
+        try:
+            from ai_mime.computer_server_custom import install_custom_tools
+
+            install_custom_tools()
+        except Exception as e:
+            log(
+                f"Computer server: custom MCP tools unavailable; continuing without them: {e}",
+                exc_info=True,
+            )
+
         from computer_server import Server
 
         Server(host="0.0.0.0", port=port).start()
