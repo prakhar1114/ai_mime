@@ -16,7 +16,8 @@ from ai_mime.agent_runner.adapters.claude_sdk import (
     _options_kwargs_for,
     _result_summary,
     _text_from_message,
-    cua_mcp_servers
+    cua_mcp_servers,
+    DEFAULT_ALLOWED_TOOLS,
 )
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.debug_log import log as debug_log
@@ -102,7 +103,9 @@ async def _run_computer_use_task_async(
         system_prompt=COMPUTER_USE_SYSTEM_PROMPT,
         mcp_servers=cua_mcp_servers(),
     )
-    kwargs = _options_kwargs_for(request, allowed_tools=None)
+    # allowed_tools = [t for t in DEFAULT_ALLOWED_TOOLS if t != "Skill"]
+    allowed_tools = []
+    kwargs = _options_kwargs_for(request, allowed_tools=allowed_tools, skills=[], setting_sources=[])
     # Autonomous run: no human to answer permission prompts for the cua tools.
     kwargs["permission_mode"] = "bypassPermissions"
     options = ClaudeAgentOptions(**kwargs)
