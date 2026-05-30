@@ -42,6 +42,7 @@ from AppKit import (
 
 from ai_mime.app_data import (
     get_bundled_browser_harness_dir,
+    get_bundled_llm_resolver_dir,
     get_env_path,
     get_managed_browser_harness_path,
     get_managed_python_install_dir,
@@ -365,6 +366,7 @@ def _install_browser_harness(
     uv_path: Path | None = None,
     python_path: Path | None = None,
     source_dir: Path | None = None,
+    llm_resolver_dir: Path | None = None,
     run=subprocess.run,
     timeout: float = 900.0,
 ) -> tuple[bool, str]:
@@ -372,12 +374,15 @@ def _install_browser_harness(
     uv = uv_path or get_uv_path()
     python = python_path or get_python_path()
     source = source_dir or _browser_harness_skill_dir()
+    llm_resolver = llm_resolver_dir or get_bundled_llm_resolver_dir()
     if not uv.exists():
         return False, f"uv not found at {uv}"
     if not python.exists():
         return False, f"managed Python not found at {python}"
     if not (source / "pyproject.toml").is_file():
         return False, f"browser-harness source not found at {source}"
+    if not (llm_resolver / "pyproject.toml").is_file():
+        return False, f"llm-resolver source not found at {llm_resolver}"
 
     tool_dir = get_tool_dir()
     tool_bin_dir = get_tool_bin_dir()
@@ -390,6 +395,8 @@ def _install_browser_harness(
         "--force",
         "--python",
         str(python),
+        "--with-editable",
+        str(llm_resolver),
         str(source),
     ]
     try:

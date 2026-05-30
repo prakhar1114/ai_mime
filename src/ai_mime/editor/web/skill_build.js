@@ -176,7 +176,15 @@
       if (typeof window.AgentChat?.newChat === "function") {
         window.AgentChat.newChat();
         setTimeout(() => {
-          submitAgentPrompt("Start");
+          const emptyState = document.querySelector("#messages .empty-state");
+          if (emptyState) {
+            emptyState.textContent = "Start by telling how you would like to edit the skill.";
+          }
+          const input = document.getElementById("messageInput");
+          if (input) {
+            input.placeholder = "Describe how you would like to edit the skill...";
+            input.focus();
+          }
         }, 150);
       }
     } else if (action === "continue") {

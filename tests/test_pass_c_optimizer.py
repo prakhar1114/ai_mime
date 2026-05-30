@@ -11,6 +11,9 @@ from ai_mime.reflect.schema_compiler import (
     cleanup_reflect_artifacts,
     compile_workflow_schema,
     create_optimized_plan,
+    run_pass_a_step_cards,
+    run_pass_b_task_compiler,
+    run_pass_c_optimizer,
     validate_optimized_plan,
 )
 
@@ -148,7 +151,6 @@ class PassCOptimizerTests(unittest.TestCase):
             loaded = create_optimized_plan(
                 workflow_dir=workflow_dir,
                 schema=_schema(),
-                llm_cfg=None,  # type: ignore[arg-type]
             )
 
         self.assertEqual(loaded, plan)
@@ -204,10 +206,9 @@ class PassCOptimizerTests(unittest.TestCase):
             (workflow_dir / "metadata.json").write_text(json.dumps({"name": "Expense", "description": ""}), encoding="utf-8")
             (workflow_dir / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
             (workflow_dir / "optimized_plan.json").write_text(json.dumps(plan), encoding="utf-8")
-            llm_cfg = SimpleNamespace(model="test-model")
 
             with patch("ai_mime.reflect.schema_compiler.create_optimized_plan", return_value=plan) as ensure_plan:
-                result = compile_workflow_schema(workflow_dir=workflow_dir, llm_cfg=llm_cfg)  # type: ignore[arg-type]
+                result = compile_workflow_schema(workflow_dir=workflow_dir)
 
             self.assertEqual(result, schema)
             ensure_plan.assert_called_once()
@@ -229,16 +230,6 @@ class PassCOptimizerTests(unittest.TestCase):
                 json.dumps([{"i": 0, "intent": "click something"}]), encoding="utf-8"
             )
 
-            llm_cfg = SimpleNamespace(
-                model="test-model",
-                pass_a_model=None,
-                pass_b_model=None,
-                api_base=None,
-                api_key_env=None,
-                extra_kwargs=None,
-                pass_b_max_tokens=None,
-            )
-            
             with patch("ai_mime.reflect.schema_compiler.run_pass_a_step_cards") as mock_run_a, \
                  patch("ai_mime.reflect.schema_compiler.run_pass_b_task_compiler") as mock_run_b, \
                  patch("ai_mime.reflect.schema_compiler.create_optimized_plan") as mock_create_plan:
@@ -260,10 +251,144 @@ class PassCOptimizerTests(unittest.TestCase):
                 }
                 mock_create_plan.return_value = {}
                 
-                compile_workflow_schema(workflow_dir=workflow_dir, llm_cfg=llm_cfg) # type: ignore[arg-type]
+                compile_workflow_schema(workflow_dir=workflow_dir)
                 
                 # Should not have skipped Pass A because cards were incomplete
                 mock_run_a.assert_called_once()
+
+    def test_pass_a_client_receives_screenshot_image_blocks(self) -> None:
+        captured: dict = {}
+
+        class FakeClient:
+            def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured["client_kwargs"] = kwargs
+
+            def create(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    model_dump=lambda: {
+                        "i": 0,
+                        "expected_current_state": "screen",
+                        "intent": "click",
+                        "action_type": "CLICK",
+                        "action_value": None,
+                        "target": {"primary": "button", "fallback": None},
+                        "post_action": ["changed"],
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "metadata.json").write_text(
+                json.dumps({"name": "Task", "description": "Do it"}), encoding="utf-8"
+            )
+            (workflow_dir / "pre.png").write_bytes(b"pre")
+            (workflow_dir / "post.png").write_bytes(b"post")
+            (workflow_dir / "manifest.jsonl").write_text(
+                json.dumps({"action_type": "click", "screenshot": "pre.png"}) + "\n"
+                + json.dumps({"action_type": "end", "screenshot": "post.png"}) + "\n",
+                encoding="utf-8",
+            )
+            llm_cfg = SimpleNamespace(
+                model="openai/test",
+                pass_a_model="openai/pass-a",
+                api_base=None,
+                api_key_env="MISSING_KEY",
+                extra_kwargs={},
+                pass_a_max_tokens=123,
+            )
+
+            with patch("ai_mime.reflect.schema_compiler.get_reflect_config", return_value=llm_cfg), patch(
+                "ai_mime.reflect.schema_compiler.LiteLLMChatClient",
+                FakeClient,
+            ):
+                cards = run_pass_a_step_cards(workflow_dir=workflow_dir)
+
+        self.assertEqual(cards[0]["i"], 0)
+        self.assertEqual(captured["client_kwargs"]["model"], "openai/pass-a")
+        content = captured["messages"][1]["content"]
+        image_urls = [item["image_url"]["url"] for item in content if item.get("type") == "image_url"]
+        self.assertEqual(len(image_urls), 2)
+        self.assertTrue(all(url.startswith("data:image/png;base64,") for url in image_urls))
+
+    def test_pass_b_reads_phase_model_from_config(self) -> None:
+        captured: dict = {}
+
+        class FakeClient:
+            def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured["client_kwargs"] = kwargs
+
+            def create(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured["create_kwargs"] = kwargs
+                return SimpleNamespace(
+                    model_dump=lambda: {
+                        "detailed_task_description": "desc",
+                        "subtasks": ["do it"],
+                        "task_params": [],
+                        "success_criteria": "done",
+                        "plan_step_updates": [{"i": 0, "subtask": "do it", "action_value": None}],
+                    }
+                )
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "metadata.json").write_text(
+                json.dumps({"name": "Task", "description": "Do it"}), encoding="utf-8"
+            )
+            cfg = SimpleNamespace(
+                model="openai/default",
+                pass_b_model="claude/claude-sonnet-4-6",
+                api_base=None,
+                api_key_env=None,
+                extra_kwargs={},
+                pass_b_max_tokens=222,
+            )
+
+            with patch("ai_mime.reflect.schema_compiler.get_reflect_config", return_value=cfg), patch(
+                "ai_mime.reflect.schema_compiler.LiteLLMChatClient",
+                FakeClient,
+            ):
+                out = run_pass_b_task_compiler(
+                    workflow_dir=workflow_dir,
+                    step_cards=[{"i": 0, "intent": "click", "action_type": "CLICK", "action_value": None}],
+                )
+
+        self.assertEqual(out["success_criteria"], "done")
+        self.assertEqual(captured["client_kwargs"]["model"], "claude/claude-sonnet-4-6")
+        self.assertEqual(captured["create_kwargs"]["max_tokens"], 222)
+
+    def test_pass_c_reads_phase_model_from_config(self) -> None:
+        captured: dict = {}
+
+        class FakeClient:
+            def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured["client_kwargs"] = kwargs
+
+            def create(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured["create_kwargs"] = kwargs
+                return SimpleNamespace(model_dump=lambda: _valid_plan())
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "manifest.jsonl").write_text("", encoding="utf-8")
+            cfg = SimpleNamespace(
+                model="openai/default",
+                pass_c_model="claude/claude-opus-4-7",
+                api_base=None,
+                api_key_env=None,
+                extra_kwargs={},
+                pass_c_max_tokens=333,
+            )
+
+            with patch("ai_mime.reflect.schema_compiler.get_reflect_config", return_value=cfg), patch(
+                "ai_mime.reflect.schema_compiler.LiteLLMChatClient",
+                FakeClient,
+            ):
+                out = run_pass_c_optimizer(workflow_dir=workflow_dir, schema=_schema())
+
+        self.assertEqual(out["version"], 1)
+        self.assertEqual(captured["client_kwargs"]["model"], "claude/claude-opus-4-7")
+        self.assertEqual(captured["create_kwargs"]["max_tokens"], 333)
 
 
 

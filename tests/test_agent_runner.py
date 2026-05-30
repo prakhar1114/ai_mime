@@ -104,7 +104,7 @@ def _write_valid_skill_package(skill_dir: Path, schema: dict, optimized_plan: di
         "## Outputs\nA structured expense record.\n\n"
         "## Progress log format\nstep_start / step_done / step_failed / workflow_done JSON-line events.\n\n"
         "## Fallback\nSee references/fallback_plan.md.\n\n"
-        "## ask_gemini decision points\nNone.\n\n"
+        "## ask_llm decision points\nNone.\n\n"
         "## References\n- fallback_plan.md\n",
         encoding="utf-8",
     )
@@ -304,9 +304,14 @@ class AgentRunnerTests(unittest.TestCase):
             prompt = adapter.prompt or ""
             # Verify system prompt refers to instructions directory and sequence files
             self.assertIn("instructions/build_skill", prompt)
+            self.assertIn("instructions/ui_agent/00_ui_agent.md", prompt)
             self.assertIn("00_rules.md", prompt)
             self.assertIn("01_phase_a_confirm_inputs.md", prompt)
             self.assertIn("CRITICAL: Do NOT read all instruction files at once", prompt)
+            self.assertIn(
+                Path(__file__).parent.parent / "src" / "ai_mime" / "agent_runner" / "instructions",
+                request.readable_roots,
+            )
 
             # Read the files in the instructions folder and verify they contain the detailed protocols
             instructions_dir = Path(__file__).parent.parent / "src" / "ai_mime" / "agent_runner" / "instructions" / "build_skill"
@@ -318,7 +323,7 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertIn("build_signal.json", files_content)
             self.assertIn("skill_ready", files_content)
             self.assertIn("skill_unbuildable", files_content)
-            self.assertIn("ask_gemini", files_content)
+            self.assertIn("ask_llm", files_content)
             # Executor taxonomy
             self.assertIn("script", files_content)
             self.assertIn("browser_harness", files_content)
@@ -458,9 +463,14 @@ class AgentRunnerTests(unittest.TestCase):
             prompt = adapter.prompt or ""
             # Verify system prompt refers to instructions directory and sequence files
             self.assertIn("instructions/replay", prompt)
+            self.assertIn("instructions/ui_agent/00_ui_agent.md", prompt)
             self.assertIn("00_rules.md", prompt)
             self.assertIn("01_replay.md", prompt)
             self.assertIn("CRITICAL: Do NOT read all instruction files at once", prompt)
+            self.assertIn(
+                Path(__file__).parent.parent / "src" / "ai_mime" / "agent_runner" / "instructions",
+                request.readable_roots,
+            )
 
             # Read the files in the instructions folder and verify they contain the detailed protocols
             instructions_dir = Path(__file__).parent.parent / "src" / "ai_mime" / "agent_runner" / "instructions" / "replay"

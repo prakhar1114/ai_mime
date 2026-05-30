@@ -75,6 +75,7 @@ class AppDataPathTests(unittest.TestCase):
             env = app_data.workflow_runtime_env(workflow)
 
             self.assertEqual(env["AI_MIME_PYTHON_PATH"], str(venv_python))
+            self.assertEqual(env["AI_MIME_CONFIG_PATH"], str(app_data.get_user_config_path()))
             self.assertIn("AI_MIME_UV_PATH", env)
             self.assertIn("AI_MIME_BROWSER_HARNESS_BIN", env)
             self.assertIn("UV_PYTHON_INSTALL_DIR", env)
@@ -119,6 +120,7 @@ class AppDataPathTests(unittest.TestCase):
             self.assertNotIn("/usr/local/bin", env["PATH"])
             self.assertNotIn("/Users/tester/.local/bin", env["PATH"])
             self.assertEqual(env["AI_MIME_BROWSER_SKILL_NAME"], "browser")
+            self.assertEqual(env["AI_MIME_CONFIG_PATH"], str(root / "user_config.yml"))
             self.assertEqual(env["AI_MIME_BROWSER_SKILL_PATH"], str(browser_harness))
             self.assertEqual(env["AI_MIME_BROWSER_HARNESS_BIN"], str(root / "bin" / "browser-harness"))
             self.assertEqual(env["UV_TOOL_DIR"], str(root / "tools"))

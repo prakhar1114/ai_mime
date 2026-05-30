@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from lmnr import observe
 from ai_mime.app_data import bootstrap_data_dir, get_env_path, get_onboarding_done_path, is_frozen
 from ai_mime.permissions import check_permissions
-from ai_mime.user_config import load_user_config
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
 from ai_mime.app import run_app
 from ai_mime.onboarding import run_onboarding
@@ -42,6 +41,16 @@ def _run_computer_server(port: int) -> None:
     """Child-process entrypoint: serve the cua computer server (with MCP)."""
     log(f"Computer server: child process started, binding port {port}")
     try:
+        try:
+            from ai_mime.computer_server_custom import install_custom_tools
+
+            install_custom_tools()
+        except Exception as e:
+            log(
+                f"Computer server: custom MCP tools unavailable; continuing without them: {e}",
+                exc_info=True,
+            )
+
         from computer_server import Server
 
         Server(host="0.0.0.0", port=port).start()
@@ -109,7 +118,6 @@ def start_app():
 def reflect(session, recordings_dir):
     """Convert recordings into useful assets."""
     logging.basicConfig(level=logging.INFO)
-    user_cfg = load_user_config()
     recordings_dir_p = Path(recordings_dir)
     if session:
         session_path = Path(session)
@@ -132,8 +140,7 @@ def reflect(session, recordings_dir):
     click.echo(f"Workflow created: {out_dir}")
 
     try:
-        llm_cfg = user_cfg.reflect
-        compile_schema_for_workflow_dir(out_dir, llm_cfg=llm_cfg)
+        compile_schema_for_workflow_dir(out_dir)
         click.echo(f"Schema compiled: {out_dir / 'schema.json'}")
     except Exception as e:
         raise click.ClickException(f"Schema compilation failed: {e}")

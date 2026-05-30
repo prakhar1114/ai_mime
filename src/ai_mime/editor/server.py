@@ -24,7 +24,6 @@ from fastapi.staticfiles import StaticFiles
 
 from ai_mime.reflect.runner import run_reflect_and_compile_schema
 from ai_mime.screenshot import ScreenshotRecorder
-from ai_mime.user_config import ResolvedLLMConfig, ResolvedReflectConfig
 from ai_mime.debug_log import log
 from ai_mime.agent_runner import AgentBusyError, WorkflowSkillBuildService, WorkspaceAgentChatService
 from ai_mime.app_data import workflow_runtime_env
@@ -302,14 +301,12 @@ def _emit(queue: Any | None, obj: dict[str, Any]) -> None:
 def _run_reflect_task(
     session_dir: str,
     workflows_root: str,
-    reflect_llm_cfg: ResolvedReflectConfig,
     *,
     force: bool = False,
     event_queue: Any | None = None,
 ) -> None:
     run_reflect_and_compile_schema(
         session_dir,
-        reflect_llm_cfg,
         workflows_root=workflows_root,
         clean_manifest_tail=False,
         force=force,
@@ -327,12 +324,10 @@ class TaskRunner:
         *,
         workflows_root: Path,
         recordings_root: Path,
-        reflect_llm_cfg: ResolvedReflectConfig | None,
         app_state: Any | None = None,
     ) -> None:
         self.workflows_root = workflows_root
         self.recordings_root = recordings_root
-        self.reflect_llm_cfg = reflect_llm_cfg
         self.app_state = app_state
         self._lock = threading.Lock()
         self._states: dict[str, dict[str, Any]] = {}
@@ -355,9 +350,6 @@ class TaskRunner:
     def start_reflect(self, task_id: str, *, force: bool = False) -> dict[str, Any]:
         task_id = _safe_task_id(task_id)
         _task_log(f"reflect requested: task_id={task_id} force={force}")
-        if self.reflect_llm_cfg is None:
-            _task_log(f"reflect rejected: task_id={task_id} reason=missing_config")
-            raise HTTPException(status_code=500, detail="Reflect config is unavailable")
         with self._lock:
             self._refresh_locked()
             if task_id in self._reflect_processes:
@@ -380,7 +372,7 @@ class TaskRunner:
             q: Queue = Queue()
             p = Process(
                 target=_run_reflect_task,
-                args=(str(reflect_input_dir), str(self.workflows_root), self.reflect_llm_cfg),
+                args=(str(reflect_input_dir), str(self.workflows_root)),
                 kwargs={"force": force, "event_queue": q},
                 daemon=True,
             )
@@ -632,7 +624,6 @@ def create_app(
     *,
     workflows_root: Path | None = None,
     recordings_root: Path | None = None,
-    reflect_llm_cfg: ResolvedReflectConfig | None = None,
     app_command_queue: Any | None = None,
     app_state: Any | None = None,
     agent_chat_service: WorkspaceAgentChatService | None = None,
@@ -642,7 +633,6 @@ def create_app(
     task_runner = TaskRunner(
         workflows_root=workflows_root,
         recordings_root=recordings_root,
-        reflect_llm_cfg=reflect_llm_cfg,
         app_state=app_state,
     )
     agent_service = agent_chat_service or WorkspaceAgentChatService()
@@ -1556,7 +1546,6 @@ def _run_uvicorn(
     port: int,
     workflows_root: str,
     recordings_root: str,
-    reflect_llm_cfg: ResolvedReflectConfig | None,
     app_command_queue: Any | None,
     app_state: Any | None,
 ) -> None:
@@ -1567,7 +1556,6 @@ def _run_uvicorn(
     app = create_app(
         workflows_root=Path(workflows_root),
         recordings_root=Path(recordings_root),
-        reflect_llm_cfg=reflect_llm_cfg,
         app_command_queue=app_command_queue,
         app_state=app_state,
     )
@@ -1579,7 +1567,6 @@ def start_editor_server(
     *,
     workflows_root: Path,
     recordings_root: Path | None = None,
-    reflect_llm_cfg: ResolvedReflectConfig | None = None,
     app_command_queue: Any | None = None,
     app_state: Any | None = None,
 ) -> tuple[Process, int]:
@@ -1599,7 +1586,6 @@ def start_editor_server(
             port,
             str(workflows_root),
             str(recordings_root),
-            reflect_llm_cfg,
             app_command_queue,
             app_state,
         ),

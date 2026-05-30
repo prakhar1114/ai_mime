@@ -80,15 +80,30 @@
     el.taskList.innerHTML = tasks.map((task) => {
       const status = escapeHtml(task.status);
       const error = task.error ? `<div class="error">${escapeHtml(task.error)}</div>` : "";
-      let reflectText = "Reflect";
-      if (task.status === "failed_reflection") {
-        reflectText = "Retry reflection";
-      } else if (task.status === "reflecting" || task.status === "compiling") {
-        reflectText = "Reflecting...";
+      let reflectItems = [];
+      const isReflectingOrCompiling = task.status === "reflecting" || task.status === "compiling";
+      const canShowReflect = task.can_reflect || isReflectingOrCompiling;
+
+      if (canShowReflect) {
+        if (isReflectingOrCompiling) {
+          const reflectText = task.status === "reflecting" ? "Reflecting..." : "Compiling...";
+          reflectItems.push(`<button class="menu-item" data-action="reflect">${escapeHtml(reflectText)}</button>`);
+        } else if (task.has_optimized_plan) {
+          if (task.has_skill) {
+            reflectItems.push(`<button class="menu-item" data-action="continue-improve">Continue Improving Skill</button>`);
+            reflectItems.push(`<button class="menu-item" data-action="edit-skill">Edit Skill (New Session)</button>`);
+            reflectItems.push(`<button class="menu-item" data-action="run-skill">Run</button>`);
+          } else {
+            reflectItems.push(`<button class="menu-item" data-action="continue-improve">Build Skill</button>`);
+          }
+        } else {
+          const reflectText = task.status === "failed_reflection" ? "Retry reflection" : "Reflect";
+          reflectItems.push(`<button class="menu-item" data-action="reflect">${escapeHtml(reflectText)}</button>`);
+        }
       }
-      const canShowReflect = task.can_reflect || task.status === "reflecting" || task.status === "compiling";
+
       const menuItems = [
-        canShowReflect ? `<button class="menu-item" data-action="reflect">${escapeHtml(reflectText)}</button>` : "",
+        ...reflectItems,
         task.can_delete ? `<button class="menu-item danger" data-action="delete">Delete</button>` : "",
       ].filter(Boolean).join("");
       const menuOpen = openMenuTaskId === task.id;
@@ -153,54 +168,6 @@
     }
   }
 
-  function showReflectOptionsModal(task) {
-    const encoded = encodeURIComponent(task.id);
-    const overlay = document.createElement("div");
-    overlay.className = "modal-overlay";
-    overlay.addEventListener("click", (e) => {
-      if (e.target === overlay) {
-        document.body.removeChild(overlay);
-      }
-    });
-
-    const card = document.createElement("div");
-    card.className = "modal-card";
-    card.innerHTML = `
-      <div class="modal-header">
-        <h3 class="modal-title">Optimized Plan Exists</h3>
-        <p class="modal-desc">This task already has an optimized plan and a built skill. What would you like to do next?</p>
-      </div>
-      <div class="modal-actions">
-        <button class="modal-btn primary" id="continueImproveBtn">Continue Improving Skill</button>
-        <button class="modal-btn" id="editSkillBtn">Edit Skill (New Session)</button>
-        <button class="modal-btn" id="runSkillBtn">Run</button>
-        <button class="modal-btn secondary" id="cancelModalBtn">Cancel</button>
-      </div>
-    `;
-
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
-
-    card.querySelector("#continueImproveBtn").addEventListener("click", () => {
-      window.location.href = `/skill-build/${encoded}?action=continue`;
-      document.body.removeChild(overlay);
-    });
-
-    card.querySelector("#editSkillBtn").addEventListener("click", () => {
-      window.location.href = `/skill-build/${encoded}?action=new`;
-      document.body.removeChild(overlay);
-    });
-
-    card.querySelector("#runSkillBtn").addEventListener("click", () => {
-      window.location.href = `/replay/${encoded}`;
-      document.body.removeChild(overlay);
-    });
-
-    card.querySelector("#cancelModalBtn").addEventListener("click", () => {
-      document.body.removeChild(overlay);
-    });
-  }
-
   async function runAction(taskId, action) {
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
@@ -214,20 +181,21 @@
           window.location.href = `/reflect/${encoded}`;
           return;
         }
-        if (task.has_optimized_plan) {
-          if (task.has_skill) {
-            showReflectOptionsModal(task);
-          } else {
-            window.location.href = `/skill-build/${encoded}?action=continue`;
-          }
-          return;
-        }
         await request(`/api/tasks/${encoded}/reflect`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ force: false }),
         });
         window.location.href = `/reflect/${encoded}`;
+        return;
+      } else if (action === "continue-improve") {
+        window.location.href = `/skill-build/${encoded}?action=continue`;
+        return;
+      } else if (action === "edit-skill") {
+        window.location.href = `/skill-build/${encoded}?action=new`;
+        return;
+      } else if (action === "run-skill") {
+        window.location.href = `/replay/${encoded}`;
         return;
       } else if (action === "replay") {
         window.location.href = `/replay/${encoded}`;

@@ -275,14 +275,17 @@ class OnboardingHelperTests(unittest.TestCase):
             uv = root / "bin" / "uv"
             python = root / "python" / "bin" / "python3.12"
             source = root / "bundle" / "harness" / "browser-harness"
+            llm_resolver = root / "bundle" / "packages" / "llm-resolver"
             tool_dir = root / "tools"
             tool_bin_dir = root / "bin-tools"
             uv.parent.mkdir(parents=True)
             python.parent.mkdir(parents=True)
             source.mkdir(parents=True)
+            llm_resolver.mkdir(parents=True)
             uv.write_text("#!/bin/sh\n", encoding="utf-8")
             python.write_text("#!/bin/sh\n", encoding="utf-8")
             (source / "pyproject.toml").write_text("[project]\nname='browser-harness'\n", encoding="utf-8")
+            (llm_resolver / "pyproject.toml").write_text("[project]\nname='llm-resolver'\n", encoding="utf-8")
             calls: list[list[str]] = []
             envs: list[dict[str, str]] = []
 
@@ -301,6 +304,7 @@ class OnboardingHelperTests(unittest.TestCase):
                     uv_path=uv,
                     python_path=python,
                     source_dir=source,
+                    llm_resolver_dir=llm_resolver,
                     run=fake_run,
                 )
 
@@ -308,7 +312,17 @@ class OnboardingHelperTests(unittest.TestCase):
             self.assertIn("installed browser-harness", message)
             self.assertEqual(
                 calls,
-                [[str(uv), "tool", "install", "--force", "--python", str(python), str(source)]],
+                [[
+                    str(uv),
+                    "tool",
+                    "install",
+                    "--force",
+                    "--python",
+                    str(python),
+                    "--with-editable",
+                    str(llm_resolver),
+                    str(source),
+                ]],
             )
             self.assertEqual(envs[0]["UV_TOOL_DIR"], str(tool_dir))
             self.assertEqual(envs[0]["UV_TOOL_BIN_DIR"], str(tool_bin_dir))

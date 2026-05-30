@@ -338,6 +338,9 @@ Terminal signal file: {signal_path}
 To prevent task dilution and ensure consistent behavior, your instructions are broken down into sequential task files located in the instructions folder:
 {INSTRUCTIONS_ROOT / "build_skill"}
 
+Shared UI-agent guide, read only when a step uses `ui_agent`:
+{INSTRUCTIONS_ROOT / "ui_agent" / "00_ui_agent.md"}
+
 An example of a correctly structured and packaged skill is available for your reference at:
 {INSTRUCTIONS_ROOT / "example_skill"}
 
@@ -376,25 +379,6 @@ Existing memory:
             for path in skill_dir.rglob("*")
             if skill_dir.exists() and path.is_file()
         )
-        
-        latest_run_info = ""
-        runs_dir = request.workflow_dir / "runs"
-        if runs_dir.exists() and runs_dir.is_dir():
-            run_dirs = sorted(
-                [d for d in runs_dir.iterdir() if d.is_dir()],
-                key=lambda x: x.name,
-                reverse=True
-            )
-            if run_dirs:
-                latest_run_dir = run_dirs[0]
-                latest_data_md = latest_run_dir / "data.md"
-                if latest_data_md.exists():
-                    try:
-                        content = latest_data_md.read_text(encoding="utf-8")
-                        if "- Status: failed" in content or "Status: failed" in content:
-                            latest_run_info = f"\n\n### LATEST SKILL RUN FAILURE LOGS & DETAILS (Triaging Context):\n{content}\n"
-                    except Exception:
-                        pass
 
         return f"""You are the AI Mime replay execution agent for this workflow.
 You are running in the Replay page chat. Your job is to help run an existing skill, validate inputs, and handle variants of the task using the skill context.
@@ -407,6 +391,9 @@ Domain notes file: {domain_notes_path}
 
 Your detailed instructions are located in the instructions folder:
 {INSTRUCTIONS_ROOT / "replay"}
+
+Shared UI-agent guide, read only for UI-only recovery:
+{INSTRUCTIONS_ROOT / "ui_agent" / "00_ui_agent.md"}
 
 You MUST execute the task following these instructions step-by-step:
 1. First, read and follow `00_rules.md` in the instructions directory.
@@ -424,7 +411,7 @@ Writable roots:
 {json.dumps([str(p) for p in request.writable_roots], indent=2)}
 
 Existing memory:
-{memory}{latest_run_info}
+{memory}
 """
 
     return f"""You are the task agent for this AI Mime workflow.

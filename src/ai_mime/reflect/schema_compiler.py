@@ -14,8 +14,7 @@ from typing import Any, Callable, Iterable, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field  # type: ignore[import-not-found]
 from tqdm import tqdm  # type: ignore[import-not-found]
 
-from ai_mime.user_config import ResolvedReflectConfig
-from ai_mime.litellm_client import LiteLLMChatClient
+from llm_resolver import LiteLLMChatClient, get_reflect_config
 from ai_mime.debug_log import log as debug_log
 
 logger = logging.getLogger(__name__)
@@ -115,63 +114,6 @@ def _read_json_if_exists(path: Path) -> Any | None:
         return json.load(f)
 
 
-def _should_use_fallback(llm_cfg: ResolvedReflectConfig) -> bool:
-    if not llm_cfg.api_key_env:
-        return True
-    val = os.getenv(llm_cfg.api_key_env)
-    return val is None or not val.strip()
-
-
-def _extract_json_from_text(text: str) -> dict[str, Any] | None:
-    if not text:
-        return None
-    candidates: list[str] = [text.strip()]
-    fence = text.rsplit("```json", 1)
-    if len(fence) == 2:
-        candidates.append(fence[1].split("```", 1)[0].strip())
-    fence2 = text.rsplit("```", 1)
-    if len(fence2) == 2:
-        parts = text.split("```")
-        if len(parts) >= 3:
-            candidates.append(parts[1].strip())
-    start, end = text.find("{"), text.rfind("}")
-    if 0 <= start < end:
-        candidates.append(text[start : end + 1].strip())
-    for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-        except (ValueError, TypeError):
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    return None
-
-
-def _claude_sdk_structured_fallback(
-    workflow_dir: Path,
-    system_prompt: str,
-    prompt_content: str,
-    response_model: type[BaseModel],
-) -> dict[str, Any]:
-    from ai_mime.agent_runner.adapters.claude_sdk import run_claude_sdk_structured
-
-    raw_output = run_claude_sdk_structured(
-        workflow_dir=workflow_dir,
-        system_prompt=system_prompt,
-        prompt_content=prompt_content,
-        response_schema=response_model.model_json_schema(),
-    )
-
-    parsed_json = _extract_json_from_text(raw_output)
-    if parsed_json is None:
-        raise ValueError(f"Failed to extract valid JSON matching {response_model.__name__} from Claude response: {raw_output}")
-
-    validated = response_model.model_validate(parsed_json)
-    return validated.model_dump()
-
-
-
-
 PASS_A_SYSTEM_PROMPT = """You convert a UI trace step (screenshots + action) into a reusable, coordinate-free step instruction
 for a computer-use vision agent. You must be accurate and avoid inventing UI text.
 """
@@ -269,17 +211,17 @@ You convert a completed UI replay schema into a compact executor-oriented plan.
 
 Executors (pick exactly one per step):
 - script: pure deterministic Python — file IO, HTTP, parsing, shell-outs, library
-  calls. No UI of any kind. May call ask_gemini() for irreducible judgment that
+  calls. No UI of any kind. May call ask_llm() for irreducible judgment that
   returns a JSON-schema-constrained answer. This is the preferred executor.
 - browser_harness: composable browser-harness CDP script (new_tab, js,
   click_at_xy, wait_for_*, etc.) when the workflow genuinely needs a tab. May
-  also call ask_gemini() for in-page judgment.
+  also call ask_llm() for in-page judgment.
 - ui_agent: live screenshot + click loop. Slowest and least reliable; last
   resort, for native macOS apps or web UIs whose DOM is too hostile for CDP.
 
-ask_gemini is the stochasticity escape hatch: if a step has one fuzzy decision
+ask_llm is the stochasticity escape hatch: if a step has one fuzzy decision
 (e.g. "pick the row that matches the user's query"), keep the step as script or
-browser_harness and let ask_gemini handle the decision — do NOT downgrade to
+browser_harness and let ask_llm handle the decision — do NOT downgrade to
 ui_agent just because one sub-decision is judgment-based.
 
 Prefer the smarter deterministic path over the recorded UI path.
@@ -346,7 +288,7 @@ Output requirements:
 - executor and fallback must be one of: script, browser_harness, ui_agent.
 - Prefer `script` for any work that does not require a browser tab or native UI.
 - Before emitting any `browser_harness` or `ui_agent` step, ask: is there a smarter, more deterministic way to reach the same end state that the recording happened to miss (direct file read/write, CLI, URL-scheme, shortcut, library call, etc.)? If yes, emit a single `script` step using that path and state the chosen shortcut in `goal`. Only keep UI-level steps when no shortcut is viable.
-- If a receipt/PDF/bill is opened only for extraction, collapse file opening + extraction into a single `script` step that parses the file directly; mention ask_gemini in `goal` if semantic OCR is needed.
+- If a receipt/PDF/bill is opened only for extraction, collapse file opening + extraction into a single `script` step that parses the file directly; mention ask_llm in `goal` if semantic OCR is needed.
 - If Chrome/browser/Google Sheets/web tabs are unavoidable, collapse the browser work into a single `browser_harness` step.
 """
 
@@ -573,13 +515,13 @@ def derive_step_inputs(workflow_dir: str | os.PathLike[str], events: list[dict[s
 def run_pass_a_step_cards(
     *,
     workflow_dir: str | os.PathLike[str],
-    llm_cfg: ResolvedReflectConfig,
 ) -> list[dict[str, Any]]:
     """
     Pass A: compile each actionable manifest step into a StepCard.
     Does one LLM call per step.
     """
     workflow_dir_p = Path(workflow_dir)
+    llm_cfg = get_reflect_config()
     task_name, task_description_user = load_task_metadata(workflow_dir_p)
     events = load_events(workflow_dir_p)
     steps = derive_step_inputs(workflow_dir_p, events)
@@ -612,15 +554,13 @@ def run_pass_a_step_cards(
     )
 
     # Resolve + cache LLM config once; reused across all Pass A steps (thread-safe usage).
-    pass_a_client = None
-    if not _should_use_fallback(llm_cfg):
-        pass_a_client = LiteLLMChatClient(
-            model=pass_a_model,
-            api_base=llm_cfg.api_base,
-            api_key_env=llm_cfg.api_key_env,
-            extra_kwargs=llm_cfg.extra_kwargs,
-            max_retries=MAX_RETRIES,
-        )
+    pass_a_client = LiteLLMChatClient(
+        model=pass_a_model,
+        api_base=llm_cfg.api_base,
+        api_key_env=llm_cfg.api_key_env,
+        extra_kwargs=llm_cfg.extra_kwargs,
+        max_retries=MAX_RETRIES,
+    )
 
     def _compile_one(s: StepInput) -> dict[str, Any]:
 
@@ -643,38 +583,21 @@ def run_pass_a_step_cards(
             details_text=json.dumps(s.details, ensure_ascii=False),
         )
 
-        if pass_a_client is None:
-            card = _claude_sdk_structured_fallback(
-                workflow_dir=workflow_dir_p,
-                system_prompt=PASS_A_SYSTEM_PROMPT,
-                prompt_content=(
-                    f"Task name: {task_name}\n"
-                    f"User task description: {task_description_user}\n\n"
-                    f"Action: {json.dumps(s.action_json)}\n"
-                    f"Param Hint: {json.dumps(s.param_hint_json)}\n"
-                    f"Details: {s.details}\n"
-                    f"PRE screenshot is located at: {s.pre_screenshot}\n"
-                    f"POST screenshot is located at: {s.post_screenshot}\n\n"
-                    f"Instructions: {user}\n\n"
-                ),
-                response_model=StepCardModel,
-            )
-        else:
-            messages: list[dict[str, Any]] = [
-                {"role": "system", "content": PASS_A_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": user}]
-                    + [{"type": "image_url", "image_url": {"url": _png_data_url(p)}} for p in img_paths],
-                },
-            ]
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": PASS_A_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": user}]
+                + [{"type": "image_url", "image_url": {"url": _png_data_url(p)}} for p in img_paths],
+            },
+        ]
 
-            event = pass_a_client.create(
-                response_model=StepCardModel,
-                messages=messages,
-                max_tokens=llm_cfg.pass_a_max_tokens,
-            )
-            card = event.model_dump()
+        event = pass_a_client.create(
+            response_model=StepCardModel,
+            messages=messages,
+            max_tokens=llm_cfg.pass_a_max_tokens,
+        )
+        card = event.model_dump()
 
         card["i"] = s.i
         # Ensure we always carry forward the input details (null or string) even if the model omits it.
@@ -755,12 +678,12 @@ def run_pass_b_task_compiler(
     *,
     workflow_dir: str | os.PathLike[str],
     step_cards: list[dict[str, Any]],
-    llm_cfg: ResolvedReflectConfig,
 ) -> dict[str, Any]:
     """
     Pass B: compile task-level schema from step cards.
     """
     workflow_dir_p = Path(workflow_dir)
+    llm_cfg = get_reflect_config()
     task_name, task_description_user = load_task_metadata(workflow_dir_p)
 
     pass_b_model = llm_cfg.pass_b_model or llm_cfg.model
@@ -785,14 +708,6 @@ def run_pass_b_task_compiler(
         task_description_user=task_description_user,
         step_summaries_json=json.dumps(step_summaries, ensure_ascii=False),
     )
-
-    if _should_use_fallback(llm_cfg):
-        return _claude_sdk_structured_fallback(
-            workflow_dir=workflow_dir_p,
-            system_prompt=PASS_B_SYSTEM_PROMPT,
-            prompt_content=user,
-            response_model=PassBOutput,
-        )
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": PASS_B_SYSTEM_PROMPT},
@@ -1099,17 +1014,17 @@ def run_pass_c_optimizer(
     *,
     workflow_dir: str | os.PathLike[str],
     schema: dict[str, Any],
-    llm_cfg: ResolvedReflectConfig,
 ) -> dict[str, Any]:
     """
     Pass C: compile a completed schema into a compact optimized execution strategy.
     """
     workflow_dir_p = Path(workflow_dir)
+    llm_cfg = get_reflect_config()
     task_name = str(schema.get("task_name") or "")
     task_description_user = str(schema.get("task_description_user") or "")
     events = load_events(workflow_dir_p)
 
-    pass_c_model = llm_cfg.pass_b_model or llm_cfg.model
+    pass_c_model = llm_cfg.pass_c_model or llm_cfg.model
     logger.info("Pass C: compiling optimized plan (model=%s)", pass_c_model)
     debug_log(f"Pass C: starting optimized plan generation model={pass_c_model}")
 
@@ -1120,16 +1035,6 @@ def run_pass_c_optimizer(
         manifest_summary_json=json.dumps(_summarize_manifest_for_pass_c(events), ensure_ascii=False),
         file_hints_json=json.dumps(_discover_file_hints_for_pass_c(workflow_dir_p, schema, events), ensure_ascii=False),
     )
-
-    if _should_use_fallback(llm_cfg):
-        optimized_plan = _claude_sdk_structured_fallback(
-            workflow_dir=workflow_dir_p,
-            system_prompt=PASS_C_SYSTEM_PROMPT,
-            prompt_content=user,
-            response_model=PassCOutput,
-        )
-        validate_optimized_plan(optimized_plan, schema)
-        return optimized_plan
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": PASS_C_SYSTEM_PROMPT},
@@ -1145,7 +1050,7 @@ def run_pass_c_optimizer(
     event = client.create(
         response_model=PassCOutput,
         messages=messages,
-        max_tokens=llm_cfg.pass_b_max_tokens,
+        max_tokens=llm_cfg.pass_c_max_tokens or 7000,
     )
     optimized_plan = event.model_dump()
     validate_optimized_plan(optimized_plan, schema)
@@ -1156,7 +1061,6 @@ def create_optimized_plan(
     *,
     workflow_dir: str | os.PathLike[str],
     schema: dict[str, Any],
-    llm_cfg: ResolvedReflectConfig,
 ) -> dict[str, Any]:
     workflow_dir_p = Path(workflow_dir)
     path = workflow_dir_p / "optimized_plan.json"
@@ -1172,7 +1076,7 @@ def create_optimized_plan(
             debug_log(f"Pass C: existing optimized_plan.json invalid; regenerating: {e}")
             logger.info("Pass C: existing optimized_plan.json invalid; regenerating: %s", e)
 
-    optimized_plan = run_pass_c_optimizer(workflow_dir=workflow_dir_p, schema=schema, llm_cfg=llm_cfg)
+    optimized_plan = run_pass_c_optimizer(workflow_dir=workflow_dir_p, schema=schema)
     write_optimized_plan(workflow_dir_p, optimized_plan)
     cleanup_reflect_artifacts(workflow_dir_p, schema=schema, optimized_plan=optimized_plan)
     debug_log(f"Pass C complete: {path}")
@@ -1353,7 +1257,6 @@ def extract_param_templates(step_cards: Iterable[dict[str, Any]]) -> set[str]:
 def compile_workflow_schema(
     *,
     workflow_dir: str | os.PathLike[str],
-    llm_cfg: ResolvedReflectConfig,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """
@@ -1380,8 +1283,8 @@ def compile_workflow_schema(
         except Exception:
             pass
 
-    debug_log(f"Schema compile start: workflow_dir={workflow_dir_p} task={task_name} model={llm_cfg.model}")
-    logger.info("Schema compile start: workflow_dir=%s task_name=%s model=%s", workflow_dir_p, task_name, llm_cfg.model)
+    debug_log(f"Schema compile start: workflow_dir={workflow_dir_p} task={task_name}")
+    logger.info("Schema compile start: workflow_dir=%s task_name=%s", workflow_dir_p, task_name)
 
     # If final output exists, reuse it and avoid re-running any passes.
     schema_path = workflow_dir_p / "schema.json"
@@ -1398,7 +1301,7 @@ def compile_workflow_schema(
         _progress("reflect_progress", phase="pass_a_complete", label="Pass A", progress=33)
         _progress("reflect_progress", phase="pass_b_complete", label="Pass B", progress=66)
         _progress("reflect_progress", phase="optimized_plan_started", label="Optimized plan", progress=82)
-        optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=existing_schema, llm_cfg=llm_cfg)
+        optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=existing_schema)
         _progress("reflect_progress", phase="optimized_plan_complete", label="Optimized plan", progress=100)
         return existing_schema
 
@@ -1434,7 +1337,7 @@ def compile_workflow_schema(
     else:
         _progress("reflect_progress", phase="pass_a_started", label="Pass A", progress=10)
         debug_log("Pass A: starting step card generation...")
-        step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p, llm_cfg=llm_cfg)
+        step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p)
         write_step_cards(workflow_dir_p, step_cards)
         debug_log(f"Pass A complete: {len(step_cards)} steps")
         logger.info("Pass A complete: step_cards.json (%d steps)", len(step_cards))
@@ -1462,7 +1365,7 @@ def compile_workflow_schema(
     else:
         _progress("reflect_progress", phase="pass_b_started", label="Pass B", progress=45)
         debug_log("Pass B: starting task compilation...")
-        task_compiler_out = run_pass_b_task_compiler(workflow_dir=workflow_dir_p, step_cards=step_cards, llm_cfg=llm_cfg)
+        task_compiler_out = run_pass_b_task_compiler(workflow_dir=workflow_dir_p, step_cards=step_cards)
 
         plan_creation = dict(task_compiler_out)
         write_plan_creation(workflow_dir_p, plan_creation)
@@ -1602,7 +1505,7 @@ def compile_workflow_schema(
 
     write_schema(workflow_dir_p, final_schema)
     _progress("reflect_progress", phase="optimized_plan_started", label="Optimized plan", progress=82)
-    optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=final_schema, llm_cfg=llm_cfg)
+    optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=final_schema)
     _progress("reflect_progress", phase="optimized_plan_complete", label="Optimized plan", progress=100)
 
     debug_log(f"Schema compilation complete: {workflow_dir_p / 'schema.json'}")
