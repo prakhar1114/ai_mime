@@ -304,9 +304,14 @@ class AgentRunnerTests(unittest.TestCase):
             prompt = adapter.prompt or ""
             # Verify system prompt refers to instructions directory and sequence files
             self.assertIn("instructions/build_skill", prompt)
+            self.assertIn("instructions/ui_agent/00_ui_agent.md", prompt)
             self.assertIn("00_rules.md", prompt)
             self.assertIn("01_phase_a_confirm_inputs.md", prompt)
             self.assertIn("CRITICAL: Do NOT read all instruction files at once", prompt)
+            self.assertIn(
+                Path(__file__).parent.parent / "src" / "ai_mime" / "agent_runner" / "instructions",
+                request.readable_roots,
+            )
 
             # Read the files in the instructions folder and verify they contain the detailed protocols
             instructions_dir = Path(__file__).parent.parent / "src" / "ai_mime" / "agent_runner" / "instructions" / "build_skill"
@@ -458,9 +463,14 @@ class AgentRunnerTests(unittest.TestCase):
             prompt = adapter.prompt or ""
             # Verify system prompt refers to instructions directory and sequence files
             self.assertIn("instructions/replay", prompt)
+            self.assertIn("instructions/ui_agent/00_ui_agent.md", prompt)
             self.assertIn("00_rules.md", prompt)
             self.assertIn("01_replay.md", prompt)
             self.assertIn("CRITICAL: Do NOT read all instruction files at once", prompt)
+            self.assertIn(
+                Path(__file__).parent.parent / "src" / "ai_mime" / "agent_runner" / "instructions",
+                request.readable_roots,
+            )
 
             # Read the files in the instructions folder and verify they contain the detailed protocols
             instructions_dir = Path(__file__).parent.parent / "src" / "ai_mime" / "agent_runner" / "instructions" / "replay"

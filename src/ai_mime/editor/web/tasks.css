@@ -321,6 +321,7 @@ h1 {
   padding: 9px 11px;
   text-align: left;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .menu-item:first-child { border-top: 0; }

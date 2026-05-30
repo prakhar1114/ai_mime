@@ -7,12 +7,12 @@ In this phase, you will write the final deterministic python execution script, r
 2. Per-step code shape must match its `executor` in the optimized plan:
    - `script` → inline Python.
    - `browser_harness` → shell out to `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'` (or import helpers directly).
-   - `ui_agent` → shell out to `"$AI_MIME_UI_AGENT_CMD" "<task>" [--schema '<json>'] --json` and parse `result_json` from stdout.
+   - `ui_agent` → read the sibling UI-agent guide at `../ui_agent/00_ui_agent.md` under the shared instructions root, distill the matching UI Agent Recipe from `agent/learned_notes.md` into a compact task prompt, then shell out to `"$AI_MIME_UI_AGENT_CMD" "<task>" [--schema '<json>'] --json` and parse `result_json` from stdout. The prompt should include task-specific setup, action sequence, decision rules, gotchas, recovery, skip conditions, and final verification; do not paste the full guide or learned-notes file into the prompt.
      - **Python Invocation Example**:
        ```python
        import os, shlex, subprocess, json
        ui_agent_cmd = os.environ.get("AI_MIME_UI_AGENT_CMD")
-       task_prompt = "In the open web browser: 1. Click search input, 2. Type 'weather', 3. Press Enter key."
+       task_prompt = "Target: the open web browser. Goal: search for weather. If the search page is already open, skip navigation. Click the search input, type 'weather', press Enter, and verify results are visible. If focus is uncertain, re-focus the search input before typing."
        cmd = shlex.split(ui_agent_cmd) + [task_prompt, "--json"]
        proc = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, check=True)
        result = json.loads(proc.stdout)

@@ -338,6 +338,9 @@ Terminal signal file: {signal_path}
 To prevent task dilution and ensure consistent behavior, your instructions are broken down into sequential task files located in the instructions folder:
 {INSTRUCTIONS_ROOT / "build_skill"}
 
+Shared UI-agent guide, read only when a step uses `ui_agent`:
+{INSTRUCTIONS_ROOT / "ui_agent" / "00_ui_agent.md"}
+
 An example of a correctly structured and packaged skill is available for your reference at:
 {INSTRUCTIONS_ROOT / "example_skill"}
 
@@ -388,6 +391,9 @@ Domain notes file: {domain_notes_path}
 
 Your detailed instructions are located in the instructions folder:
 {INSTRUCTIONS_ROOT / "replay"}
+
+Shared UI-agent guide, read only for UI-only recovery:
+{INSTRUCTIONS_ROOT / "ui_agent" / "00_ui_agent.md"}
 
 You MUST execute the task following these instructions step-by-step:
 1. First, read and follow `00_rules.md` in the instructions directory.
