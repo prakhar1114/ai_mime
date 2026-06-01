@@ -1086,6 +1086,25 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(events[-1]["event"], "done")
             self.assertEqual(events[-1]["session_id"], "workspace-session-1")
 
+    def test_workspace_chat_interrupt_falls_back_to_adapter(self) -> None:
+        class InterruptAdapter:
+            id = "codex_cli"
+            label = "Codex CLI"
+
+            def list_sessions(self, _directory: Path) -> list[dict[str, object]]:
+                return []
+
+            def load_messages(self, _session_id: str, _directory: Path) -> list[dict[str, object]]:
+                return []
+
+            def interrupt(self) -> bool:
+                return True
+
+        with tempfile.TemporaryDirectory() as td:
+            service = WorkspaceAgentChatService(workspace_dir=Path(td), adapter=InterruptAdapter())
+
+            self.assertTrue(service.interrupt())
+
     @patch("ai_mime.agent_runner.adapters.claude_sdk.list_sessions", return_value=[])
     @patch("ai_mime.agent_runner.adapters.claude_sdk.query")
     def test_claude_adapter_clears_invalid_session_id(self, mock_query, mock_list_sessions) -> None:
@@ -1296,7 +1315,7 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertIn("-c", cmd)
             self.assertIn('mcp_servers.cua.url="http://127.0.0.1:58840/mcp/"', cmd)
             self.assertIn("mcp_servers.cua.required=true", cmd)
-            self.assertIn('mcp_servers.cua.default_tools_approval_mode="auto"', cmd)
+            self.assertIn('mcp_servers.cua.default_tools_approval_mode="approve"', cmd)
             self.assertIn("-m", cmd)
             self.assertIn("gpt-test", cmd)
             self.assertIn("--output-schema", cmd)
@@ -1354,6 +1373,22 @@ class AgentRunnerTests(unittest.TestCase):
 
         events = parse_codex_jsonl(
             [
+                json.dumps({"type": "thread.started", "thread_id": "codex-thread"}),
+                json.dumps({"type": "turn.started"}),
+                json.dumps({"type": "item.completed", "item": {"id": "a1", "type": "agent_message", "text": "OK"}}),
+                json.dumps(
+                    {
+                        "type": "item.started",
+                        "item": {
+                            "id": "mcp1",
+                            "type": "mcp_tool_call",
+                            "server": "cua",
+                            "tool": "computer_get_window_state",
+                            "arguments": {},
+                        },
+                    }
+                ),
+                json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}}),
                 json.dumps({"msg": {"type": "text", "content": "hello"}}),
                 json.dumps({"msg": {"type": "tool_use", "id": "t1", "name": "shell", "input": {"command": "ls"}}}),
                 json.dumps({"msg": {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}}),
@@ -1362,12 +1397,17 @@ class AgentRunnerTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(events[0], {"event": "text", "text": "hello"})
-        self.assertEqual(events[1]["event"], "tool_use")
-        self.assertEqual(events[1]["name"], "shell")
-        self.assertEqual(events[2]["event"], "tool_result")
-        self.assertEqual(events[3]["event"], "done")
-        self.assertEqual(events[3]["session_id"], "s1")
+        self.assertEqual(events[0], {"event": "session_started", "session_id": "codex-thread"})
+        self.assertEqual(events[1], {"event": "text", "text": "OK"})
+        self.assertEqual(events[2]["event"], "tool_use")
+        self.assertEqual(events[2]["name"], "computer_get_window_state")
+        self.assertEqual(events[2]["input"], {"server": "cua"})
+        self.assertEqual(events[3], {"event": "text", "text": "hello"})
+        self.assertEqual(events[4]["event"], "tool_use")
+        self.assertEqual(events[4]["name"], "shell")
+        self.assertEqual(events[5]["event"], "tool_result")
+        self.assertEqual(events[6]["event"], "done")
+        self.assertEqual(events[6]["session_id"], "s1")
 
     def test_codex_runtime_does_not_require_openai_api_key(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime

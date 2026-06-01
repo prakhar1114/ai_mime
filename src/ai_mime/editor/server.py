@@ -27,6 +27,7 @@ from ai_mime.screenshot import ScreenshotRecorder
 from ai_mime.debug_log import log
 from ai_mime.agent_runner import AgentBusyError, WorkflowSkillBuildService, WorkspaceAgentChatService
 from ai_mime.app_data import workflow_runtime_env
+from ai_mime.provider_settings import provider_settings_status, save_provider_settings
 
 EDITOR_SERVER_PORT = 58838
 
@@ -805,6 +806,32 @@ def create_app(
         if app_command_queue is not None:
             app_command_queue.put({"type": "toggle_conversation_overlay"})
         return {"ok": True}
+
+    @app.get("/api/settings/provider")
+    def api_provider_settings():
+        return provider_settings_status()
+
+    @app.post("/api/settings/provider")
+    def api_update_provider_settings(payload: dict[str, Any] = Body(...)):
+        nonlocal agent_service
+        provider = payload.get("provider")
+        if not isinstance(provider, str):
+            raise HTTPException(status_code=400, detail="provider must be anthropic or openai")
+        api_key = payload.get("api_key")
+        if api_key is not None and not isinstance(api_key, str):
+            raise HTTPException(status_code=400, detail="api_key must be a string or null")
+        try:
+            status = save_provider_settings(provider, api_key=api_key)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        agent_service = WorkspaceAgentChatService()
+        task_agent_services.clear()
+        replay_agent_services.clear()
+        skill_build_services.clear()
+        return status
 
     @app.get("/api/agent/sessions")
     def api_agent_sessions():

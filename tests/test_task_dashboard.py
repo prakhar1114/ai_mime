@@ -15,6 +15,14 @@ from ai_mime.agent_runner import AgentRunRequest, AgentRunResult, WorkspaceAgent
 from ai_mime.reflect.workflow import reflect_session
 
 
+class FakeDashboardAdapter:
+    id = "claude_code"
+    label = "Claude Code"
+
+    def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+        return AgentRunResult(status="success", session_id=request.session_id or "session-1", summary="agent reply")
+
+
 class TaskDashboardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -416,6 +424,128 @@ class TaskDashboardTests(unittest.TestCase):
         response = client.get("/tasks")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("Agent Mode", response.text)
+        self.assertIn("Provider", response.text)
+
+    def test_provider_settings_api_reports_status(self) -> None:
+        app = create_app(
+            workflows_root=self.workflows,
+            recordings_root=self.recordings,
+            agent_chat_service=WorkspaceAgentChatService(
+                workspace_dir=self.workflows,
+                adapter=FakeDashboardAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            ),
+        )
+        client = TestClient(app)
+
+        with patch(
+            "ai_mime.editor.server.provider_settings_status",
+            return_value={
+                "provider": "anthropic",
+                "providers": {
+                    "anthropic": {"available": True, "label": "Anthropic / Claude Code"},
+                    "openai": {"available": False, "label": "OpenAI / Codex"},
+                },
+            },
+        ):
+            response = client.get("/api/settings/provider")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["provider"], "anthropic")
+
+    def test_provider_settings_api_updates_provider_and_rebuilds_services(self) -> None:
+        created_services: list[WorkspaceAgentChatService] = []
+
+        class FakeService:
+            def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                created_services.append(self)  # type: ignore[arg-type]
+
+            def status(self):  # type: ignore[no-untyped-def]
+                return {"active_session_id": None, "sessions": [], "models": []}
+
+            def list_models(self):  # type: ignore[no-untyped-def]
+                return {"models": []}
+
+        app = create_app(
+            workflows_root=self.workflows,
+            recordings_root=self.recordings,
+            agent_chat_service=WorkspaceAgentChatService(
+                workspace_dir=self.workflows,
+                adapter=FakeDashboardAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            ),
+        )
+        client = TestClient(app)
+
+        with patch(
+            "ai_mime.editor.server.save_provider_settings",
+            return_value={"provider": "openai", "providers": {}},
+        ) as save, patch("ai_mime.editor.server.WorkspaceAgentChatService", FakeService):
+            response = client.post("/api/settings/provider", json={"provider": "openai", "api_key": "sk-test"})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        save.assert_called_once_with("openai", api_key="sk-test")
+        self.assertEqual(response.json()["provider"], "openai")
+        self.assertEqual(len(created_services), 1)
+
+    def test_provider_settings_helper_writes_provider_and_api_key(self) -> None:
+        from ai_mime import provider_settings
+
+        config_path = self.root / "user_config.yml"
+        env_path = self.root / ".env"
+        with patch("ai_mime.provider_settings.get_user_config_path", return_value=config_path), patch(
+            "ai_mime.provider_settings.get_env_path",
+            return_value=env_path,
+        ), patch.dict("os.environ", {}, clear=True), patch(
+            "ai_mime.provider_settings._provider_runtime_status",
+            return_value=(False, "runtime unavailable"),
+        ):
+            status = provider_settings.save_provider_settings("openai", api_key="sk-test")
+
+        self.assertEqual(status["provider"], "openai")
+        self.assertEqual(config_path.read_text(encoding="utf-8"), "config_version: 1\nprovider: openai\n")
+        self.assertIn("OPENAI_API_KEY=sk-test", env_path.read_text(encoding="utf-8"))
+
+    def test_provider_settings_helper_allows_runtime_login_without_key(self) -> None:
+        from ai_mime import provider_settings
+
+        config_path = self.root / "user_config.yml"
+        env_path = self.root / ".env"
+        with patch("ai_mime.provider_settings.get_user_config_path", return_value=config_path), patch(
+            "ai_mime.provider_settings.get_env_path",
+            return_value=env_path,
+        ), patch.dict("os.environ", {}, clear=True), patch(
+            "ai_mime.provider_settings._provider_runtime_status",
+            return_value=(True, "Codex login detected"),
+        ):
+            status = provider_settings.save_provider_settings("openai")
+
+        self.assertEqual(status["provider"], "openai")
+        self.assertEqual(config_path.read_text(encoding="utf-8"), "config_version: 1\nprovider: openai\n")
+
+    def test_provider_settings_helper_rejects_unavailable_provider(self) -> None:
+        from ai_mime import provider_settings
+
+        config_path = self.root / "user_config.yml"
+        env_path = self.root / ".env"
+        with patch("ai_mime.provider_settings.get_user_config_path", return_value=config_path), patch(
+            "ai_mime.provider_settings.get_env_path",
+            return_value=env_path,
+        ), patch.dict("os.environ", {}, clear=True), patch(
+            "ai_mime.provider_settings._provider_runtime_status",
+            return_value=(False, "Codex login check failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Codex login check failed"):
+                provider_settings.save_provider_settings("openai")
+        self.assertFalse(config_path.exists())
+
+    def test_provider_settings_helper_rejects_unknown_provider(self) -> None:
+        from ai_mime import provider_settings
+
+        with self.assertRaisesRegex(ValueError, "provider must be anthropic or openai"):
+            provider_settings.save_provider_settings("custom")
 
 
 if __name__ == "__main__":

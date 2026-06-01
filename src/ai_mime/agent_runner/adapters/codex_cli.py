@@ -15,6 +15,8 @@ from ai_mime.agent_runner.adapters.base import AgentRuntime, AgentRuntimeCapabil
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.app_data import workflow_runtime_env
 
+_CODEX_STDOUT_LIMIT = 128 * 1024 * 1024
+
 
 def _extract_text(value: Any) -> str:
     if value is None:
@@ -48,9 +50,37 @@ def codex_json_event_to_agent_event(obj: dict[str, Any]) -> AgentStreamEvent | N
     event_type = str(msg.get("type") or obj.get("type") or "").strip()
     event_type_l = event_type.lower()
 
+    if event_type_l == "thread.started":
+        session_id = msg.get("thread_id") or obj.get("thread_id")
+        return {"event": "session_started", "session_id": str(session_id or "")}
+
     if event_type_l in {"error", "turn_error", "exec_error"} or msg.get("error"):
         message = _extract_text(msg.get("message") or msg.get("error") or msg.get("content"))
         return {"event": "error", "message": message or "Codex CLI reported an error."}
+
+    if event_type_l in {"item.completed", "item.started"} and isinstance(msg.get("item"), dict):
+        item = msg["item"]
+        item_type = str(item.get("type") or "").lower()
+        if item_type == "agent_message":
+            text = _extract_text(item.get("text") or item.get("content"))
+            return {"event": "text", "text": text} if text else None
+        if "tool" in item_type or "command" in item_type:
+            if event_type_l == "item.completed":
+                return None
+            name = str(item.get("name") or item.get("tool") or item.get("tool_name") or item.get("command") or item_type or "tool")
+            input_data = item.get("input") or item.get("arguments") or {}
+            if not isinstance(input_data, dict):
+                input_data = {"value": input_data}
+            if item.get("command") and "command" not in input_data:
+                input_data["command"] = item.get("command")
+            if item.get("server") and "server" not in input_data:
+                input_data["server"] = item.get("server")
+            return {
+                "event": "tool_use",
+                "id": str(item.get("id") or ""),
+                "name": name,
+                "input": input_data,
+            }
 
     if event_type_l in {"text", "agent_message", "assistant_message", "response.output_text.delta"}:
         text = _extract_text(msg.get("text") or msg.get("content") or msg.get("message") or msg.get("delta"))
@@ -78,6 +108,9 @@ def codex_json_event_to_agent_event(obj: dict[str, Any]) -> AgentStreamEvent | N
             "is_error": bool(msg.get("is_error") or msg.get("error")),
         }
 
+    if event_type_l == "turn.completed":
+        return None
+
     if event_type_l in {"done", "turn_complete", "task_complete", "completed", "result"}:
         status = "failed" if msg.get("is_error") or msg.get("error") else "success"
         summary = _extract_text(msg.get("summary") or msg.get("result") or msg.get("final_response") or msg.get("content"))
@@ -103,6 +136,8 @@ def parse_codex_jsonl(lines: Iterable[str]) -> list[AgentStreamEvent]:
     for line in lines:
         text = line.strip()
         if not text:
+            continue
+        if '"type":"item.completed"' in text[:80] and '"mcp_tool_call"' in text[:256]:
             continue
         try:
             obj = json.loads(text)
@@ -238,7 +273,7 @@ def _codex_mcp_config_overrides(mcp_servers: dict[str, dict[str, Any]] | None) -
             overrides.extend([
                 f"{prefix}.url={_toml_literal(url)}",
                 f"{prefix}.required=true",
-                f"{prefix}.default_tools_approval_mode={_toml_literal('auto')}",
+                f"{prefix}.default_tools_approval_mode={_toml_literal('approve')}",
             ])
             continue
 
@@ -255,7 +290,7 @@ def _codex_mcp_config_overrides(mcp_servers: dict[str, dict[str, Any]] | None) -
                 f"{prefix}.command={_toml_literal(command)}",
                 f"{prefix}.args={_toml_literal(args)}",
                 f"{prefix}.required=true",
-                f"{prefix}.default_tools_approval_mode={_toml_literal('auto')}",
+                f"{prefix}.default_tools_approval_mode={_toml_literal('approve')}",
             ])
             continue
 
@@ -349,8 +384,10 @@ class CodexCliRuntime(AgentRuntime):
                 stdout, stderr = proc.communicate(prompt)
                 events = parse_codex_jsonl(stdout.splitlines())
                 text_parts = [str(e.get("text") or "") for e in events if e.get("event") == "text"]
+                session_events = [e for e in events if e.get("event") == "session_started"]
                 done_events = [e for e in events if e.get("event") == "done"]
                 last_done = done_events[-1] if done_events else {}
+                last_session = session_events[-1] if session_events else {}
                 summary = "\n".join(part for part in text_parts if part).strip()
                 if output_path.exists():
                     summary = output_path.read_text(encoding="utf-8").strip() or summary
@@ -359,7 +396,7 @@ class CodexCliRuntime(AgentRuntime):
                 if self._interrupted:
                     status = "cancelled"
                 error = None if status == "success" else (stderr.strip() or str(last_done.get("error") or "Codex CLI request failed."))
-                session_id = str(last_done.get("session_id") or request.session_id or "")
+                session_id = str(last_done.get("session_id") or last_session.get("session_id") or request.session_id or "")
                 return AgentRunResult(
                     status=status,  # type: ignore[arg-type]
                     session_id=session_id,
@@ -392,6 +429,7 @@ class CodexCliRuntime(AgentRuntime):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=_CODEX_STDOUT_LIMIT,
         )
         self._active_process = proc
         self._interrupted = False
@@ -412,6 +450,8 @@ class CodexCliRuntime(AgentRuntime):
                 for event in events:
                     if event.get("event") == "text":
                         text_parts.append(str(event.get("text") or ""))
+                    if event.get("event") == "session_started" and event.get("session_id"):
+                        final_session_id = str(event.get("session_id") or final_session_id)
                     if event.get("event") == "done" and event.get("session_id"):
                         final_session_id = str(event.get("session_id") or final_session_id)
                     yield event

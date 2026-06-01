@@ -302,7 +302,7 @@ class WorkspaceAgentChatService:
         client = self._active_client
         loop = self._active_loop
         if client is None or loop is None:
-            return False
+            return self.adapter.interrupt()
         try:
             fut = asyncio.run_coroutine_threadsafe(client.interrupt(), loop)
             fut.result(timeout=5)

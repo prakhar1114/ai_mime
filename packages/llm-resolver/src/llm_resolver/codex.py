@@ -86,6 +86,31 @@ def _parse_json_output(text: str, *, where: str) -> Any:
         raise RuntimeError(f"{where}: Codex output was not valid JSON: {value[:500]}")
 
 
+def _codex_output_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Codex/OpenAI structured outputs require strict object schemas."""
+    normalized = json.loads(json.dumps(schema))
+
+    def visit(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        node_type = node.get("type")
+        if node_type == "object" or "properties" in node:
+            node.setdefault("additionalProperties", False)
+        for child in node.get("properties", {}).values():
+            visit(child)
+        if "items" in node:
+            visit(node["items"])
+        for key in ("anyOf", "oneOf", "allOf"):
+            for child in node.get(key, []):
+                visit(child)
+        for key in ("$defs", "definitions"):
+            for child in node.get(key, {}).values():
+                visit(child)
+
+    visit(normalized)
+    return normalized
+
+
 def run_codex_structured(
     *,
     messages: list[dict[str, Any]],
@@ -103,7 +128,7 @@ def run_codex_structured(
         tmp_dir = Path(td)
         schema_path = tmp_dir / "schema.json"
         output_path = tmp_dir / "last-message.json"
-        schema_path.write_text(json.dumps(response_schema), encoding="utf-8")
+        schema_path.write_text(json.dumps(_codex_output_schema(response_schema)), encoding="utf-8")
         prompt, images = _messages_to_codex_prompt(messages, tmp_dir)
 
         cmd = [
@@ -124,12 +149,13 @@ def run_codex_structured(
             cmd.extend(["-m", model.split("/", 1)[1] if model.startswith("openai/") else model])
         for image in images:
             cmd.extend(["-i", str(image)])
-        cmd.append(prompt)
+        cmd.append("-")
 
         proc = subprocess.run(
             cmd,
             cwd=str(tmp_dir),
             env=dict(os.environ),
+            input=prompt,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -137,7 +163,7 @@ def run_codex_structured(
             check=False,
         )
         if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "").strip()
+            detail = "\n".join(part for part in (proc.stdout.strip(), proc.stderr.strip()) if part)
             raise RuntimeError(f"{where}: Codex failed with exit code {proc.returncode}: {detail}")
         if output_path.exists():
             return _parse_json_output(output_path.read_text(encoding="utf-8"), where=where)
@@ -149,6 +175,10 @@ def run_codex_structured(
                 continue
             if isinstance(obj, dict):
                 msg = obj.get("msg") if isinstance(obj.get("msg"), dict) else obj
+                if msg.get("type") in {"item.completed", "item.started"} and isinstance(msg.get("item"), dict):
+                    item = msg["item"]
+                    if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+                        return _parse_json_output(item["text"], where=where)
                 for key in ("result", "summary", "content", "message", "final_response"):
                     if isinstance(msg.get(key), str):
                         return _parse_json_output(str(msg[key]), where=where)

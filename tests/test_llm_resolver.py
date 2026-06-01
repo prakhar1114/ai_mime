@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import importlib
 import sys
@@ -300,6 +301,62 @@ class LLMResolverConfigTests(unittest.TestCase):
         fallback.assert_called_once()
         self.assertEqual(fallback.call_args.kwargs["where"], "ask_llm")
         self.assertEqual(fallback.call_args.kwargs["model"], "openai/test-runtime")
+
+    def test_codex_structured_sends_prompt_on_stdin(self) -> None:
+        from llm_resolver.codex import run_codex_structured
+
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            captured["cmd"] = cmd
+            captured["input"] = kwargs.get("input")
+            schema_path = Path(cmd[cmd.index("--output-schema") + 1])
+            captured["schema"] = json.loads(schema_path.read_text(encoding="utf-8"))
+            output_path = Path(cmd[cmd.index("-o") + 1])
+            output_path.write_text('{"ok": true}', encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("llm_resolver.codex._codex_exe", return_value="/bin/codex"), patch(
+            "llm_resolver.codex.subprocess.run",
+            side_effect=fake_run,
+        ):
+            result = run_codex_structured(
+                messages=[{"role": "user", "content": "Return ok"}],
+                response_schema={"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+                where="codex test",
+                model="openai/gpt-5.5",
+            )
+
+        cmd = captured["cmd"]
+        self.assertIsInstance(cmd, list)
+        self.assertEqual(cmd[-1], "-")
+        self.assertEqual(captured["input"], "Return ok")
+        self.assertEqual(captured["schema"]["additionalProperties"], False)
+        self.assertEqual(result, {"ok": True})
+
+    def test_codex_structured_parses_current_jsonl_fallback(self) -> None:
+        from llm_resolver.codex import run_codex_structured
+
+        stdout = "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "codex-thread"}),
+                json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": '{"ok": true}'}}),
+                json.dumps({"type": "turn.completed"}),
+            ]
+        )
+
+        with patch("llm_resolver.codex._codex_exe", return_value="/bin/codex"), patch(
+            "llm_resolver.codex.subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout=stdout, stderr=""),
+        ):
+            result = run_codex_structured(
+                messages=[{"role": "user", "content": "Return ok"}],
+                response_schema={"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+                where="codex test",
+                model="openai/gpt-5.5",
+            )
+
+        self.assertEqual(result, {"ok": True})
 
     def test_ask_llm_missing_anthropic_key_passes_configured_model_to_claude_code(self) -> None:
         with tempfile.TemporaryDirectory() as td:
