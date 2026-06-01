@@ -86,6 +86,10 @@ def start_app():
     if not get_onboarding_done_path().exists():
         log("start_app: running onboarding")
         run_onboarding()
+        if not get_onboarding_done_path().exists():
+            log("start_app: onboarding was not completed. Exiting.")
+            import sys
+            sys.exit(0)
 
     # Reload .env so that any key written by onboarding is live.
     load_dotenv(get_env_path(), override=True)

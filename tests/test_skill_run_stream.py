@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import queue
 import stat
 import tempfile
+import threading
+import time
 import textwrap
 import unittest
 from pathlib import Path
@@ -170,6 +173,67 @@ class SkillRunStreamTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400, response.text)
         self.assertIn("run.sh is not executable", response.text)
+
+    def test_skill_kill_terminates_process_group_children(self) -> None:
+        child_started = self.workflow / "child-started.txt"
+        child_survived = self.workflow / "child-survived.txt"
+        self._write_run_sh(
+            f'''
+            python3 - <<'PY' &
+            import pathlib, time
+            pathlib.Path({str(child_started)!r}).write_text("started", encoding="utf-8")
+            time.sleep(2)
+            pathlib.Path({str(child_survived)!r}).write_text("survived", encoding="utf-8")
+            PY
+            child=$!
+            echo "child:$child"
+            wait "$child"
+            '''
+        )
+        client = self._client()
+        seen: queue.Queue[dict | Exception] = queue.Queue()
+
+        def _consume_stream() -> None:
+            try:
+                with client.stream(
+                    "POST",
+                    f"/api/tasks/{self.task_id}/skill/run/stream",
+                    json={"params": {}},
+                ) as response:
+                    self.assertEqual(response.status_code, 200)
+                    for line in response.iter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        seen.put(json.loads(line[5:].strip()))
+            except Exception as e:
+                seen.put(e)
+
+        thread = threading.Thread(target=_consume_stream, daemon=True)
+        thread.start()
+
+        deadline = time.monotonic() + 3
+        while not child_started.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(child_started.exists(), "child process did not start")
+
+        kill_response = client.post(f"/api/tasks/{self.task_id}/skill/kill")
+
+        self.assertEqual(kill_response.status_code, 200, kill_response.text)
+        self.assertEqual(kill_response.json()["ok"], True)
+        thread.join(timeout=3)
+        self.assertFalse(thread.is_alive(), "run stream did not finish after kill")
+        time.sleep(2.2)
+        self.assertFalse(child_survived.exists(), "child process survived skill kill")
+
+        events: list[dict] = []
+        while not seen.empty():
+            item = seen.get()
+            if isinstance(item, Exception):
+                raise item
+            events.append(item)
+        done = [event for event in events if event.get("event") == "done"][-1]
+        self.assertFalse(done["success"])
+        self.assertNotEqual(done["exit_code"], 0)
 
     def test_replay_agent_sessions_endpoint_is_task_scoped(self) -> None:
         (self.workflow / "optimized_plan.json").write_text(

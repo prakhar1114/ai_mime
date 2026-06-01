@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import stat
@@ -1685,6 +1686,34 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertTrue(any("tool_use: computer_get_window_state" in line for line in result.logs))
         self.assertFalse(any("tool_result:" in line for line in result.logs))
         self.assertEqual(result.result_json, {"ok": True})
+
+    def test_computer_use_runtime_streams_event_logs_to_stderr(self) -> None:
+        from ai_mime.agent_runner.computer_use import _run_agent_runtime_computer_use_task_async
+
+        class FakeRuntime:
+            async def stream_chat(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                yield {"event": "text", "text": "looking"}
+                yield {"event": "tool_use", "id": "tool-1", "name": "computer_get_window_state", "input": {"app": "Safari"}}
+                yield {"event": "done", "session_id": "cua-session", "status": "success", "summary": "done"}
+
+        stderr = io.StringIO()
+        with patch("ai_mime.agent_runner.computer_use.get_agent_runtime", return_value=FakeRuntime()), patch(
+            "ai_mime.agent_runner.computer_use.sys.stderr",
+            stderr,
+        ):
+            result = asyncio.run(
+                _run_agent_runtime_computer_use_task_async(
+                    "inspect",
+                    runtime_id="claude_code",
+                    model="anthropic/claude-opus-4-8",
+                )
+            )
+
+        streamed = stderr.getvalue()
+        self.assertEqual(result.status, "success")
+        self.assertIn("assistant: looking", streamed)
+        self.assertIn("tool_use: computer_get_window_state input={'app': 'Safari'}", streamed)
+        self.assertIn("assistant: looking", "\n".join(result.logs))
 
 
 if __name__ == "__main__":

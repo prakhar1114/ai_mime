@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -144,6 +145,7 @@ async def _run_agent_runtime_computer_use_task_async(
     def record(line: str) -> None:
         log_line = f"[{datetime.now().strftime('%H:%M:%S')}] {line}"
         logs.append(log_line)
+        print(log_line, file=sys.stderr, flush=True)
         debug_log(f"[computer-use] {log_line}")
 
     async for event in runtime.stream_chat(
