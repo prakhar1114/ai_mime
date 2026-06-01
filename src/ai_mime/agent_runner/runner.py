@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Protocol
 
-from ai_mime.agent_runner.adapters.claude_sdk import cua_mcp_servers
+from ai_mime.agent_runner.mcp import cua_mcp_servers
 from ai_mime.agent_runner.models import (
     AgentProvider,
     AgentRunMode,
@@ -178,8 +178,8 @@ def _filesystem_access_from_plan(optimized_plan: dict) -> FilesystemAccess:
 def build_agent_run_request(
     *,
     workflow_dir: str | Path,
+    mode: AgentRunMode,
     provider: AgentProvider = "claude",
-    mode: AgentRunMode = "execute_optimized_plan",
     model: str | None = None,
     session_id: str | None = None,
 ) -> AgentRunRequest:
@@ -414,31 +414,7 @@ Existing memory:
 {memory}
 """
 
-    return f"""You are the task agent for this AI Mime workflow.
-
-Mode: {request.mode}
-Workflow directory: {request.workflow_dir}
-Schema: {request.schema_path}
-Optimized plan: {request.optimized_plan_path}
-Memory file: {memory_path}
-
-Read only the schema, optimized plan, current memory, and existing skill files if present.
-Use the provided readable/writable roots as the permission boundary.
-Write the latest machine-readable result to outputs/result.json and a human-readable summary to outputs/README.md.
-Do not create per-run result directories unless debug artifacts are explicitly requested.
-
-Resolved Claude skills:
-{skill_context}
-
-Readable roots:
-{json.dumps([str(p) for p in request.readable_roots], indent=2)}
-
-Writable roots:
-{json.dumps([str(p) for p in request.writable_roots], indent=2)}
-
-Existing memory:
-{memory}
-"""
+    raise ValueError(f"Unsupported agent mode: {request.mode}")
 
 
 def run_agent_task(request: AgentRunRequest, adapter: AgentAdapter, prompt: str | None = None) -> AgentRunResult:

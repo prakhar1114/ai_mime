@@ -99,9 +99,12 @@ def _write_workflow(workflow_dir: Path, schema: dict, plan: dict) -> Path:
 
 
 def _build_service(workflow_dir: Path) -> WorkflowSkillBuildService:
+    class UnusedAdapter:
+        id = "claude_code"
+
     return WorkflowSkillBuildService(
         workflow_dir=workflow_dir,
-        adapter=object(),  # never invoked in these tests
+        adapter=UnusedAdapter(),  # never invoked in these tests
         session_lister=lambda _dir: [],
         message_loader=lambda _sid, _dir: [],
     )
@@ -224,9 +227,12 @@ class WorkflowSkillBuildServiceTests(unittest.TestCase):
             self.assertFalse((workflow_dir / "agent" / "build_signal.json").exists())
 
     def test_chat_stream_runs_without_turn_lock(self) -> None:
-        async def fake_stream_chat(*_args, **_kwargs):
-            yield {"event": "text", "text": "ok"}
-            yield {"event": "done", "status": "success", "session_id": "skill-session-1", "summary": "done"}
+        class StreamAdapter:
+            id = "claude_code"
+
+            async def stream_chat(self, *_args, **_kwargs):
+                yield {"event": "text", "text": "ok"}
+                yield {"event": "done", "status": "success", "session_id": "skill-session-1", "summary": "done"}
 
         async def collect_events(service: WorkflowSkillBuildService) -> list[dict]:
             return [event async for event in service.chat_stream(message="continue build")]
@@ -234,10 +240,13 @@ class WorkflowSkillBuildServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             workflow_dir = Path(td)
             _write_workflow(workflow_dir, _schema(), _optimized_plan())
-            service = _build_service(workflow_dir)
-
-            with patch("ai_mime.agent_runner.skill_build_chat.stream_chat", new=fake_stream_chat):
-                events = asyncio.run(collect_events(service))
+            service = WorkflowSkillBuildService(
+                workflow_dir=workflow_dir,
+                adapter=StreamAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+            events = asyncio.run(collect_events(service))
 
             self.assertEqual(events[-1]["event"], "done")
             self.assertEqual(events[-1]["session_id"], "skill-session-1")

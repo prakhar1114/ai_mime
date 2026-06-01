@@ -10,13 +10,9 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 from ai_mime.agent_runner.adapters.claude_sdk import (
-    ClaudeAgentSdkAdapter,
-    list_claude_sessions,
-    load_claude_session_messages,
-    stream_chat,
     to_permission_result,
 )
-from ai_mime.agent_runner.chat import AgentBusyError, DEFAULT_CLAUDE_MODEL_OPTIONS
+from ai_mime.agent_runner.chat import AgentBusyError, agent_config_for_flow, configured_agent_runtime, model_options_from_config
 from ai_mime.agent_runner.models import AgentRunRequest
 from ai_mime.agent_runner.runner import (
     BUILD_SIGNAL_FILENAME,
@@ -28,6 +24,8 @@ from ai_mime.agent_runner.runner import (
     run_skill_e2e_test,
     validate_skill_package,
 )
+from ai_mime.user_config import load_user_config
+from llm_resolver import runtime_model_name
 
 
 def _utc_now() -> str:
@@ -53,9 +51,13 @@ class WorkflowSkillBuildService:
         self.workflow_dir = Path(workflow_dir)
         self.agent_dir = self.workflow_dir / "agent"
         self.signal_path = self.agent_dir / BUILD_SIGNAL_FILENAME
-        self.adapter = adapter or ClaudeAgentSdkAdapter()
-        self.session_lister = session_lister or list_claude_sessions
-        self.message_loader = message_loader or load_claude_session_messages
+        self.agent_flow = "skill_build"
+        self.config = None if adapter is not None else load_user_config()
+        self.agent_config = None if self.config is None else agent_config_for_flow(self.config, self.agent_flow)
+        self.adapter = adapter or configured_agent_runtime(self.config, flow=self.agent_flow)
+        self.runtime_id = self.adapter.id
+        self.session_lister = session_lister or self.adapter.list_sessions
+        self.message_loader = message_loader or self.adapter.load_messages
         if bash_requires_approval is None:
             env_val = (os.getenv("AI_MIME_BASH_REQUIRES_APPROVAL") or "").strip().lower()
             bash_requires_approval = env_val in ("1", "true", "yes", "on")
@@ -65,7 +67,6 @@ class WorkflowSkillBuildService:
         self._pending_permissions: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._session_bash_allow_all: bool = False
         self.model_options = self._load_model_options()
-        self.default_model = self.model_options[0]["id"] if self.model_options else "default"
         self._terminal_status: str | None = None
 
     def status(self) -> dict[str, Any]:
@@ -77,7 +78,6 @@ class WorkflowSkillBuildService:
             "active_session_id": active_session_id,
             "sessions": self.list_sessions(),
             "models": self.model_options,
-            "default_model": self.default_model,
             "bash_requires_approval": self.bash_requires_approval,
             "terminal_status": self._terminal_status,
             "skill_dir": str(skill_dir),
@@ -92,7 +92,7 @@ class WorkflowSkillBuildService:
         return self.bash_requires_approval
 
     def list_models(self) -> dict[str, Any]:
-        return {"models": self.model_options, "default_model": self.default_model}
+        return {"models": self.model_options}
 
     def list_sessions(self) -> list[dict[str, Any]]:
         index = self._read_index()
@@ -125,7 +125,7 @@ class WorkflowSkillBuildService:
                     "source": "claude",
                 }
         except Exception as e:
-            return [{"session_id": "", "summary": f"Failed to list Claude sessions: {e}", "error": str(e)}]
+            return [{"session_id": "", "summary": f"Failed to list {self.adapter.label} sessions: {e}", "error": str(e)}]
         return sorted(
             out_by_id.values(),
             key=lambda x: str(x.get("updated_at") or x.get("last_modified") or ""),
@@ -152,7 +152,7 @@ class WorkflowSkillBuildService:
             raise ValueError("message must be non-empty")
         if self._terminal_status:
             raise AgentBusyError(f"Skill build already concluded ({self._terminal_status}); start a new workflow build to continue")
-        selected_model = self._validate_model(model)
+        selected_model = self._model_for_request(model)
 
         resume_id = session_id if session_id and not session_id.startswith("draft-") else None
         request = self._build_request(session_id=resume_id, model=selected_model)
@@ -206,7 +206,7 @@ class WorkflowSkillBuildService:
             try:
                 with tempfile.TemporaryDirectory(prefix="ai-mime-skill-build-") as td:
                     local_request = request.model_copy(update={"temp_dir": Path(td)})
-                    async for event in stream_chat(
+                    async for event in self.adapter.stream_chat(
                         local_request,
                         text,
                         can_use_tool=can_use_tool,
@@ -471,7 +471,7 @@ class WorkflowSkillBuildService:
         base = build_agent_run_request(
             workflow_dir=self.workflow_dir,
             mode="build_skill_chat",
-            provider="claude",
+            provider=self.runtime_id if self.runtime_id in {"claude", "claude_code", "codex_cli"} else "claude",
             model=model,
             session_id=session_id,
         )
@@ -525,23 +525,18 @@ class WorkflowSkillBuildService:
         self._write_index(index)
         self._write_active({"session_id": session_id, "model": model, "updated_at": now})
 
-    def _validate_model(self, model: str | None) -> str:
-        value = (model or self.default_model).strip()
-        allowed = {item["id"] for item in self.model_options}
-        if value not in allowed:
-            raise ValueError(f"Unsupported Claude model: {value}")
-        return value
+    def _model_for_request(self, model: str | None) -> str | None:
+        if self.config is None:
+            value = (model or "").strip()
+            return value or None
+        assert self.agent_config is not None
+        configured_model = str(getattr(self.agent_config, "model", "") or "").strip()
+        return runtime_model_name(configured_model) or None
 
     def _load_model_options(self) -> list[dict[str, str]]:
-        raw = (os.getenv("AI_MIME_CLAUDE_MODELS") or "").strip()
-        if not raw:
-            return list(DEFAULT_CLAUDE_MODEL_OPTIONS)
-        options: list[dict[str, str]] = []
-        for item in raw.split(","):
-            model_id = item.strip()
-            if model_id:
-                options.append({"id": model_id, "label": model_id, "description": "Configured by AI_MIME_CLAUDE_MODELS."})
-        return options or list(DEFAULT_CLAUDE_MODEL_OPTIONS)
+        if self.config is None:
+            return []
+        return model_options_from_config(self.config, flow=self.agent_flow)
 
     def _read_index(self) -> dict[str, Any]:
         path = self._agent_sessions_path()

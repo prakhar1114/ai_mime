@@ -327,6 +327,8 @@ class TaskDashboardTests(unittest.TestCase):
         seen_models: list[str | None] = []
 
         class ChatAdapter:
+            id = "claude_code"
+
             def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
                 seen_models.append(request.model)
                 return AgentRunResult(status="success", session_id=request.session_id or "session-1", summary="agent reply")
@@ -354,19 +356,19 @@ class TaskDashboardTests(unittest.TestCase):
 
         models = client.get("/api/agent/models")
         self.assertEqual(models.status_code, 200, models.text)
-        self.assertTrue(any(item["id"] == "sonnet" for item in models.json()["models"]))
+        self.assertEqual(models.json()["models"], [])
 
         created = client.post("/api/agent/sessions")
         self.assertEqual(created.status_code, 200, created.text)
         self.assertIsNone(created.json()["session_id"])
         self.assertFalse((self.workflows / ".agent" / "agent_sessions.json").exists())
 
-        chat = client.post("/api/agent/chat", json={"message": "hello", "session_id": None, "model": "opus"})
+        chat = client.post("/api/agent/chat", json={"message": "hello", "session_id": None, "model": None})
         self.assertEqual(chat.status_code, 200, chat.text)
         self.assertEqual(chat.json()["session_id"], "session-1")
         self.assertEqual(chat.json()["assistant_text"], "agent reply")
-        self.assertEqual(chat.json()["model"], "opus")
-        self.assertEqual(seen_models, ["opus"])
+        self.assertIsNone(chat.json()["model"])
+        self.assertEqual(seen_models, [None])
 
         messages = client.get("/api/agent/sessions/session-1/messages")
         self.assertEqual(messages.status_code, 200, messages.text)
@@ -376,6 +378,8 @@ class TaskDashboardTests(unittest.TestCase):
         seen_session_ids: list[str | None] = []
 
         class ChatAdapter:
+            id = "claude_code"
+
             def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
                 seen_session_ids.append(request.session_id)
                 return AgentRunResult(

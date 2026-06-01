@@ -8,8 +8,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from ai_mime.app_data import get_bundled_resource
 
-AgentProvider = Literal["claude"]
-AgentRunMode = Literal["general", "execute_optimized_plan", "build_skill_chat", "replay_execution"]
+AgentProvider = Literal["claude", "claude_code", "codex_cli"]
+AgentRunMode = Literal["general", "build_skill_chat", "replay_execution"]
 AgentRunStatus = Literal["success", "failed", "cancelled", "skill_ready", "skill_unbuildable"]
 
 

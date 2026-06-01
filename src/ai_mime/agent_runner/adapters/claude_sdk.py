@@ -7,7 +7,7 @@ import asyncio
 import json
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Sequence
 
@@ -28,6 +28,7 @@ from claude_agent_sdk import (
     query,
 )
 
+from ai_mime.agent_runner.adapters.base import AgentRuntime, AgentRuntimeCapabilities
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.app_data import is_frozen, workflow_runtime_env
 from ai_mime.debug_log import log as debug_log
@@ -43,20 +44,6 @@ DEFAULT_ENABLED_SKILLS = (
 )
 DEFAULT_SETTING_SOURCES = ["user", "project", "local"]
 AUTO_COMPACT_TOKEN_THRESHOLD = 175_000
-
-# cua-computer-server mounts its MCP server (streamable HTTP) at /mcp on the API
-# server started by cli.start_app; the trailing slash matters and the port must
-# stay in sync with cli.COMPUTER_SERVER_PORT. Shared so the UI agent
-# (computer_use.run_computer_use_task) and the build/replay chat agents
-# (runner.build_agent_run_request) all attach the SAME computer-use tools — the
-# chat agents can then call mcp__cua__computer_* directly for native-UI control.
-CUA_MCP_SERVER_NAME = "cua"
-CUA_MCP_URL = "http://127.0.0.1:58840/mcp/"
-
-
-def cua_mcp_servers() -> dict[str, dict[str, Any]]:
-    """MCP config for cua-computer-server's streamable-HTTP endpoint (mounted at /mcp)."""
-    return {CUA_MCP_SERVER_NAME: {"type": "http", "url": CUA_MCP_URL}}
 
 CanUseToolCallback = Callable[[str, dict[str, Any], Any], Awaitable[Any]]
 
@@ -266,11 +253,37 @@ def _is_valid_session_id(session_id: str | None, workspace_dir: Path) -> bool:
 
 
 @dataclass(frozen=True)
-class ClaudeAgentSdkAdapter:
+class ClaudeCodeRuntime(AgentRuntime):
+    id: str = field(default="claude_code", init=False)
+    label: str = field(default="Claude Code", init=False)
+    capabilities: AgentRuntimeCapabilities = field(
+        default=AgentRuntimeCapabilities(
+            streaming=True,
+            sessions=True,
+            permissions=True,
+            mcp=True,
+            structured_output=False,
+            interrupt=True,
+        ),
+        init=False,
+    )
     allowed_tools: list[str] | None = None
 
     def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
         return asyncio.run(self._run_async(request, prompt))
+
+    async def stream_chat(self, request: AgentRunRequest, prompt: str, **kwargs: Any):
+        async for event in stream_chat(request, prompt, **kwargs):
+            yield event
+
+    def list_sessions(self, directory: Path) -> list[dict[str, Any]]:
+        return list_claude_sessions(directory)
+
+    def load_messages(self, session_id: str, directory: Path) -> list[dict[str, Any]]:
+        return load_claude_session_messages(session_id, directory)
+
+    def interrupt(self) -> bool:
+        return False
 
     async def _run_async(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
         if request.session_id and not _is_valid_session_id(request.session_id, request.workspace_dir):
@@ -304,6 +317,9 @@ class ClaudeAgentSdkAdapter:
 
         summary = "\n".join(assistant_parts).strip() or result_text or "Claude completed the request."
         return AgentRunResult(status=status, session_id=session_id, summary=summary, error=error)
+
+
+ClaudeAgentSdkAdapter = ClaudeCodeRuntime
 
 
 def list_claude_sessions(directory: Path) -> list[dict[str, Any]]:
