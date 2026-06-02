@@ -34,7 +34,7 @@ class PackagingTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for package in ("fastmcp", "mcp", "cua-computer-server"):
+        for package in ("fastmcp", "mcp", "pydocket", "burner-redis", "cua-computer-server"):
             self.assertIn(f'copy_metadata("{package}")', spec)
         for module in (
             "ai_mime.computer_server_custom",
@@ -42,6 +42,10 @@ class PackagingTests(unittest.TestCase):
             "computer_server.main",
             "computer_server.mcp_server",
             "fastmcp",
+            "docket",
+            "docket._redis",
+            "burner_redis",
+            "burner_redis._burner_redis",
             "mcp",
             "mcp.types",
         ):

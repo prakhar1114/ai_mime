@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue as thread_queue
@@ -24,9 +25,9 @@ from fastapi.staticfiles import StaticFiles
 
 from ai_mime.reflect.runner import run_reflect_and_compile_schema
 from ai_mime.screenshot import ScreenshotRecorder
-from ai_mime.debug_log import log
+from ai_mime.debug_log import log, log_server, open_server_log_file
 from ai_mime.agent_runner import AgentBusyError, WorkflowSkillBuildService, WorkspaceAgentChatService
-from ai_mime.app_data import workflow_runtime_env
+from ai_mime.app_data import is_frozen, workflow_runtime_env
 from ai_mime.provider_settings import provider_settings_status, save_provider_settings
 
 EDITOR_SERVER_PORT = 58838
@@ -1580,13 +1581,58 @@ def _run_uvicorn(
     # unless the editor is actually used.
     import uvicorn  # type: ignore[import-not-found]
 
+    if is_frozen():
+        log_server(f"Editor server: child process started, binding {host}:{port}")
+    try:
+        if is_frozen():
+            with open_server_log_file() as server_log_file:
+                with contextlib.redirect_stdout(server_log_file), contextlib.redirect_stderr(server_log_file):
+                    _serve_uvicorn(
+                        uvicorn,
+                        host=host,
+                        port=port,
+                        workflows_root=workflows_root,
+                        recordings_root=recordings_root,
+                        app_command_queue=app_command_queue,
+                        app_state=app_state,
+                    )
+        else:
+            _serve_uvicorn(
+                uvicorn,
+                host=host,
+                port=port,
+                workflows_root=workflows_root,
+                recordings_root=recordings_root,
+                app_command_queue=app_command_queue,
+                app_state=app_state,
+            )
+    except Exception as e:
+        if is_frozen():
+            log_server(f"Editor server: crashed on {host}:{port}: {e}", exc_info=True)
+        raise
+
+
+def _serve_uvicorn(
+    uvicorn: Any,
+    *,
+    host: str,
+    port: int,
+    workflows_root: str,
+    recordings_root: str,
+    app_command_queue: Any | None,
+    app_state: Any | None,
+) -> None:
+    print(
+        f"[ai-mime] editor server starting on http://{host}:{port}",
+        file=sys.stderr,
+        flush=True,
+    )
     app = create_app(
         workflows_root=Path(workflows_root),
         recordings_root=Path(recordings_root),
         app_command_queue=app_command_queue,
         app_state=app_state,
     )
-    # Ensure logs go to the parent terminal (stdout/stderr).
     uvicorn.run(app, host=host, port=port, log_level="info", access_log=True)
 
 
@@ -1619,5 +1665,7 @@ def start_editor_server(
         daemon=False,
     )
     p.start()
+    if is_frozen():
+        log_server(f"Editor server: launched on port {port} (pid {p.pid})")
     print(f"[ai-mime] editor server starting on http://127.0.0.1:{port}", file=sys.stderr)
     return p, port

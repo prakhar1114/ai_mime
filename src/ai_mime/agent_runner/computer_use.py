@@ -24,6 +24,7 @@ COMPUTER_USE_SYSTEM_PROMPT = """You drive this macOS computer through the `cua` 
 ## Operational Rules — FOREGROUND DRIVE
 
 You operate the macOS GUI exclusively in the foreground. Keep the target applications visible, active, and focused.
+Use ONLY the attached `cua` MCP server API/tools to inspect state and perform actions. Do not use any built-in computer-use, browser, shell, file, automation, or other action capability you may have outside the attached `cua` MCP server.
 
 1. **Active Foreground Launch & App Activation**:
    - To start or focus an application, use `computer_launch_app`.

@@ -54,6 +54,8 @@ a = Analysis(
     ]
     + copy_metadata("fastmcp")
     + copy_metadata("mcp")
+    + copy_metadata("pydocket")
+    + copy_metadata("burner-redis")
     + copy_metadata("cua-computer-server"),
     hiddenimports=[
         # --- Cocoa / AppKit stack -------------------------------------------
@@ -118,6 +120,13 @@ a = Analysis(
         "computer_server.main",
         "computer_server.mcp_server",
         "fastmcp",
+        "docket",
+        "docket._redis",
+        "burner_redis",
+        "burner_redis._burner_redis",
+        "burner_redis.pipeline",
+        "burner_redis.lock",
+        "burner_redis.pubsub",
         "mcp",
         "mcp.client",
         "mcp.client.session",
