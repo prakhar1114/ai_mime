@@ -17,10 +17,73 @@ _MIME_EXT = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+_HOST_CLI_DIRS = (
+    ".local/bin",
+    "bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+)
+
+
+def _home_from_env(env: dict[str, str] | None = None) -> Path:
+    raw = (env or os.environ).get("HOME")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home()
+
+
+def _candidate_dirs(home: Path) -> list[str]:
+    dirs: list[str] = []
+    for raw in _HOST_CLI_DIRS:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = home / candidate
+        dirs.append(str(candidate))
+    return dirs
+
+
+def _merge_path(*groups: list[str]) -> str:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for group in groups:
+        for item in group:
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            merged.append(item)
+    return os.pathsep.join(merged)
+
+
+def _codex_env(base_env: dict[str, str] | None = None, *, codex_exe: str | None = None) -> dict[str, str]:
+    env = dict(base_env or os.environ)
+    home = _home_from_env(env)
+    env.setdefault("HOME", str(home))
+    codex_home = home / ".codex"
+    if "CODEX_HOME" not in env and codex_home.exists():
+        env["CODEX_HOME"] = str(codex_home)
+
+    exe_dirs: list[str] = []
+    if codex_exe:
+        exe_dirs.append(str(Path(codex_exe).expanduser().parent))
+    env["PATH"] = _merge_path(
+        (env.get("PATH") or "").split(os.pathsep),
+        exe_dirs,
+        _candidate_dirs(home),
+    )
+    return env
 
 
 def _codex_exe() -> str:
-    exe = shutil.which("codex")
+    home = _home_from_env()
+    search_path = _merge_path(
+        (os.environ.get("PATH") or "").split(os.pathsep),
+        _candidate_dirs(home),
+    )
+    exe = shutil.which("codex", path=search_path)
     if not exe:
         raise RuntimeError("Codex CLI not found. Install `codex` and ensure it is on PATH.")
     return exe
@@ -131,8 +194,9 @@ def run_codex_structured(
         schema_path.write_text(json.dumps(_codex_output_schema(response_schema)), encoding="utf-8")
         prompt, images = _messages_to_codex_prompt(messages, tmp_dir)
 
+        codex_exe = _codex_exe()
         cmd = [
-            _codex_exe(),
+            codex_exe,
             "exec",
             "--json",
             "--cd",
@@ -154,7 +218,7 @@ def run_codex_structured(
         proc = subprocess.run(
             cmd,
             cwd=str(tmp_dir),
-            env=dict(os.environ),
+            env=_codex_env(codex_exe=codex_exe),
             input=prompt,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

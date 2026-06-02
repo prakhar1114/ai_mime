@@ -1446,6 +1446,52 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.PIPE)
         self.assertEqual(popen.call_args.args[0][-1], "-")
 
+    def test_codex_runtime_env_keeps_node_reachable_in_packaged_path(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        class FakePopen:
+            returncode = 0
+
+            def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                self.args = args
+                self.kwargs = kwargs
+
+            def communicate(self, input=None):  # type: ignore[no-untyped-def]
+                return ('{"msg":{"type":"done","session_id":"codex-session","summary":"ok"}}\n', "")
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            request = AgentRunRequest(
+                provider="codex_cli",
+                mode="general",
+                workflow_dir=workspace,
+                workspace_dir=workspace,
+            )
+            runtime = CodexCliRuntime(codex_path="/opt/homebrew/bin/codex")
+            with (
+                patch.dict(
+                    os.environ,
+                    {"HOME": td, "PATH": "/Applications/AI Mime.app/Contents/Resources/bin:/usr/bin:/bin"},
+                    clear=True,
+                ),
+                patch(
+                    "ai_mime.agent_runner.adapters.codex_cli.workflow_runtime_env",
+                    return_value={"PATH": "/app/bin:/usr/bin:/bin"},
+                ),
+                patch(
+                    "ai_mime.agent_runner.adapters.codex_cli.subprocess.Popen",
+                    side_effect=FakePopen,
+                ) as popen,
+            ):
+                result = runtime.run(request, "hello")
+
+        self.assertEqual(result.status, "success")
+        env = popen.call_args.kwargs["env"]
+        path = env["PATH"].split(os.pathsep)
+        self.assertLess(path.index("/app/bin"), path.index("/usr/local/bin"))
+        self.assertIn("/opt/homebrew/bin", path)
+        self.assertIn("/usr/local/bin", path)
+
     def test_codex_runtime_interrupts_active_process(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
 
@@ -1582,7 +1628,7 @@ class AgentRunnerTests(unittest.TestCase):
             )
             runtime = CodexCliRuntime()
             with patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=True), patch(
-                "ai_mime.agent_runner.adapters.codex_cli.shutil.which",
+                "ai_mime.codex_support.shutil.which",
                 return_value=None,
             ):
                 result = runtime.run(request, "hello")

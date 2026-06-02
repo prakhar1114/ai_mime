@@ -9,6 +9,7 @@ from typing import Any, Literal
 import yaml
 
 from ai_mime.app_data import get_env_path, get_user_config_path
+from ai_mime.codex_support import codex_subprocess_env, find_codex_executable
 
 Provider = Literal["anthropic", "openai"]
 
@@ -85,8 +86,8 @@ def _merge_env_var(env_path: Path, key: str, value: str) -> None:
     os.environ[key] = value.strip()
 
 
-def _find_claude_exe() -> str | None:
-    exe = shutil.which("claude")
+def _find_binary_exe(name: str) -> str | None:
+    exe = shutil.which(name)
     if exe:
         return exe
     home = Path.home()
@@ -94,15 +95,28 @@ def _find_claude_exe() -> str | None:
         candidate = Path(candidate_dir)
         if not candidate.is_absolute():
             candidate = home / candidate
-        candidate = candidate / "claude"
+        candidate = candidate / name
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return None
 
 
-def _command_status(cmd: list[str], *, timeout: float = 3.0) -> tuple[bool, str]:
+def _find_claude_exe() -> str | None:
+    return _find_binary_exe("claude")
+
+
+def _find_codex_exe() -> str | None:
+    return find_codex_executable()
+
+
+def _command_status(
+    cmd: list[str],
+    *,
+    timeout: float = 3.0,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False, env=env)
     except FileNotFoundError:
         return False, f"{cmd[0]} not found."
     except Exception as e:
@@ -120,10 +134,10 @@ def _provider_runtime_status(provider: Provider) -> tuple[bool, str]:
         ok, detail = _command_status([exe, "--version"])
         return ok, f"Claude Code detected: {detail}" if ok else f"Claude Code check failed: {detail}"
 
-    exe = shutil.which("codex")
+    exe = _find_codex_exe()
     if not exe:
         return False, "Codex CLI not found."
-    ok, detail = _command_status([exe, "login", "status"])
+    ok, detail = _command_status([exe, "login", "status"], env=codex_subprocess_env(codex_exe=exe))
     return ok, f"Codex login detected: {detail}" if ok else f"Codex login check failed: {detail}"
 
 

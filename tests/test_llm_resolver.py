@@ -309,6 +309,7 @@ class LLMResolverConfigTests(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
             captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
             captured["input"] = kwargs.get("input")
             schema_path = Path(cmd[cmd.index("--output-schema") + 1])
             captured["schema"] = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -331,6 +332,9 @@ class LLMResolverConfigTests(unittest.TestCase):
         self.assertIsInstance(cmd, list)
         self.assertEqual(cmd[-1], "-")
         self.assertEqual(captured["input"], "Return ok")
+        env = captured["env"]
+        self.assertIsInstance(env, dict)
+        self.assertIn("/usr/local/bin", env["PATH"].split(os.pathsep))
         self.assertEqual(captured["schema"]["additionalProperties"], False)
         self.assertEqual(result, {"ok": True})
 

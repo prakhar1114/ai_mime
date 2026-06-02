@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import stat
 import tempfile
@@ -524,6 +525,35 @@ class TaskDashboardTests(unittest.TestCase):
 
         self.assertEqual(status["provider"], "openai")
         self.assertEqual(config_path.read_text(encoding="utf-8"), "config_version: 1\nprovider: openai\n")
+
+    def test_codex_login_status_uses_app_aware_path(self) -> None:
+        from ai_mime import provider_settings
+
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
+            return type("Proc", (), {"returncode": 0, "stdout": "Logged in using ChatGPT\n", "stderr": ""})()
+
+        with (
+            patch.dict("os.environ", {"HOME": str(self.root), "PATH": "/usr/bin:/bin"}, clear=True),
+            patch(
+                "ai_mime.provider_settings._find_codex_exe",
+                return_value="/opt/homebrew/bin/codex",
+            ),
+            patch("ai_mime.provider_settings.subprocess.run", side_effect=fake_run),
+        ):
+            ok, message = provider_settings._provider_runtime_status("openai")
+
+        self.assertTrue(ok)
+        self.assertIn("Logged in", message)
+        env = captured["env"]
+        self.assertIsInstance(env, dict)
+        path = env["PATH"].split(os.pathsep)
+        self.assertIn("/opt/homebrew/bin", path)
+        self.assertIn("/usr/local/bin", path)
+        self.assertEqual(env["HOME"], str(self.root))
 
     def test_provider_settings_helper_rejects_unavailable_provider(self) -> None:
         from ai_mime import provider_settings

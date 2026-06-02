@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import signal
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -14,6 +13,7 @@ from typing import Any, AsyncIterator, Iterable
 from ai_mime.agent_runner.adapters.base import AgentRuntime, AgentRuntimeCapabilities, AgentStreamEvent
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.app_data import workflow_runtime_env
+from ai_mime.codex_support import codex_subprocess_env, find_codex_executable
 
 _CODEX_STDOUT_LIMIT = 128 * 1024 * 1024
 
@@ -321,7 +321,7 @@ class CodexCliRuntime(AgentRuntime):
     def _codex_executable(self) -> str:
         if self.codex_path:
             return self.codex_path
-        exe = shutil.which("codex")
+        exe = find_codex_executable()
         if not exe:
             raise RuntimeError("Codex CLI not found. Install `codex` and ensure it is on PATH.")
         return exe
@@ -329,7 +329,7 @@ class CodexCliRuntime(AgentRuntime):
     def _env_for(self, request: AgentRunRequest) -> dict[str, str]:
         env = dict(os.environ)
         env.update(workflow_runtime_env(request.workflow_dir))
-        return env
+        return codex_subprocess_env(env, codex_exe=self._codex_executable())
 
     def build_command(
         self,
