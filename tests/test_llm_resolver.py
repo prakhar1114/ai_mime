@@ -307,19 +307,44 @@ class LLMResolverConfigTests(unittest.TestCase):
 
         captured: dict[str, object] = {}
 
-        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
-            captured["cmd"] = cmd
-            captured["env"] = kwargs.get("env")
-            captured["input"] = kwargs.get("input")
-            schema_path = Path(cmd[cmd.index("--output-schema") + 1])
-            captured["schema"] = json.loads(schema_path.read_text(encoding="utf-8"))
-            output_path = Path(cmd[cmd.index("-o") + 1])
-            output_path.write_text('{"ok": true}', encoding="utf-8")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        class FakeCodexConfig:
+            def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured["config"] = kwargs
+
+        class FakeTextInput:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+        class FakeLocalImageInput:
+            def __init__(self, path: str) -> None:
+                self.path = path
+
+        class FakeSandbox:
+            read_only = "read_only"
+
+        class FakeThread:
+            async def run(self, run_input, **kwargs):  # type: ignore[no-untyped-def]
+                captured["run_input"] = run_input
+                captured["run_kwargs"] = kwargs
+                return SimpleNamespace(final_response='{"ok": true}')
+
+        class FakeAsyncCodex:
+            def __init__(self, *, config):  # type: ignore[no-untyped-def]
+                captured["sdk_config"] = config
+
+            async def __aenter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+                return None
+
+            async def thread_start(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured["thread_kwargs"] = kwargs
+                return FakeThread()
 
         with patch("llm_resolver.codex._codex_exe", return_value="/bin/codex"), patch(
-            "llm_resolver.codex.subprocess.run",
-            side_effect=fake_run,
+            "llm_resolver.codex._load_codex_sdk",
+            return_value=(FakeAsyncCodex, FakeCodexConfig, FakeLocalImageInput, FakeSandbox, FakeTextInput),
         ):
             result = run_codex_structured(
                 messages=[{"role": "user", "content": "Return ok"}],
@@ -328,31 +353,57 @@ class LLMResolverConfigTests(unittest.TestCase):
                 model="openai/gpt-5.5",
             )
 
-        cmd = captured["cmd"]
-        self.assertIsInstance(cmd, list)
-        self.assertEqual(cmd[-1], "-")
-        self.assertIn("--skip-git-repo-check", cmd)
-        self.assertEqual(captured["input"], "Return ok")
-        env = captured["env"]
+        config = captured["config"]
+        self.assertIsInstance(config, dict)
+        self.assertEqual(config["codex_bin"], "/bin/codex")
+        env = config["env"]
         self.assertIsInstance(env, dict)
         self.assertIn("/usr/local/bin", env["PATH"].split(os.pathsep))
-        self.assertEqual(captured["schema"]["additionalProperties"], False)
+        run_input = captured["run_input"]
+        self.assertIsInstance(run_input, list)
+        self.assertEqual(run_input[0].text, "Return ok")
+        run_kwargs = captured["run_kwargs"]
+        self.assertIsInstance(run_kwargs, dict)
+        self.assertEqual(run_kwargs["model"], "gpt-5.5")
+        self.assertEqual(run_kwargs["sandbox"], "read_only")
+        self.assertEqual(run_kwargs["output_schema"]["additionalProperties"], False)
+        self.assertEqual(run_kwargs["output_schema"]["required"], ["ok"])
         self.assertEqual(result, {"ok": True})
 
     def test_codex_structured_parses_current_jsonl_fallback(self) -> None:
         from llm_resolver.codex import run_codex_structured
 
-        stdout = "\n".join(
-            [
-                json.dumps({"type": "thread.started", "thread_id": "codex-thread"}),
-                json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": '{"ok": true}'}}),
-                json.dumps({"type": "turn.completed"}),
-            ]
-        )
+        class FakeCodexConfig:
+            def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+        class FakeTextInput:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+        class FakeSandbox:
+            read_only = "read_only"
+
+        class FakeThread:
+            async def run(self, run_input, **kwargs):  # type: ignore[no-untyped-def]
+                return SimpleNamespace(final_response='extra text {"ok": true} trailing text')
+
+        class FakeAsyncCodex:
+            def __init__(self, *, config):  # type: ignore[no-untyped-def]
+                pass
+
+            async def __aenter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+                return None
+
+            async def thread_start(self, **kwargs):  # type: ignore[no-untyped-def]
+                return FakeThread()
 
         with patch("llm_resolver.codex._codex_exe", return_value="/bin/codex"), patch(
-            "llm_resolver.codex.subprocess.run",
-            return_value=SimpleNamespace(returncode=0, stdout=stdout, stderr=""),
+            "llm_resolver.codex._load_codex_sdk",
+            return_value=(FakeAsyncCodex, FakeCodexConfig, object, FakeSandbox, FakeTextInput),
         ):
             result = run_codex_structured(
                 messages=[{"role": "user", "content": "Return ok"}],
@@ -362,6 +413,41 @@ class LLMResolverConfigTests(unittest.TestCase):
             )
 
         self.assertEqual(result, {"ok": True})
+
+    def test_codex_output_schema_requires_all_object_properties(self) -> None:
+        from llm_resolver.codex import _codex_output_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "target": {"$ref": "#/$defs/Target", "description": "Target element."},
+                "post_action": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["target"],
+            "$defs": {
+                "Target": {
+                    "type": "object",
+                    "properties": {
+                        "primary": {"type": "string"},
+                        "fallback": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
+                    },
+                    "required": ["primary"],
+                }
+            },
+        }
+
+        normalized = _codex_output_schema(schema)
+
+        self.assertEqual(normalized["required"], ["target", "post_action"])
+        self.assertEqual(normalized["additionalProperties"], False)
+        self.assertNotIn("$ref", normalized["properties"]["target"])
+        self.assertEqual(normalized["properties"]["target"]["required"], ["primary", "fallback"])
+        self.assertEqual(normalized["properties"]["target"]["description"], "Target element.")
+        target = normalized["$defs"]["Target"]
+        self.assertEqual(target["required"], ["primary", "fallback"])
+        self.assertEqual(target["additionalProperties"], False)
+        self.assertNotIn("default", target["properties"]["fallback"])
+        self.assertEqual(schema["required"], ["target"])
 
     def test_ask_llm_missing_anthropic_key_passes_configured_model_to_claude_code(self) -> None:
         with tempfile.TemporaryDirectory() as td:

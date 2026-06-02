@@ -169,12 +169,36 @@ def _codex_output_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Codex/OpenAI structured outputs require strict object schemas."""
     normalized = json.loads(json.dumps(schema))
 
+    def resolve_ref(ref: str) -> dict[str, Any] | None:
+        if not ref.startswith("#/"):
+            return None
+        current: Any = normalized
+        for raw_part in ref[2:].split("/"):
+            part = raw_part.replace("~1", "/").replace("~0", "~")
+            if not isinstance(current, dict) or part not in current:
+                return None
+            current = current[part]
+        return json.loads(json.dumps(current)) if isinstance(current, dict) else None
+
     def visit(node: Any) -> None:
         if not isinstance(node, dict):
             return
+        ref = node.get("$ref")
+        if isinstance(ref, str) and len(node) > 1:
+            resolved = resolve_ref(ref)
+            if resolved is not None:
+                merged = {**resolved, **node}
+                merged.pop("$ref", None)
+                node.clear()
+                node.update(merged)
+        if node.get("default") is None:
+            node.pop("default", None)
         node_type = node.get("type")
         if node_type == "object" or "properties" in node:
             node.setdefault("additionalProperties", False)
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                node["required"] = list(properties.keys())
         for child in node.get("properties", {}).values():
             visit(child)
         if "items" in node:
