@@ -137,6 +137,7 @@ async def _run_agent_runtime_computer_use_task_async(
 
     logs: list[str] = []
     text_parts: list[str] = []
+    assistant_log_parts: list[str] = []
     session_id = ""
     status = "success"
     error: str | None = None
@@ -147,6 +148,12 @@ async def _run_agent_runtime_computer_use_task_async(
         logs.append(log_line)
         print(log_line, file=sys.stderr, flush=True)
         debug_log(f"[computer-use] {log_line}")
+
+    def flush_assistant_log() -> None:
+        text = "".join(assistant_log_parts).strip()
+        assistant_log_parts.clear()
+        if text:
+            record(f"assistant: {text}")
 
     async for event in runtime.stream_chat(
         request,
@@ -161,18 +168,22 @@ async def _run_agent_runtime_computer_use_task_async(
             text = str(event.get("text") or "")
             if text:
                 text_parts.append(text)
-                record(f"assistant: {text}")
+                assistant_log_parts.append(text)
         elif event_type == "tool_use":
+            flush_assistant_log()
             record(f"tool_use: {event.get('name') or 'tool'} input={event.get('input') or {}}")
         elif event_type == "error":
+            flush_assistant_log()
             status = "failed"
             error = str(event.get("message") or "Computer-use runtime error.")
             record(f"error: {error}")
         elif event_type == "interrupted":
+            flush_assistant_log()
             status = "cancelled"
             error = "interrupted"
             record("interrupted")
         elif event_type == "done":
+            flush_assistant_log()
             session_id = str(event.get("session_id") or session_id)
             status = str(event.get("status") or status)
             event_error = event.get("error")

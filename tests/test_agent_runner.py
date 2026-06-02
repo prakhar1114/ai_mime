@@ -1762,6 +1762,37 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertIn("tool_use: computer_get_window_state input={'app': 'Safari'}", streamed)
         self.assertIn("assistant: looking", "\n".join(result.logs))
 
+    def test_computer_use_runtime_coalesces_codex_text_deltas_in_logs(self) -> None:
+        from ai_mime.agent_runner.computer_use import _run_agent_runtime_computer_use_task_async
+
+        class FakeRuntime:
+            async def stream_chat(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                yield {"event": "text", "text": "I"}
+                yield {"event": "text", "text": " will"}
+                yield {"event": "text", "text": " inspect"}
+                yield {"event": "text", "text": " now."}
+                yield {"event": "tool_use", "id": "tool-1", "name": "computer_screenshot", "input": {"server": "cua"}}
+                yield {"event": "done", "session_id": "cua-session", "status": "success", "summary": "I will inspect now."}
+
+        stderr = io.StringIO()
+        with patch("ai_mime.agent_runner.computer_use.get_agent_runtime", return_value=FakeRuntime()), patch(
+            "ai_mime.agent_runner.computer_use.sys.stderr",
+            stderr,
+        ):
+            result = asyncio.run(
+                _run_agent_runtime_computer_use_task_async(
+                    "inspect",
+                    runtime_id="codex_cli",
+                    model="openai/gpt-5.5",
+                )
+            )
+
+        assistant_lines = [line for line in result.logs if "assistant:" in line]
+        self.assertEqual(result.status, "success")
+        self.assertEqual(len(assistant_lines), 1)
+        self.assertIn("assistant: I will inspect now.", assistant_lines[0])
+        self.assertIn("tool_use: computer_screenshot input={'server': 'cua'}", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

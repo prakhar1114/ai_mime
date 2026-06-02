@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Iterable
 
 from ai_mime.agent_runner.adapters.base import AgentRuntime, AgentRuntimeCapabilities, AgentStreamEvent
-from ai_mime.agent_runner.mcp import normalize_streamable_http_mcp_url
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.app_data import workflow_runtime_env
 from ai_mime.codex_support import codex_subprocess_env, find_codex_executable
@@ -204,7 +203,6 @@ def _codex_mcp_config_overrides(mcp_servers: dict[str, dict[str, Any]] | None) -
             url = server.get("url")
             if not isinstance(url, str) or not url.strip():
                 raise RuntimeError(f"Codex MCP server {name!r} requires a non-empty url.")
-            url = normalize_streamable_http_mcp_url(url)
             overrides.extend([
                 f"{prefix}.url={_toml_literal(url)}",
                 f"{prefix}.required={_toml_literal(required)}",
