@@ -11,6 +11,8 @@
 
 import sys  # os is already injected by PyInstaller
 
+from PyInstaller.utils.hooks import copy_metadata
+
 # ---------------------------------------------------------------------------
 # Paths — SPECPATH is injected by PyInstaller (== dirname of this .spec file).
 # ---------------------------------------------------------------------------
@@ -49,7 +51,10 @@ a = Analysis(
         (os.path.join(_repo, "docs", "logo", "icon60.png"), os.path.join("docs", "logo")),
         # Agent runner instructions (containing build_skill, replay, and example_skill)
         (os.path.join(_src, "ai_mime", "agent_runner", "instructions"), os.path.join("ai_mime", "agent_runner", "instructions")),
-    ],
+    ]
+    + copy_metadata("fastmcp")
+    + copy_metadata("mcp")
+    + copy_metadata("cua-computer-server"),
     hiddenimports=[
         # --- Cocoa / AppKit stack -------------------------------------------
         "objc",
@@ -106,6 +111,14 @@ a = Analysis(
         "ai_mime.agent_runner.computer_use",
         "ai_mime.agent_runner.adapters",
         "ai_mime.agent_runner.adapters.claude_sdk",
+        "ai_mime.computer_server_custom",
+        # --- CUA computer server / MCP ----------------------------------------
+        "computer_server",
+        "computer_server.main",
+        "computer_server.mcp_server",
+        "fastmcp",
+        "mcp",
+        "mcp.types",
         # --- LLM / inference ------------------------------------------------
         "llm_resolver",
         "litellm",

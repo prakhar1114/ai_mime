@@ -331,6 +331,7 @@ class LLMResolverConfigTests(unittest.TestCase):
         cmd = captured["cmd"]
         self.assertIsInstance(cmd, list)
         self.assertEqual(cmd[-1], "-")
+        self.assertIn("--skip-git-repo-check", cmd)
         self.assertEqual(captured["input"], "Return ok")
         env = captured["env"]
         self.assertIsInstance(env, dict)

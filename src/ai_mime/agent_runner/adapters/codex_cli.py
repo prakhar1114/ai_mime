@@ -16,6 +16,7 @@ from ai_mime.app_data import workflow_runtime_env
 from ai_mime.codex_support import codex_subprocess_env, find_codex_executable
 
 _CODEX_STDOUT_LIMIT = 128 * 1024 * 1024
+_CODEX_SKIP_GIT_REPO_CHECK_FLAG = "--skip-git-repo-check"
 
 
 def _extract_text(value: Any) -> str:
@@ -341,7 +342,7 @@ class CodexCliRuntime(AgentRuntime):
     ) -> list[str]:
         exe = self._codex_executable()
         if request.session_id:
-            cmd = [exe, "exec", "resume", request.session_id, "--json"]
+            cmd = [exe, "exec", "resume", request.session_id, "--json", _CODEX_SKIP_GIT_REPO_CHECK_FLAG]
         else:
             cmd = [
                 exe,
@@ -351,7 +352,7 @@ class CodexCliRuntime(AgentRuntime):
                 str(request.workspace_dir),
                 "--sandbox",
                 self.sandbox,
-                "--skip-git-repo-check",
+                _CODEX_SKIP_GIT_REPO_CHECK_FLAG,
             ]
         for override in _codex_mcp_config_overrides(request.mcp_servers):
             cmd.extend(["-c", override])

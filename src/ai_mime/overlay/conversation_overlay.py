@@ -162,8 +162,8 @@ class ConversationOverlay:
         try:
             style = AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel | AppKit.NSWindowStyleMaskResizable
             self._panel.setStyleMask_(style)
-            self._panel.setMinSize_(AppKit.NSMakeSize(260.0, 110.0))
-            self._panel.setMaxSize_(AppKit.NSMakeSize(800.0, 400.0))
+            self._panel.setMinSize_(AppKit.NSMakeSize(380.0, 90.0))
+            self._panel.setMaxSize_(AppKit.NSMakeSize(380.0, 280.0))
         except Exception:
             pass
 
@@ -227,8 +227,8 @@ class ConversationOverlay:
         try:
             self._message_label.setFont_(sys_font(12.0))
             self._message_label.setTextColor_(AppKit.NSColor.labelColor())
-            self._message_label.setMaximumNumberOfLines_(12)
-            self._message_label.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)  # type: ignore[attr-defined]
+            self._message_label.setMaximumNumberOfLines_(6)
+            self._message_label.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)  # type: ignore[attr-defined]
             self._message_label.setTranslatesAutoresizingMaskIntoConstraints_(False)
         except Exception:
             pass
@@ -394,6 +394,10 @@ class ConversationOverlay:
                 self._v_spacer.setHidden_(True)
             self._controls_row.setHidden_(True)
 
+            # Temporarily clear min/max size limits before resizing down to minimize size
+            self._panel.setMinSize_(AppKit.NSMakeSize(36.0, 36.0))
+            self._panel.setMaxSize_(AppKit.NSMakeSize(36.0, 36.0))
+
             # Disable resizing while minimized
             style = AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel
             self._panel.setStyleMask_(style)
@@ -419,8 +423,12 @@ class ConversationOverlay:
             style = AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel | AppKit.NSWindowStyleMaskResizable
             self._panel.setStyleMask_(style)
 
+            # Set the limits back to expanded/max values
+            self._panel.setMinSize_(AppKit.NSMakeSize(380.0, 90.0))
+            self._panel.setMaxSize_(AppKit.NSMakeSize(380.0, 280.0))
+
             # Restore expanded size or default size
-            w = float(self._expanded_size.width if hasattr(self, "_expanded_size") else self.width)
+            w = 380.0
             h = float(self._expanded_size.height if hasattr(self, "_expanded_size") else self.height)
 
             # Position on the right edge vertically centered
@@ -431,10 +439,21 @@ class ConversationOverlay:
             # Set new frame
             self._panel.setFrame_display_animate_(AppKit.NSMakeRect(x, y, w, h), True, True)
 
-            # Show standard UI views again
+            # Show standard UI views again if they are not empty/missing
             self._title.setHidden_(False)
-            self._message_label.setHidden_(False)
-            self._tool_label.setHidden_(False)
+
+            message_val = self._message_label.stringValue()
+            if message_val and str(message_val).strip():
+                self._message_label.setHidden_(False)
+            else:
+                self._message_label.setHidden_(True)
+
+            tool_val = self._tool_label.stringValue()
+            if tool_val and str(tool_val).strip():
+                self._tool_label.setHidden_(False)
+            else:
+                self._tool_label.setHidden_(True)
+
             if hasattr(self, "_v_spacer") and self._v_spacer:
                 self._v_spacer.setHidden_(False)
             self._controls_row.setHidden_(False)
@@ -466,13 +485,13 @@ class ConversationOverlay:
             margin_layout = 10.0
             needed_height = stack_height + 2.0 * margin_layout
 
-            # Bound the height between a minimum of 140.0 and maximum of 280.0
-            new_height = max(140.0, min(280.0, needed_height))
+            # Bound the height between a minimum of 90.0 and maximum of 280.0
+            new_height = max(90.0, min(280.0, needed_height))
 
             # Update frame
             sx, sy, sw, sh = active_screen_visible_frame()
             current_frame = self._panel.frame()
-            w = current_frame.size.width
+            w = 380.0  # Keep the width strictly fixed at 380.0
             x = float(sx + sw - w)
             y = float(sy + (sh - new_height) / 2.0)
 
@@ -484,18 +503,29 @@ class ConversationOverlay:
 
     def update_text(self, text: str) -> None:
         try:
-            cleaned = text.strip()
-            self._message_label.setStringValue_(cleaned)
+            cleaned = text.strip() if text else ""
+            if not cleaned:
+                self._message_label.setHidden_(True)
+                self._message_label.setStringValue_("")
+            else:
+                self._message_label.setHidden_(False)
+                self._message_label.setStringValue_(cleaned)
             self._update_window_height()
         except Exception:
             pass
 
     def update_tool(self, tool_name: str) -> None:
         try:
-            if tool_name:
-                self._tool_label.setStringValue_(f"Running Tool: {tool_name}")
+            cleaned_tool = tool_name.strip() if tool_name else ""
+            if not cleaned_tool:
+                self._tool_label.setHidden_(True)
+                self._tool_label.setStringValue_("")
             else:
-                self._tool_label.setStringValue_("Thinking...")
+                self._tool_label.setHidden_(False)
+                if cleaned_tool.lower() == "thinking...":
+                    self._tool_label.setStringValue_("Thinking...")
+                else:
+                    self._tool_label.setStringValue_(f"Running Tool: {cleaned_tool}")
             self._update_window_height()
         except Exception:
             pass

@@ -74,7 +74,7 @@ DEFAULT_OPENAI_LLM_CONFIG: dict[str, Any] = {
         "extra_kwargs": {},
     },
     "reflect": {
-        "model": "openai/gpt-5.4",
+        "model": "openai/gpt-5.5",
         "api_base": None,
         "api_key_env": "OPENAI_API_KEY",
         "extra_kwargs": {},
@@ -87,7 +87,7 @@ DEFAULT_OPENAI_LLM_CONFIG: dict[str, Any] = {
             "max_tokens": 7000,
         },
         "pass_c": {
-            "model": "openai/gpt-5.5",
+            "model": None,
             "max_tokens": 7000,
         },
     },

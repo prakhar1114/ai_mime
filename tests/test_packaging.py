@@ -29,6 +29,24 @@ class PackagingTests(unittest.TestCase):
 
         self.assertIn('os.path.join(_repo, "packages", "llm-resolver")', spec)
 
+    def test_pyinstaller_spec_bundles_cua_mcp_metadata_and_modules(self) -> None:
+        spec = (Path(__file__).resolve().parents[1] / "scripts" / "pyinstaller.spec").read_text(
+            encoding="utf-8"
+        )
+
+        for package in ("fastmcp", "mcp", "cua-computer-server"):
+            self.assertIn(f'copy_metadata("{package}")', spec)
+        for module in (
+            "ai_mime.computer_server_custom",
+            "computer_server",
+            "computer_server.main",
+            "computer_server.mcp_server",
+            "fastmcp",
+            "mcp",
+            "mcp.types",
+        ):
+            self.assertIn(f'"{module}"', spec)
+
     def test_build_script_exports_uv_binary_path(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "scripts" / "build.sh").read_text(
             encoding="utf-8"

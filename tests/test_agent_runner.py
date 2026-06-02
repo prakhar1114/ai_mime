@@ -1329,6 +1329,7 @@ class AgentRunnerTests(unittest.TestCase):
             resume_cmd = runtime.build_command(resume_request, "continue")
             self.assertEqual(resume_cmd[:4], ["/bin/codex", "exec", "resume", "codex-session"])
             self.assertIn("--json", resume_cmd)
+            self.assertIn("--skip-git-repo-check", resume_cmd)
             self.assertIn("-m", resume_cmd)
             self.assertEqual(resume_cmd[-1], "-")
 
