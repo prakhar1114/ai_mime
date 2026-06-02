@@ -111,6 +111,7 @@ a = Analysis(
         "ai_mime.agent_runner.computer_use",
         "ai_mime.agent_runner.adapters",
         "ai_mime.agent_runner.adapters.claude_sdk",
+        "ai_mime.agent_runner.adapters.codex_cli",
         "ai_mime.computer_server_custom",
         # --- CUA computer server / MCP ----------------------------------------
         "computer_server",
@@ -118,11 +119,17 @@ a = Analysis(
         "computer_server.mcp_server",
         "fastmcp",
         "mcp",
+        "mcp.client",
+        "mcp.client.session",
+        "mcp.client.streamable_http",
         "mcp.types",
         # --- LLM / inference ------------------------------------------------
         "llm_resolver",
+        "llm_resolver.codex",
         "litellm",
         "openai",
+        "openai_codex",
+        "openai_codex.types",
         # --- Observability --------------------------------------------------
         "lmnr",
         # --- Editor server (FastAPI + uvicorn) ------------------------------

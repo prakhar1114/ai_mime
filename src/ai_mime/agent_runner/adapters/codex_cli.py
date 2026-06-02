@@ -2,21 +2,51 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
-import signal
-import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterable
 
 from ai_mime.agent_runner.adapters.base import AgentRuntime, AgentRuntimeCapabilities, AgentStreamEvent
+from ai_mime.agent_runner.mcp import normalize_streamable_http_mcp_url
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.app_data import workflow_runtime_env
 from ai_mime.codex_support import codex_subprocess_env, find_codex_executable
+from ai_mime.debug_log import log as debug_log
 
-_CODEX_STDOUT_LIMIT = 128 * 1024 * 1024
-_CODEX_SKIP_GIT_REPO_CHECK_FLAG = "--skip-git-repo-check"
+
+logger = logging.getLogger(__name__)
+
+
+def _log(message: str, *, exc_info: bool = False) -> None:
+    logger.info(message)
+    debug_log(f"[codex-sdk] {message}", exc_info=exc_info)
+
+
+def _load_codex_sdk() -> tuple[Any, Any, Any, Any]:
+    from openai_codex import AsyncCodex, Codex, CodexConfig, Sandbox  # type: ignore[import-not-found]
+
+    return Codex, AsyncCodex, CodexConfig, Sandbox
+
+
+def _is_missing_thread_error(error: BaseException) -> bool:
+    text = str(error).lower()
+    return "no rollout found for thread id" in text or "thread" in text and "not found" in text
+
+
+class _AsyncCodexInterruptClient:
+    def __init__(self, runtime: "CodexCliRuntime") -> None:
+        self._runtime = runtime
+
+    async def interrupt(self) -> None:
+        turn = self._runtime._active_turn
+        if turn is None:
+            return
+        self._runtime._interrupted = True
+        result = turn.interrupt()
+        if hasattr(result, "__await__"):
+            await result
 
 
 def _extract_text(value: Any) -> str:
@@ -24,224 +54,124 @@ def _extract_text(value: Any) -> str:
         return ""
     if isinstance(value, str):
         return value
+    root = getattr(value, "root", None)
+    if root is not None and root is not value:
+        return _extract_text(root)
     if isinstance(value, list):
-        parts: list[str] = []
-        for item in value:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text") or item.get("content")
-                if isinstance(text, str):
-                    parts.append(text)
-        return "".join(parts)
+        return "\n".join(part for part in (_extract_text(item) for item in value) if part)
     if isinstance(value, dict):
-        text = value.get("text") or value.get("content") or value.get("message")
-        return text if isinstance(text, str) else ""
+        for key in ("text", "content", "message", "input_text", "output_text", "delta"):
+            text = value.get(key)
+            if isinstance(text, str):
+                return text
+            if isinstance(text, list):
+                return _extract_text(text)
+    for key in ("text", "content", "message", "input_text", "output_text", "delta"):
+        if hasattr(value, key):
+            text = getattr(value, key)
+            if isinstance(text, str):
+                return text
+            if isinstance(text, list):
+                return _extract_text(text)
+    data = _as_dict(value)
+    if data:
+        return _extract_text(data)
     return str(value)
 
 
-def codex_json_event_to_agent_event(obj: dict[str, Any]) -> AgentStreamEvent | None:
-    """Best-effort normalization for Codex CLI JSONL events.
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump(mode="json", by_alias=True)
+        return dumped if isinstance(dumped, dict) else {}
+    if hasattr(value, "__dict__"):
+        return {key: item for key, item in vars(value).items() if not key.startswith("_")}
+    return {}
 
-    Codex CLI has changed event envelopes over time. Keep this adapter tolerant:
-    inspect both the top-level object and a nested `msg` object, then map common
-    text/tool/done/error shapes into the existing AI Mime frontend events.
+
+def _root(value: Any) -> Any:
+    return getattr(value, "root", value)
+
+
+def _field(value: Any, *names: str) -> Any:
+    value = _root(value)
+    if isinstance(value, dict):
+        for name in names:
+            if name in value:
+                return value[name]
+        return None
+    for name in names:
+        if hasattr(value, name):
+            return getattr(value, name)
+    data = _as_dict(value)
+    for name in names:
+        if name in data:
+            return data[name]
+    return None
+
+
+def _enum_value(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw or "")
+
+
+def _codex_model(model: str | None) -> str | None:
+    if not model:
+        return None
+    text = model.strip()
+    if text.startswith("openai/"):
+        return text.split("/", 1)[1].strip() or None
+    return text or None
+
+
+def _codex_sdk_approval_handler(method: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    """Approve app-server requests that are already scoped by AI Mime.
+
+    The Python SDK's default handler accepts command/file approvals, but returns
+    an empty response for MCP elicitation requests. The CUA server uses MCP
+    elicitation to confirm Computer Use access, and an empty response is treated
+    as a denial before AI Mime's own tool authorization flow can help.
     """
-    msg = obj.get("msg") if isinstance(obj.get("msg"), dict) else obj
-    event_type = str(msg.get("type") or obj.get("type") or "").strip()
-    event_type_l = event_type.lower()
+    _log(f"approval request method={method} params={params or {}}")
+    if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+        return {"decision": "accept"}
+    if method == "mcpServer/elicitation/request":
+        return {"action": "accept", "content": {}, "_meta": None}
+    return {}
 
-    if event_type_l == "thread.started":
-        session_id = msg.get("thread_id") or obj.get("thread_id")
-        return {"event": "session_started", "session_id": str(session_id or "")}
 
-    if event_type_l in {"error", "turn_error", "exec_error"} or msg.get("error"):
-        message = _extract_text(msg.get("message") or msg.get("error") or msg.get("content"))
-        return {"event": "error", "message": message or "Codex CLI reported an error."}
+def _install_codex_sdk_approval_handler(codex: Any) -> None:
+    client = getattr(codex, "_client", None)
+    sync_client = getattr(client, "_sync", None) or client
+    if sync_client is not None and hasattr(sync_client, "_approval_handler"):
+        setattr(sync_client, "_approval_handler", _codex_sdk_approval_handler)
 
-    if event_type_l in {"item.completed", "item.started"} and isinstance(msg.get("item"), dict):
-        item = msg["item"]
-        item_type = str(item.get("type") or "").lower()
-        if item_type == "agent_message":
-            text = _extract_text(item.get("text") or item.get("content"))
-            return {"event": "text", "text": text} if text else None
-        if "tool" in item_type or "command" in item_type:
-            if event_type_l == "item.completed":
-                return None
-            name = str(item.get("name") or item.get("tool") or item.get("tool_name") or item.get("command") or item_type or "tool")
-            input_data = item.get("input") or item.get("arguments") or {}
-            if not isinstance(input_data, dict):
-                input_data = {"value": input_data}
-            if item.get("command") and "command" not in input_data:
-                input_data["command"] = item.get("command")
-            if item.get("server") and "server" not in input_data:
-                input_data["server"] = item.get("server")
-            return {
-                "event": "tool_use",
-                "id": str(item.get("id") or ""),
-                "name": name,
-                "input": input_data,
-            }
 
-    if event_type_l in {"text", "agent_message", "assistant_message", "response.output_text.delta"}:
-        text = _extract_text(msg.get("text") or msg.get("content") or msg.get("message") or msg.get("delta"))
-        return {"event": "text", "text": text} if text else None
-
-    if event_type_l in {"tool_use", "tool_call", "function_call", "exec_command_begin", "exec_command"}:
-        name = str(msg.get("name") or msg.get("tool_name") or msg.get("command") or "tool")
-        input_data = msg.get("input") or msg.get("arguments") or {}
-        if not isinstance(input_data, dict):
-            input_data = {"value": input_data}
-        if msg.get("command") and "command" not in input_data:
-            input_data["command"] = msg.get("command")
-        return {
-            "event": "tool_use",
-            "id": str(msg.get("id") or msg.get("tool_call_id") or ""),
-            "name": name,
-            "input": input_data,
-        }
-
-    if event_type_l in {"tool_result", "function_call_output", "exec_command_end", "exec_result"}:
-        return {
-            "event": "tool_result",
-            "tool_use_id": str(msg.get("tool_use_id") or msg.get("tool_call_id") or msg.get("id") or ""),
-            "content": msg.get("content") if "content" in msg else msg.get("output"),
-            "is_error": bool(msg.get("is_error") or msg.get("error")),
-        }
-
-    if event_type_l == "turn.completed":
+def _read_output_schema(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists():
         return None
-
-    if event_type_l in {"done", "turn_complete", "task_complete", "completed", "result"}:
-        status = "failed" if msg.get("is_error") or msg.get("error") else "success"
-        summary = _extract_text(msg.get("summary") or msg.get("result") or msg.get("final_response") or msg.get("content"))
-        return {
-            "event": "done",
-            "session_id": str(msg.get("session_id") or msg.get("conversation_id") or msg.get("thread_id") or ""),
-            "status": status,
-            "error": _extract_text(msg.get("error")) or None,
-            "summary": summary,
-        }
-
-    # Some JSONL records are plain assistant message envelopes.
-    role = msg.get("role")
-    if role == "assistant":
-        text = _extract_text(msg.get("content") or msg.get("message"))
-        return {"event": "text", "text": text} if text else None
-
-    return None
+    with path.open("r", encoding="utf-8") as fh:
+        parsed = json.load(fh)
+    if not isinstance(parsed, dict):
+        return None
+    if parsed.get("type") != "object" or not isinstance(parsed.get("properties"), dict):
+        return None
+    return parsed
 
 
-def parse_codex_jsonl(lines: Iterable[str]) -> list[AgentStreamEvent]:
-    events: list[AgentStreamEvent] = []
-    for line in lines:
-        text = line.strip()
-        if not text:
+def _summary_from_items(items: Iterable[Any]) -> str:
+    parts: list[str] = []
+    for item in items:
+        item = _root(item)
+        item_type = str(_field(item, "type") or "").lower()
+        role = str(_field(item, "role") or "").lower()
+        if item_type and "agentmessage" not in item_type.lower() and role != "assistant":
             continue
-        if '"type":"item.completed"' in text[:80] and '"mcp_tool_call"' in text[:256]:
-            continue
-        try:
-            obj = json.loads(text)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        event = codex_json_event_to_agent_event(obj)
-        if event is not None:
-            events.append(event)
-    return events
-
-
-def _codex_home() -> Path:
-    raw = os.environ.get("CODEX_HOME")
-    if raw and raw.strip():
-        return Path(raw).expanduser()
-    return Path.home() / ".codex"
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
-    out: list[dict[str, Any]] = []
-    try:
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                text = line.strip()
-                if not text:
-                    continue
-                try:
-                    obj = json.loads(text)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(obj, dict):
-                    out.append(obj)
-    except OSError:
-        return []
-    return out
-
-
-def _find_codex_session_file(session_id: str) -> Path | None:
-    if not session_id:
-        return None
-    sessions_dir = _codex_home() / "sessions"
-    if not sessions_dir.is_dir():
-        return None
-    try:
-        for path in sessions_dir.rglob("*.jsonl"):
-            if session_id in path.name:
-                return path
-    except OSError:
-        return None
-
-    try:
-        for path in sessions_dir.rglob("*.jsonl"):
-            for obj in _read_jsonl(path):
-                if obj.get("type") != "session_meta":
-                    continue
-                payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
-                if payload.get("id") == session_id:
-                    return path
-    except OSError:
-        return None
-    return None
-
-
-def _codex_session_cwd(session_id: str) -> str | None:
-    path = _find_codex_session_file(session_id)
-    if path is None:
-        return None
-    for obj in _read_jsonl(path):
-        if obj.get("type") != "session_meta":
-            continue
-        payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
-        cwd = payload.get("cwd")
-        return cwd if isinstance(cwd, str) and cwd else None
-    return None
-
-
-def _codex_content_text(content: Any) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text") or item.get("input_text") or item.get("output_text")
-                if isinstance(text, str):
-                    parts.append(text)
-        return "\n".join(part for part in parts if part)
-    if isinstance(content, dict):
-        text = content.get("text") or content.get("input_text") or content.get("output_text") or content.get("content")
-        return text if isinstance(text, str) else ""
-    return ""
-
-
-def _codex_message_text(payload: dict[str, Any]) -> str:
-    return _codex_content_text(payload.get("content") or payload.get("message"))
+        text = _extract_text(_field(item, "text", "content", "message"))
+        if text:
+            parts.append(text)
+    return "\n".join(parts).strip()
 
 
 def _toml_literal(value: Any) -> str:
@@ -267,13 +197,19 @@ def _codex_mcp_config_overrides(mcp_servers: dict[str, dict[str, Any]] | None) -
     for name, server in mcp_servers.items():
         server_type = server.get("type")
         prefix = f"mcp_servers.{name}"
+        required = bool(server.get("required", False))
+        startup_timeout_sec = server.get("startup_timeout_sec", 30)
+        tool_timeout_sec = server.get("tool_timeout_sec", 120)
         if server_type == "http":
             url = server.get("url")
             if not isinstance(url, str) or not url.strip():
                 raise RuntimeError(f"Codex MCP server {name!r} requires a non-empty url.")
+            url = normalize_streamable_http_mcp_url(url)
             overrides.extend([
                 f"{prefix}.url={_toml_literal(url)}",
-                f"{prefix}.required=true",
+                f"{prefix}.required={_toml_literal(required)}",
+                f"{prefix}.startup_timeout_sec={_toml_literal(startup_timeout_sec)}",
+                f"{prefix}.tool_timeout_sec={_toml_literal(tool_timeout_sec)}",
                 f"{prefix}.default_tools_approval_mode={_toml_literal('approve')}",
             ])
             continue
@@ -290,13 +226,128 @@ def _codex_mcp_config_overrides(mcp_servers: dict[str, dict[str, Any]] | None) -
             overrides.extend([
                 f"{prefix}.command={_toml_literal(command)}",
                 f"{prefix}.args={_toml_literal(args)}",
-                f"{prefix}.required=true",
+                f"{prefix}.required={_toml_literal(required)}",
+                f"{prefix}.startup_timeout_sec={_toml_literal(startup_timeout_sec)}",
+                f"{prefix}.tool_timeout_sec={_toml_literal(tool_timeout_sec)}",
                 f"{prefix}.default_tools_approval_mode={_toml_literal('approve')}",
             ])
             continue
 
         raise RuntimeError(f"Unsupported Codex MCP server {name!r} type: {server_type!r}.")
     return overrides
+
+
+def _notification_to_agent_events(notification: Any) -> list[AgentStreamEvent]:
+    method = str(_field(notification, "method") or "")
+    payload = _field(notification, "payload") or notification
+    data = _as_dict(payload)
+
+    if method == "item/agentMessage/delta":
+        text = _extract_text(_field(payload, "delta") or data.get("delta"))
+        return [{"event": "text", "text": text}] if text else []
+
+    if method == "item/completed":
+        item = _root(_field(payload, "item") or data.get("item"))
+        item_type = str(_field(item, "type") or "").lower()
+        text = _extract_text(_field(item, "text", "content", "message"))
+        if text and ("agentmessage" in item_type or _field(item, "role") == "assistant"):
+            return [{"event": "text", "text": text}]
+        return []
+
+    if method in {"item/started", "item/updated"}:
+        item = _root(_field(payload, "item") or data.get("item"))
+        item_type = str(_field(item, "type") or "").lower()
+        if "tool" not in item_type and "command" not in item_type:
+            return []
+        name = str(
+            _field(item, "name", "tool", "toolName", "tool_name", "command")
+            or item_type
+            or "tool"
+        )
+        input_data = _field(item, "input", "arguments") or {}
+        if not isinstance(input_data, dict):
+            input_data = {"value": input_data}
+        command = _field(item, "command")
+        if command and "command" not in input_data:
+            input_data["command"] = command
+        server = _field(item, "server")
+        if server and "server" not in input_data:
+            input_data["server"] = server
+        return [{
+            "event": "tool_use",
+            "id": str(_field(item, "id") or ""),
+            "name": name,
+            "input": input_data,
+        }]
+
+    if method in {"item/toolResult", "item/toolCallOutput", "item/completed"}:
+        tool_id = str(_field(payload, "toolUseId", "tool_use_id", "toolCallId", "tool_call_id", "id") or "")
+        content = _field(payload, "content", "output")
+        if tool_id or content is not None:
+            return [{
+                "event": "tool_result",
+                "tool_use_id": tool_id,
+                "content": content,
+                "is_error": bool(_field(payload, "isError", "is_error", "error")),
+            }]
+
+    return []
+
+
+def _thread_response_items(response: Any) -> list[Any]:
+    for key in ("threads", "data", "items"):
+        value = _field(response, key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _thread_updated_at(thread: Any) -> Any:
+    return _field(thread, "updated_at", "updatedAt", "last_modified", "lastModified", "created_at", "createdAt")
+
+
+def _thread_summary(thread: Any) -> str:
+    return str(
+        _field(thread, "thread_name", "threadName", "name", "title", "preview", "summary", "id")
+        or ""
+    )
+
+
+def _collect_visible_messages(value: Any, session_id: str, out: list[dict[str, Any]]) -> None:
+    value = _root(value)
+    if isinstance(value, list):
+        for item in value:
+            _collect_visible_messages(item, session_id, out)
+        return
+    data = _as_dict(value)
+    if not data and not hasattr(value, "__dict__"):
+        return
+
+    role = str(_field(value, "role") or "").lower()
+    item_type = str(_field(value, "type") or "").lower()
+    inferred_role = role
+    if not inferred_role:
+        if "usermessage" in item_type or item_type == "message" and _field(value, "role") == "user":
+            inferred_role = "user"
+        elif "agentmessage" in item_type:
+            inferred_role = "assistant"
+
+    if inferred_role in {"user", "assistant"}:
+        text = _extract_text(_field(value, "text", "content", "message"))
+        if text.strip():
+            out.append({
+                "type": inferred_role,
+                "role": inferred_role,
+                "uuid": _field(value, "id"),
+                "session_id": session_id,
+                "message": text,
+            })
+            return
+
+    for key in ("thread", "turns", "items", "input", "output", "messages"):
+        child = _field(value, key)
+        if child is not None:
+            _collect_visible_messages(child, session_id, out)
 
 
 @dataclass
@@ -316,7 +367,8 @@ class CodexCliRuntime(AgentRuntime):
     )
     codex_path: str | None = None
     sandbox: str = "workspace-write"
-    _active_process: subprocess.Popen[str] | asyncio.subprocess.Process | None = field(default=None, init=False, repr=False)
+    _active_turn: Any | None = field(default=None, init=False, repr=False)
+    _active_loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
     _interrupted: bool = field(default=False, init=False, repr=False)
 
     def _codex_executable(self) -> str:
@@ -327,232 +379,290 @@ class CodexCliRuntime(AgentRuntime):
             raise RuntimeError("Codex CLI not found. Install `codex` and ensure it is on PATH.")
         return exe
 
-    def _env_for(self, request: AgentRunRequest) -> dict[str, str]:
+    def _env_for(self, request: AgentRunRequest | None = None) -> dict[str, str]:
         env = dict(os.environ)
-        env.update(workflow_runtime_env(request.workflow_dir))
-        return codex_subprocess_env(env, codex_exe=self._codex_executable())
+        if request is not None:
+            env.update(workflow_runtime_env(request.workflow_dir))
+        env = codex_subprocess_env(env, codex_exe=self._codex_executable())
+        no_proxy = env.get("NO_PROXY") or env.get("no_proxy") or ""
+        required_no_proxy = ["127.0.0.1", "localhost", "::1"]
+        existing = {part.strip() for part in no_proxy.split(",") if part.strip()}
+        merged = [part for part in no_proxy.split(",") if part.strip()]
+        for item in required_no_proxy:
+            if item not in existing:
+                merged.append(item)
+        env["NO_PROXY"] = ",".join(merged)
+        env["no_proxy"] = env["NO_PROXY"]
+        return env
 
-    def build_command(
-        self,
-        request: AgentRunRequest,
-        _prompt: str,
-        *,
-        output_schema_path: Path | None = None,
-        output_last_message_path: Path | None = None,
-    ) -> list[str]:
-        exe = self._codex_executable()
+    def _config_for(self, request: AgentRunRequest | None = None, *, cwd: Path | None = None) -> Any:
+        _Codex, _AsyncCodex, CodexConfig, _Sandbox = _load_codex_sdk()
+        return CodexConfig(
+            codex_bin=self._codex_executable(),
+            cwd=str(cwd or (request.workspace_dir if request is not None else Path.cwd())),
+            env=self._env_for(request),
+            config_overrides=tuple(_codex_mcp_config_overrides(request.mcp_servers if request is not None else None)),
+        )
+
+    def _sandbox_value(self) -> Any:
+        _Codex, _AsyncCodex, _CodexConfig, Sandbox = _load_codex_sdk()
+        if self.sandbox == "read-only":
+            return Sandbox.read_only
+        if self.sandbox in {"danger-full-access", "full-access"}:
+            return Sandbox.full_access
+        return Sandbox.workspace_write
+
+    def _thread_kwargs(self, request: AgentRunRequest) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "cwd": str(request.workspace_dir),
+            "sandbox": self._sandbox_value(),
+        }
+        model = _codex_model(request.model)
+        if model:
+            kwargs["model"] = model
+        return kwargs
+
+    def _thread_start_kwargs(self, request: AgentRunRequest) -> dict[str, Any]:
+        kwargs = self._thread_kwargs(request)
+        if request.system_prompt and request.system_prompt.strip():
+            kwargs["developer_instructions"] = request.system_prompt
+        return kwargs
+
+    def _start_or_resume_thread(self, codex: Any, request: AgentRunRequest) -> tuple[Any, bool]:
         if request.session_id:
-            cmd = [exe, "exec", "resume", request.session_id, "--json", _CODEX_SKIP_GIT_REPO_CHECK_FLAG]
-        else:
-            cmd = [
-                exe,
-                "exec",
-                "--json",
-                "--cd",
-                str(request.workspace_dir),
-                "--sandbox",
-                self.sandbox,
-                _CODEX_SKIP_GIT_REPO_CHECK_FLAG,
-            ]
-        for override in _codex_mcp_config_overrides(request.mcp_servers):
-            cmd.extend(["-c", override])
-        if request.model:
-            cmd.extend(["-m", request.model])
-        if output_schema_path is not None:
-            cmd.extend(["--output-schema", str(output_schema_path)])
-        if output_last_message_path is not None:
-            cmd.extend(["-o", str(output_last_message_path)])
-        cmd.append("-")
-        return cmd
+            try:
+                _log(
+                    "resuming thread "
+                    f"session_id={request.session_id} mode={request.mode} workspace={request.workspace_dir} model={_codex_model(request.model)}"
+                )
+                return codex.thread_resume(request.session_id, **self._thread_kwargs(request)), True
+            except Exception as e:
+                if _is_missing_thread_error(e):
+                    _log(
+                        "resume target missing; starting new thread "
+                        f"session_id={request.session_id} mode={request.mode} workspace={request.workspace_dir}: {e}"
+                    )
+                else:
+                    _log(
+                        "resume failed; starting new thread "
+                        f"session_id={request.session_id} mode={request.mode} workspace={request.workspace_dir}",
+                        exc_info=True,
+                    )
+        _log(f"starting new thread mode={request.mode} workspace={request.workspace_dir} model={_codex_model(request.model)}")
+        return codex.thread_start(**self._thread_start_kwargs(request)), False
+
+    async def _start_or_resume_thread_async(self, codex: Any, request: AgentRunRequest) -> tuple[Any, bool]:
+        if request.session_id:
+            try:
+                _log(
+                    "resuming async thread "
+                    f"session_id={request.session_id} mode={request.mode} workspace={request.workspace_dir} model={_codex_model(request.model)}"
+                )
+                return await codex.thread_resume(request.session_id, **self._thread_kwargs(request)), True
+            except Exception as e:
+                if _is_missing_thread_error(e):
+                    _log(
+                        "async resume target missing; starting new thread "
+                        f"session_id={request.session_id} mode={request.mode} workspace={request.workspace_dir}: {e}"
+                    )
+                else:
+                    _log(
+                        "async resume failed; starting new thread "
+                        f"session_id={request.session_id} mode={request.mode} workspace={request.workspace_dir}",
+                        exc_info=True,
+                    )
+        _log(f"starting new async thread mode={request.mode} workspace={request.workspace_dir} model={_codex_model(request.model)}")
+        return await codex.thread_start(**self._thread_start_kwargs(request)), False
 
     def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
         try:
-            env = self._env_for(request)
-            with tempfile.TemporaryDirectory(prefix="ai-mime-codex-") as td:
-                output_path = Path(td) / "last_message.txt"
-                cmd = self.build_command(request, prompt, output_last_message_path=output_path)
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(request.workspace_dir),
-                    env=env,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
+            Codex, _AsyncCodex, _CodexConfig, _Sandbox = _load_codex_sdk()
+            with Codex(config=self._config_for(request)) as codex:
+                _install_codex_sdk_approval_handler(codex)
+                _log(f"run start mode={request.mode} workspace={request.workspace_dir} session_id={request.session_id or '<new>'}")
+                thread, resumed = self._start_or_resume_thread(codex, request)
+                output_schema = _read_output_schema(request.schema_path)
+                turn_kwargs = self._thread_kwargs(request)
+                if output_schema is not None:
+                    turn_kwargs["output_schema"] = output_schema
+                _log(
+                    f"turn start thread_id={_field(thread, 'id') or '<unknown>'} resumed={resumed} "
+                    f"schema={'yes' if output_schema is not None else 'no'} prompt_chars={len(prompt)}"
                 )
-                self._active_process = proc
+                turn = thread.turn(prompt, **turn_kwargs)
+                self._active_turn = turn
                 self._interrupted = False
-                stdout, stderr = proc.communicate(prompt)
-                events = parse_codex_jsonl(stdout.splitlines())
-                text_parts = [str(e.get("text") or "") for e in events if e.get("event") == "text"]
-                session_events = [e for e in events if e.get("event") == "session_started"]
-                done_events = [e for e in events if e.get("event") == "done"]
-                last_done = done_events[-1] if done_events else {}
-                last_session = session_events[-1] if session_events else {}
-                summary = "\n".join(part for part in text_parts if part).strip()
-                if output_path.exists():
-                    summary = output_path.read_text(encoding="utf-8").strip() or summary
-                summary = summary or str(last_done.get("summary") or "").strip() or "Codex completed the request."
-                status = "success" if proc.returncode == 0 and not any(e.get("event") == "error" for e in events) else "failed"
+                result = turn.run()
+                status = _enum_value(_field(result, "status")) or "success"
+                if status == "completed":
+                    status = "success"
                 if self._interrupted:
                     status = "cancelled"
-                error = None if status == "success" else (stderr.strip() or str(last_done.get("error") or "Codex CLI request failed."))
-                session_id = str(last_done.get("session_id") or last_session.get("session_id") or request.session_id or "")
+                error_obj = _field(result, "error")
+                error = _extract_text(error_obj) or None
+                summary = (
+                    _extract_text(_field(result, "final_response", "finalResponse"))
+                    or _summary_from_items(_field(result, "items") or [])
+                    or "Codex completed the request."
+                )
+                usage = _as_dict(_field(result, "usage"))
+                logs = [
+                    json.dumps(
+                        {
+                            "event": "codex_turn",
+                            "thread_id": _field(thread, "id") or request.session_id or "",
+                            "turn_id": _field(result, "id") or "",
+                            "status": status,
+                            "duration_ms": _field(result, "duration_ms", "durationMs"),
+                            "usage": usage or None,
+                            "error": error,
+                        },
+                        ensure_ascii=False,
+                    )
+                ]
+                _log(
+                    f"turn complete thread_id={_field(thread, 'id') or '<unknown>'} status={status} "
+                    f"summary_chars={len(summary)} error={error or ''}"
+                )
                 return AgentRunResult(
-                    status=status,  # type: ignore[arg-type]
-                    session_id=session_id,
+                    status=status if status in {"success", "failed", "cancelled"} else "success",  # type: ignore[arg-type]
+                    session_id=str(_field(thread, "id") or request.session_id or ""),
                     summary=summary,
-                    logs=[json.dumps(e, ensure_ascii=False) for e in events],
-                    error=error,
+                    logs=logs,
+                    error=error if status != "success" else None,
                 )
         except Exception as e:
+            _log(f"run failed mode={request.mode} workspace={request.workspace_dir}: {e}", exc_info=True)
             return AgentRunResult(
-                status="failed",
+                status="cancelled" if self._interrupted else "failed",
                 session_id=request.session_id or "",
-                summary="Codex CLI request failed.",
+                summary="Codex request failed.",
                 error=str(e),
             )
         finally:
-            self._active_process = None
+            self._active_turn = None
+            self._active_loop = None
 
     async def stream_chat(
         self,
         request: AgentRunRequest,
         prompt: str,
-        **_kwargs: Any,
+        **kwargs: Any,
     ) -> AsyncIterator[AgentStreamEvent]:
-        env = self._env_for(request)
-        cmd = self.build_command(request, prompt)
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(request.workspace_dir),
-            env=env,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_CODEX_STDOUT_LIMIT,
-        )
-        self._active_process = proc
-        self._interrupted = False
-        assert proc.stdin is not None
-        proc.stdin.write(prompt.encode("utf-8"))
-        await proc.stdin.drain()
-        proc.stdin.close()
-        assert proc.stdout is not None
+        on_client = kwargs.get("on_client")
+        _Codex, AsyncCodex, _CodexConfig, _Sandbox = _load_codex_sdk()
         text_parts: list[str] = []
         final_session_id = request.session_id or ""
+        saw_text_delta = False
         try:
-            async for raw in proc.stdout:
-                try:
-                    line = raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    continue
-                events = parse_codex_jsonl([line])
-                for event in events:
-                    if event.get("event") == "text":
-                        text_parts.append(str(event.get("text") or ""))
-                    if event.get("event") == "session_started" and event.get("session_id"):
-                        final_session_id = str(event.get("session_id") or final_session_id)
-                    if event.get("event") == "done" and event.get("session_id"):
-                        final_session_id = str(event.get("session_id") or final_session_id)
-                    yield event
-            stderr = ""
-            if proc.stderr is not None:
-                stderr_bytes = await proc.stderr.read()
-                stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
-            rc = await proc.wait()
+            async with AsyncCodex(config=self._config_for(request)) as codex:
+                _install_codex_sdk_approval_handler(codex)
+                _log(f"stream start mode={request.mode} workspace={request.workspace_dir} session_id={request.session_id or '<new>'}")
+                thread, resumed = await self._start_or_resume_thread_async(codex, request)
+                final_session_id = str(_field(thread, "id") or final_session_id)
+                yield {"event": "session_started", "session_id": final_session_id}
+                output_schema = _read_output_schema(request.schema_path)
+                turn_kwargs = self._thread_kwargs(request)
+                if output_schema is not None:
+                    turn_kwargs["output_schema"] = output_schema
+                _log(
+                    f"stream turn start thread_id={final_session_id or '<unknown>'} resumed={resumed} "
+                    f"schema={'yes' if output_schema is not None else 'no'} prompt_chars={len(prompt)}"
+                )
+                turn = await thread.turn(prompt, **turn_kwargs)
+                self._active_turn = turn
+                self._active_loop = asyncio.get_running_loop()
+                self._interrupted = False
+                if callable(on_client):
+                    try:
+                        on_client(_AsyncCodexInterruptClient(self))
+                    except Exception:
+                        pass
+                async for notification in turn.stream():
+                    method = str(_field(notification, "method") or "")
+                    if method == "item/agentMessage/delta":
+                        saw_text_delta = True
+                    if saw_text_delta and method == "item/completed":
+                        continue
+                    for event in _notification_to_agent_events(notification):
+                        if event.get("event") == "text":
+                            text_parts.append(str(event.get("text") or ""))
+                        yield event
+                _log(
+                    f"stream complete thread_id={final_session_id or '<unknown>'} "
+                    f"status={'cancelled' if self._interrupted else 'success'} summary_chars={len(chr(10).join(text_parts).strip())}"
+                )
+                yield {
+                    "event": "done",
+                    "session_id": final_session_id,
+                    "status": "cancelled" if self._interrupted else "success",
+                    "error": "interrupted" if self._interrupted else None,
+                    "summary": "\n".join(text_parts).strip(),
+                }
+        except Exception as e:
+            status = "cancelled" if self._interrupted else "failed"
             if self._interrupted:
                 yield {"event": "interrupted"}
-                yield {
-                    "event": "done",
-                    "session_id": final_session_id,
-                    "status": "cancelled",
-                    "error": "interrupted",
-                    "summary": "\n".join(text_parts).strip(),
-                }
-            elif rc != 0:
-                yield {"event": "error", "message": stderr or f"Codex CLI exited {rc}."}
-                yield {
-                    "event": "done",
-                    "session_id": final_session_id,
-                    "status": "failed",
-                    "error": stderr or f"Codex CLI exited {rc}.",
-                    "summary": "\n".join(text_parts).strip(),
-                }
             else:
-                yield {
-                    "event": "done",
-                    "session_id": final_session_id,
-                    "status": "success",
-                    "error": None,
-                    "summary": "\n".join(text_parts).strip(),
-                }
+                yield {"event": "error", "message": str(e)}
+            _log(f"stream failed mode={request.mode} workspace={request.workspace_dir}: {e}", exc_info=True)
+            yield {
+                "event": "done",
+                "session_id": final_session_id,
+                "status": status,
+                "error": "interrupted" if self._interrupted else str(e),
+                "summary": "\n".join(text_parts).strip(),
+            }
         finally:
-            self._active_process = None
+            self._active_turn = None
+            self._active_loop = None
 
-    def list_sessions(self, _directory: Path) -> list[dict[str, Any]]:
+    def list_sessions(self, directory: Path) -> list[dict[str, Any]]:
+        try:
+            Codex, _AsyncCodex, _CodexConfig, _Sandbox = _load_codex_sdk()
+            with Codex(config=self._config_for(cwd=directory)) as codex:
+                response = codex.thread_list(cwd=str(directory.resolve()))
+        except Exception:
+            return []
         rows: list[dict[str, Any]] = []
-        directory = _directory.resolve()
-        for obj in _read_jsonl(_codex_home() / "session_index.jsonl"):
-            session_id = obj.get("id")
-            if not isinstance(session_id, str) or not session_id:
+        for thread in _thread_response_items(response):
+            session_id = _field(thread, "id")
+            if not session_id:
                 continue
-            cwd = _codex_session_cwd(session_id)
-            if cwd is not None:
-                try:
-                    if Path(cwd).expanduser().resolve() != directory:
-                        continue
-                except OSError:
-                    continue
-            summary = obj.get("thread_name") if isinstance(obj.get("thread_name"), str) else None
-            updated_at = obj.get("updated_at") if isinstance(obj.get("updated_at"), str) else None
+            updated_at = _thread_updated_at(thread)
             rows.append({
-                "session_id": session_id,
-                "summary": summary or session_id,
+                "session_id": str(session_id),
+                "summary": _thread_summary(thread) or str(session_id),
                 "updated_at": updated_at,
                 "last_modified": updated_at,
                 "source": "codex",
             })
         return sorted(rows, key=lambda item: str(item.get("updated_at") or item.get("last_modified") or ""), reverse=True)
 
-    def load_messages(self, _session_id: str, _directory: Path) -> list[dict[str, Any]]:
-        path = _find_codex_session_file(_session_id)
-        if path is None:
+    def load_messages(self, session_id: str, directory: Path) -> list[dict[str, Any]]:
+        try:
+            Codex, _AsyncCodex, _CodexConfig, _Sandbox = _load_codex_sdk()
+            with Codex(config=self._config_for(cwd=directory)) as codex:
+                thread = codex.thread_resume(session_id, cwd=str(directory), sandbox=self._sandbox_value())
+                response = thread.read(include_turns=True)
+        except Exception:
             return []
         messages: list[dict[str, Any]] = []
-        for obj in _read_jsonl(path):
-            if obj.get("type") != "response_item":
-                continue
-            payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
-            if payload.get("type") != "message":
-                continue
-            role = payload.get("role")
-            if role not in {"user", "assistant"}:
-                continue
-            text = _codex_message_text(payload)
-            if not text.strip():
-                continue
-            messages.append({
-                "type": role,
-                "role": role,
-                "uuid": payload.get("id") if isinstance(payload.get("id"), str) else None,
-                "session_id": _session_id,
-                "message": text,
-            })
+        _collect_visible_messages(response, session_id, messages)
         return messages
 
     def interrupt(self) -> bool:
-        proc = self._active_process
-        if proc is None or proc.returncode is not None:
+        turn = self._active_turn
+        if turn is None:
             return False
         self._interrupted = True
         try:
-            proc.send_signal(signal.SIGINT)
-        except ProcessLookupError:
-            return False
+            result = turn.interrupt()
+            if hasattr(result, "__await__"):
+                loop = self._active_loop
+                if loop is None or not loop.is_running():
+                    return False
+                asyncio.run_coroutine_threadsafe(result, loop)
+            return True
         except Exception:
-            try:
-                proc.terminate()
-            except Exception:
-                return False
-        return True
+            return False

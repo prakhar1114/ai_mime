@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 import time
@@ -24,8 +25,17 @@ from ai_mime.agent_runner.runner import (
     run_skill_e2e_test,
     validate_skill_package,
 )
+from ai_mime.debug_log import log as debug_log
 from ai_mime.user_config import load_user_config
 from llm_resolver import runtime_model_name
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log(message: str, *, exc_info: bool = False) -> None:
+    logger.info(message)
+    debug_log(f"[skill-build-chat] {message}", exc_info=exc_info)
 
 
 def _utc_now() -> str:
@@ -158,6 +168,10 @@ class WorkflowSkillBuildService:
         request = self._build_request(session_id=resume_id, model=selected_model)
         if resume_id is None:
             request = request.model_copy(update={"system_prompt": _build_prompt(request)})
+        _log(
+            f"chat_stream start runtime={self.runtime_id} workflow={self.workflow_dir} "
+            f"session_id={resume_id or '<new>'} model={selected_model or '<default>'} message_chars={len(text)}"
+        )
 
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
@@ -194,6 +208,7 @@ class WorkflowSkillBuildService:
         final_error: str | None = None
         final_summary = ""
         stream_done = asyncio.Event()
+        recorded_started_session = False
 
         auto_allow = [
             "Glob", "Grep", "Read", "Write", "Edit", "MultiEdit", "Skill",
@@ -206,6 +221,7 @@ class WorkflowSkillBuildService:
             try:
                 with tempfile.TemporaryDirectory(prefix="ai-mime-skill-build-") as td:
                     local_request = request.model_copy(update={"temp_dir": Path(td)})
+                    _log(f"chat_stream pump start temp_dir={td} runtime={self.runtime_id}")
                     async for event in self.adapter.stream_chat(
                         local_request,
                         text,
@@ -213,8 +229,11 @@ class WorkflowSkillBuildService:
                         auto_allow_tools=auto_allow,
                         on_client=_store_client,
                     ):
+                        if event.get("event") in {"error", "done", "tool_use", "interrupted", "session_started"}:
+                            _log(f"chat_stream event {event}")
                         await event_queue.put(event)
             except Exception as e:
+                _log(f"chat_stream pump failed: {e}", exc_info=True)
                 await event_queue.put({"event": "error", "message": str(e)})
             finally:
                 stream_done.set()
@@ -226,7 +245,26 @@ class WorkflowSkillBuildService:
                 event = await event_queue.get()
                 if event.get("__sentinel__"):
                     break
-                if event.get("event") == "done":
+                event_type = event.get("event")
+                if event_type == "session_started":
+                    final_session_id = str(event.get("session_id") or final_session_id)
+                    if final_session_id and not recorded_started_session:
+                        self._record_session(
+                            session_id=final_session_id,
+                            previous_session_id=session_id,
+                            summary=(text[:80] or final_session_id),
+                            status="running",
+                            error=None,
+                            model=selected_model,
+                        )
+                        recorded_started_session = True
+                elif event_type == "error":
+                    final_status = "failed"
+                    final_error = str(event.get("message") or "Skill-build runtime error.")
+                elif event_type == "interrupted":
+                    final_status = "cancelled"
+                    final_error = "interrupted"
+                elif event_type == "done":
                     final_session_id = str(event.get("session_id") or final_session_id)
                     final_status = str(event.get("status") or "success")
                     final_error = event.get("error")
@@ -249,6 +287,10 @@ class WorkflowSkillBuildService:
             self._active_loop = None
 
         if final_session_id:
+            _log(
+                f"chat_stream complete runtime={self.runtime_id} session_id={final_session_id} "
+                f"status={final_status} summary_chars={len(final_summary)} error={final_error or ''}"
+            )
             self._record_session(
                 session_id=final_session_id,
                 previous_session_id=session_id,
@@ -266,7 +308,7 @@ class WorkflowSkillBuildService:
         client = self._active_client
         loop = self._active_loop
         if client is None or loop is None:
-            return False
+            return self.adapter.interrupt()
         try:
             fut = asyncio.run_coroutine_threadsafe(client.interrupt(), loop)
             fut.result(timeout=5)

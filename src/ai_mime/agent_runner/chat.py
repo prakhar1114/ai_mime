@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 import time
@@ -15,8 +16,17 @@ from ai_mime.agent_runner.adapters.registry import get_agent_runtime
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.agent_runner.runner import build_agent_run_request, _build_prompt, _read_json, _write_json
 from ai_mime.app_data import get_workflows_dir
+from ai_mime.debug_log import log as debug_log
 from ai_mime.user_config import load_user_config
 from llm_resolver import runtime_model_name
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log(message: str, *, exc_info: bool = False) -> None:
+    logger.info(message)
+    debug_log(f"[agent-chat] {message}", exc_info=exc_info)
 
 
 class AgentBusyError(RuntimeError):
@@ -199,6 +209,10 @@ class WorkspaceAgentChatService:
         request = self._build_request(session_id=resume_id, model=selected_model)
         if resume_id is None:
             request = request.model_copy(update={"system_prompt": _build_prompt(request)})
+        _log(
+            f"chat_stream start runtime={self.runtime_id} mode={self.mode} workspace={self.workspace_dir} "
+            f"session_id={resume_id or '<new>'} model={selected_model or '<default>'} message_chars={len(text)}"
+        )
 
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
@@ -246,6 +260,7 @@ class WorkspaceAgentChatService:
             try:
                 with tempfile.TemporaryDirectory(prefix="ai-mime-agent-") as td:
                     local_request = request.model_copy(update={"temp_dir": Path(td)})
+                    _log(f"chat_stream pump start temp_dir={td} runtime={self.runtime_id} mode={self.mode}")
                     async for event in self.adapter.stream_chat(
                         local_request,
                         text,
@@ -253,8 +268,11 @@ class WorkspaceAgentChatService:
                         auto_allow_tools=auto_allow,
                         on_client=_store_client,
                     ):
+                        if event.get("event") in {"error", "done", "tool_use"}:
+                            _log(f"chat_stream event {event}")
                         await event_queue.put(event)
             except Exception as e:
+                _log(f"chat_stream pump failed: {e}", exc_info=True)
                 await event_queue.put({"event": "error", "message": str(e)})
             finally:
                 stream_done.set()
@@ -289,6 +307,10 @@ class WorkspaceAgentChatService:
             self._active_loop = None
 
         if final_session_id:
+            _log(
+                f"chat_stream complete runtime={self.runtime_id} mode={self.mode} session_id={final_session_id} "
+                f"status={final_status} summary_chars={len(final_summary)} error={final_error or ''}"
+            )
             self._record_session(
                 session_id=final_session_id,
                 previous_session_id=session_id,

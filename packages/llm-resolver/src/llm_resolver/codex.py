@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import base64
+import asyncio
+import concurrent.futures
 import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,12 @@ def _codex_exe() -> str:
     return exe
 
 
+def _load_codex_sdk() -> tuple[Any, Any, Any, Any, Any]:
+    from openai_codex import AsyncCodex, CodexConfig, LocalImageInput, Sandbox, TextInput  # type: ignore[import-not-found]
+
+    return AsyncCodex, CodexConfig, LocalImageInput, Sandbox, TextInput
+
+
 def _messages_to_codex_prompt(messages: list[dict[str, Any]], tmp_dir: Path) -> tuple[str, list[Path]]:
     prompt_parts: list[str] = []
     images: list[Path] = []
@@ -149,6 +156,15 @@ def _parse_json_output(text: str, *, where: str) -> Any:
         raise RuntimeError(f"{where}: Codex output was not valid JSON: {value[:500]}")
 
 
+def _codex_model(model: str | None) -> str | None:
+    if not model:
+        return None
+    text = model.strip()
+    if text.startswith("openai/"):
+        return text.split("/", 1)[1].strip() or None
+    return text or None
+
+
 def _codex_output_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Codex/OpenAI structured outputs require strict object schemas."""
     normalized = json.loads(json.dumps(schema))
@@ -174,6 +190,58 @@ def _codex_output_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+async def _run_codex_structured_async(
+    *,
+    messages: list[dict[str, Any]],
+    response_schema: dict[str, Any],
+    where: str,
+    model: str | None,
+    timeout: float,
+) -> Any:
+    with tempfile.TemporaryDirectory(prefix="llm-resolver-codex-") as td:
+        tmp_dir = Path(td)
+        prompt, images = _messages_to_codex_prompt(messages, tmp_dir)
+        AsyncCodex, CodexConfig, LocalImageInput, Sandbox, TextInput = _load_codex_sdk()
+        codex_exe = _codex_exe()
+        config = CodexConfig(
+            codex_bin=codex_exe,
+            cwd=str(tmp_dir),
+            env=_codex_env(codex_exe=codex_exe),
+        )
+        run_input: list[Any] = [TextInput(prompt)]
+        run_input.extend(LocalImageInput(str(image)) for image in images)
+        model_name = _codex_model(model)
+
+        async with AsyncCodex(config=config) as codex:
+            thread_kwargs: dict[str, Any] = {
+                "cwd": str(tmp_dir),
+                "sandbox": Sandbox.read_only,
+            }
+            if model_name:
+                thread_kwargs["model"] = model_name
+            thread = await codex.thread_start(**thread_kwargs)
+            result = await asyncio.wait_for(
+                thread.run(
+                    run_input,
+                    sandbox=Sandbox.read_only,
+                    output_schema=_codex_output_schema(response_schema),
+                    model=model_name,
+                ),
+                timeout=timeout,
+            )
+        final_response = getattr(result, "final_response", None)
+        return _parse_json_output(str(final_response or ""), where=where)
+
+
+def _run_async_from_sync(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def run_codex_structured(
     *,
     messages: list[dict[str, Any]],
@@ -182,68 +250,20 @@ def run_codex_structured(
     model: str | None = None,
     timeout: float = 300.0,
 ) -> Any:
-    """Run Codex CLI for schema-constrained JSON.
+    """Run Codex SDK for schema-constrained JSON.
 
     This intentionally does not require OPENAI_API_KEY. Codex may be authenticated
-    through its own CLI login flow; auth failures are surfaced from stderr.
+    through its own login flow; auth failures are surfaced from the SDK runtime.
     """
-    with tempfile.TemporaryDirectory(prefix="llm-resolver-codex-") as td:
-        tmp_dir = Path(td)
-        schema_path = tmp_dir / "schema.json"
-        output_path = tmp_dir / "last-message.json"
-        schema_path.write_text(json.dumps(_codex_output_schema(response_schema)), encoding="utf-8")
-        prompt, images = _messages_to_codex_prompt(messages, tmp_dir)
-
-        codex_exe = _codex_exe()
-        cmd = [
-            codex_exe,
-            "exec",
-            "--json",
-            "--cd",
-            str(tmp_dir),
-            "--sandbox",
-            "read-only",
-            "--skip-git-repo-check",
-            "--output-schema",
-            str(schema_path),
-            "-o",
-            str(output_path),
-        ]
-        if model:
-            cmd.extend(["-m", model.split("/", 1)[1] if model.startswith("openai/") else model])
-        for image in images:
-            cmd.extend(["-i", str(image)])
-        cmd.append("-")
-
-        proc = subprocess.run(
-            cmd,
-            cwd=str(tmp_dir),
-            env=_codex_env(codex_exe=codex_exe),
-            input=prompt,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            check=False,
+    try:
+        return _run_async_from_sync(
+            _run_codex_structured_async(
+                messages=messages,
+                response_schema=response_schema,
+                where=where,
+                model=model,
+                timeout=timeout,
+            )
         )
-        if proc.returncode != 0:
-            detail = "\n".join(part for part in (proc.stdout.strip(), proc.stderr.strip()) if part)
-            raise RuntimeError(f"{where}: Codex failed with exit code {proc.returncode}: {detail}")
-        if output_path.exists():
-            return _parse_json_output(output_path.read_text(encoding="utf-8"), where=where)
-        # Fallback for older Codex versions where -o may not write despite success.
-        for line in reversed(proc.stdout.splitlines()):
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(obj, dict):
-                msg = obj.get("msg") if isinstance(obj.get("msg"), dict) else obj
-                if msg.get("type") in {"item.completed", "item.started"} and isinstance(msg.get("item"), dict):
-                    item = msg["item"]
-                    if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
-                        return _parse_json_output(item["text"], where=where)
-                for key in ("result", "summary", "content", "message", "final_response"):
-                    if isinstance(msg.get(key), str):
-                        return _parse_json_output(str(msg[key]), where=where)
-        return _parse_json_output(proc.stdout, where=where)
+    except asyncio.TimeoutError as e:
+        raise RuntimeError(f"{where}: Codex timed out after {timeout:g}s.") from e

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -28,6 +29,15 @@ from ai_mime.app_data import (
     get_workflows_dir,
     workflow_runtime_env,
 )
+from ai_mime.debug_log import log as debug_log
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log(message: str, *, exc_info: bool = False) -> None:
+    logger.info(message)
+    debug_log(f"[agent-runner] {message}", exc_info=exc_info)
 
 
 class AgentAdapter(Protocol):
@@ -420,6 +430,10 @@ Existing memory:
 def run_agent_task(request: AgentRunRequest, adapter: AgentAdapter, prompt: str | None = None) -> AgentRunResult:
     session_id = _load_or_create_session_id(request)
     request = request.model_copy(update={"session_id": session_id or None})
+    _log(
+        f"run_agent_task start provider={request.provider} mode={request.mode} workspace={request.workspace_dir} "
+        f"workflow={request.workflow_dir} session_id={request.session_id or '<new>'} adapter={getattr(adapter, 'id', type(adapter).__name__)}"
+    )
 
     agent_dir = request.workflow_dir / (".agent" if request.mode == "general" else "agent")
     outputs_dir = request.workflow_dir / "outputs"
@@ -438,10 +452,20 @@ def run_agent_task(request: AgentRunRequest, adapter: AgentAdapter, prompt: str 
         # The app-managed runtime env is injected into the SDK run via
         # ClaudeAgentOptions.env (see _options_kwargs_for), so no global
         # os.environ mutation is needed here.
-        result = adapter.run(request, prompt or _build_prompt(request))
+        run_prompt = prompt or _build_prompt(request)
+        _log(f"run_agent_task invoking adapter prompt_chars={len(run_prompt)} temp_dir={td}")
+        try:
+            result = adapter.run(request, run_prompt)
+        except Exception as e:
+            _log(f"run_agent_task adapter raised: {e}", exc_info=True)
+            raise
 
     final_session_id = result.session_id or session_id
     result = result.model_copy(update={"session_id": final_session_id})
+    _log(
+        f"run_agent_task complete status={result.status} session_id={final_session_id or '<none>'} "
+        f"summary_chars={len(result.summary or '')} error={result.error or ''}"
+    )
     _write_json(
         agent_dir / "session.json",
         {
