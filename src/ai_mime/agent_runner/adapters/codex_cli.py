@@ -108,6 +108,25 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _jsonable(value: Any, _seen: set[int] | None = None) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if _seen is None:
+        _seen = set()
+    value_id = id(value)
+    if value_id in _seen:
+        return ""
+    _seen.add(value_id)
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item, _seen) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item, _seen) for key, item in value.items()}
+    data = _as_dict(value)
+    if data and data is not value:
+        return _jsonable(data, _seen)
+    return str(value)
+
+
 def _root(value: Any) -> Any:
     return getattr(value, "root", value)
 
@@ -132,6 +151,11 @@ def _field(value: Any, *names: str) -> Any:
 def _enum_value(value: Any) -> str:
     raw = getattr(value, "value", value)
     return str(raw or "")
+
+
+def _is_tool_item_type(item_type: str) -> bool:
+    normalized = item_type.replace("_", "").lower()
+    return "tool" in normalized or "command" in normalized
 
 
 def _codex_model(model: str | None) -> str | None:
@@ -263,6 +287,7 @@ def _codex_capability_config_overrides(request: AgentRunRequest | None) -> list[
 
 def _codex_config_overrides(request: AgentRunRequest | None) -> list[str]:
     return [
+        "sandbox_workspace_write.network_access=true",
         *_codex_capability_config_overrides(request),
         *_codex_mcp_config_overrides(request.mcp_servers if request is not None else None),
     ]
@@ -301,6 +326,74 @@ def _codex_turn_input(prompt: str, *, skills: Any = None) -> Any:
     return [skill_input, TextInput(prompt)]
 
 
+def _tool_result_content(source: Any) -> Any:
+    result = _field(source, "result")
+    if result is not None:
+        content = _field(result, "content", "structuredContent", "structured_content")
+        return content if content is not None else result
+
+    content = _field(
+        source,
+        "content",
+        "output",
+        "aggregatedOutput",
+        "aggregated_output",
+        "contentItems",
+        "content_items",
+        "structuredContent",
+        "structured_content",
+        "message",
+    )
+    if content is not None:
+        return content
+
+    error_obj = _field(source, "error")
+    if error_obj is not None:
+        return _extract_text(error_obj) or error_obj
+
+    stdout = _field(source, "stdout")
+    stderr = _field(source, "stderr")
+    if stdout is not None or stderr is not None:
+        return "\n".join(str(part) for part in (stdout, stderr) if part)
+
+    status = _enum_value(_field(source, "status")).lower()
+    if status == "declined":
+        command = _field(source, "command")
+        return f"Command blocked: {command}" if command else "Command blocked."
+
+    return None
+
+
+def _tool_result_is_error(source: Any) -> bool:
+    explicit = _field(source, "isError", "is_error")
+    if explicit is not None:
+        return bool(explicit)
+    if _field(source, "error") is not None:
+        return True
+    status = _enum_value(_field(source, "status")).lower()
+    return status in {"declined", "failed", "errored", "error"}
+
+
+def _tool_result_event(source: Any, *, tool_id: str | None = None) -> AgentStreamEvent | None:
+    resolved_id = tool_id or str(_field(source, "toolUseId", "tool_use_id", "toolCallId", "tool_call_id", "id") or "")
+    content = _jsonable(_tool_result_content(source))
+    if not resolved_id and content is None:
+        return None
+    return {
+        "event": "tool_result",
+        "tool_use_id": resolved_id,
+        "content": content,
+        "is_error": _tool_result_is_error(source),
+    }
+
+
+def _is_completed_agent_message(notification: Any) -> bool:
+    payload = _field(notification, "payload") or notification
+    item = _root(_field(payload, "item") or _as_dict(payload).get("item"))
+    item_type = str(_field(item, "type") or "").lower().replace("_", "")
+    return "agentmessage" in item_type or str(_field(item, "role") or "").lower() == "assistant"
+
+
 def _notification_to_agent_events(notification: Any) -> list[AgentStreamEvent]:
     method = str(_field(notification, "method") or "")
     payload = _field(notification, "payload") or notification
@@ -310,21 +403,48 @@ def _notification_to_agent_events(notification: Any) -> list[AgentStreamEvent]:
         text = _extract_text(_field(payload, "delta") or data.get("delta"))
         return [{"event": "text", "text": text}] if text else []
 
+    if method == "item/commandExecution/outputDelta":
+        tool_id = str(_field(payload, "itemId", "item_id") or "")
+        text = _extract_text(_field(payload, "delta") or data.get("delta"))
+        return [{
+            "event": "tool_result",
+            "tool_use_id": tool_id,
+            "content": text,
+            "is_error": False,
+            "append": True,
+        }] if tool_id or text else []
+
+    if method == "item/mcpToolCall/progress":
+        tool_id = str(_field(payload, "itemId", "item_id") or "")
+        text = _extract_text(_field(payload, "message") or data.get("message"))
+        return [{
+            "event": "tool_result",
+            "tool_use_id": tool_id,
+            "content": text,
+            "is_error": False,
+            "append": True,
+        }] if tool_id or text else []
+
     if method == "item/completed":
         item = _root(_field(payload, "item") or data.get("item"))
         item_type = str(_field(item, "type") or "").lower()
         text = _extract_text(_field(item, "text", "content", "message"))
         if text and ("agentmessage" in item_type.replace("_", "") or _field(item, "role") == "assistant"):
             return [{"event": "text", "text": text}]
+        if _is_tool_item_type(item_type):
+            event = _tool_result_event(item, tool_id=str(_field(item, "id") or ""))
+            return [event] if event is not None else []
         return []
 
     if method in {"item/started", "item/updated"}:
         item = _root(_field(payload, "item") or data.get("item"))
         item_type = str(_field(item, "type") or "").lower()
-        if "tool" not in item_type and "command" not in item_type:
+        if not _is_tool_item_type(item_type):
             return []
-        name = str(
-            _field(item, "name", "tool", "toolName", "tool_name", "command")
+        normalized_item_type = item_type.replace("_", "").lower()
+        is_command = "command" in normalized_item_type
+        name = "Bash" if is_command else str(
+            _field(item, "name", "tool", "toolName", "tool_name")
             or item_type
             or "tool"
         )
@@ -334,6 +454,9 @@ def _notification_to_agent_events(notification: Any) -> list[AgentStreamEvent]:
         command = _field(item, "command")
         if command and "command" not in input_data:
             input_data["command"] = command
+        cwd = _field(item, "cwd")
+        if cwd and "cwd" not in input_data:
+            input_data["cwd"] = _jsonable(cwd)
         server = _field(item, "server")
         if server and "server" not in input_data:
             input_data["server"] = server
@@ -344,16 +467,9 @@ def _notification_to_agent_events(notification: Any) -> list[AgentStreamEvent]:
             "input": input_data,
         }]
 
-    if method in {"item/toolResult", "item/toolCallOutput", "item/completed"}:
-        tool_id = str(_field(payload, "toolUseId", "tool_use_id", "toolCallId", "tool_call_id", "id") or "")
-        content = _field(payload, "content", "output")
-        if tool_id or content is not None:
-            return [{
-                "event": "tool_result",
-                "tool_use_id": tool_id,
-                "content": content,
-                "is_error": bool(_field(payload, "isError", "is_error", "error")),
-            }]
+    if method in {"item/toolResult", "item/toolCallOutput"}:
+        event = _tool_result_event(payload)
+        return [event] if event is not None else []
 
     return []
 
@@ -430,7 +546,7 @@ class CodexCliRuntime(AgentRuntime):
         init=False,
     )
     codex_path: str | None = None
-    sandbox: str = "workspace-write"
+    sandbox: str = "danger-full-access"
     _active_turn: Any | None = field(default=None, init=False, repr=False)
     _active_loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
     _interrupted: bool = field(default=False, init=False, repr=False)
@@ -620,6 +736,7 @@ class CodexCliRuntime(AgentRuntime):
         skills = kwargs.get("skills")
         _Codex, AsyncCodex, _CodexConfig, _Sandbox = _load_codex_sdk()
         text_parts: list[str] = []
+        tool_result_parts: dict[str, list[str]] = {}
         final_session_id = request.session_id or ""
         saw_text_delta = False
         try:
@@ -650,11 +767,21 @@ class CodexCliRuntime(AgentRuntime):
                     method = str(_field(notification, "method") or "")
                     if method == "item/agentMessage/delta":
                         saw_text_delta = True
-                    if saw_text_delta and method == "item/completed":
+                    if saw_text_delta and method == "item/completed" and _is_completed_agent_message(notification):
                         continue
                     for event in _notification_to_agent_events(notification):
                         if event.get("event") == "text":
                             text_parts.append(str(event.get("text") or ""))
+                        elif event.get("event") == "tool_result" and event.get("append"):
+                            tool_id = str(event.get("tool_use_id") or "")
+                            if tool_id:
+                                parts = tool_result_parts.setdefault(tool_id, [])
+                                parts.append(str(event.get("content") or ""))
+                                event = {
+                                    key: value for key, value in event.items()
+                                    if key != "append"
+                                }
+                                event["content"] = "".join(parts)
                         yield event
                 _log(
                     f"stream complete thread_id={final_session_id or '<unknown>'} "

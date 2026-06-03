@@ -28,6 +28,7 @@ class AgentStreamEvent(TypedDict, total=False):
     tool_use_id: str
     content: Any
     is_error: bool
+    append: bool
     session_id: str
     status: str
     error: str | None

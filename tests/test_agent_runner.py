@@ -1309,6 +1309,7 @@ class AgentRunnerTests(unittest.TestCase):
             "browser_use_external",
         ):
             self.assertIn(f"features.{feature}=false", overrides)
+        self.assertIn("sandbox_workspace_write.network_access=true", overrides)
         self.assertIn('mcp_servers.cua.url="http://127.0.0.1:58840/mcp/"', overrides)
         self.assertIn("mcp_servers.cua.required=false", overrides)
         self.assertIn('mcp_servers.cua.default_tools_approval_mode="approve"', overrides)
@@ -1370,11 +1371,117 @@ class AgentRunnerTests(unittest.TestCase):
                 },
             }
         )
+        command_events = _notification_to_agent_events(
+            {
+                "method": "item/started",
+                "payload": {
+                    "item": {
+                        "id": "cmd1",
+                        "type": "commandExecution",
+                        "command": "printf ok",
+                        "commandActions": [],
+                        "cwd": "/tmp",
+                        "status": "inProgress",
+                    }
+                },
+            }
+        )
 
         self.assertEqual(text_events, [{"event": "text", "text": "hello"}])
         self.assertEqual(tool_events[0]["event"], "tool_use")
         self.assertEqual(tool_events[0]["name"], "computer_get_window_state")
         self.assertEqual(tool_events[0]["input"], {"server": "cua"})
+        self.assertEqual(command_events[0]["event"], "tool_use")
+        self.assertEqual(command_events[0]["name"], "Bash")
+        self.assertEqual(command_events[0]["input"], {"command": "printf ok", "cwd": "/tmp"})
+
+    def test_codex_notifications_map_tool_results(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import _notification_to_agent_events
+
+        command_delta = _notification_to_agent_events(
+            {
+                "method": "item/commandExecution/outputDelta",
+                "payload": {"itemId": "cmd1", "delta": "ok\n"},
+            }
+        )
+        command_completed = _notification_to_agent_events(
+            {
+                "method": "item/completed",
+                "payload": {
+                    "item": {
+                        "id": "cmd1",
+                        "type": "commandExecution",
+                        "command": "printf ok",
+                        "status": "completed",
+                        "aggregatedOutput": "ok\n",
+                        "exitCode": 0,
+                    }
+                },
+            }
+        )
+        mcp_completed = _notification_to_agent_events(
+            {
+                "method": "item/completed",
+                "payload": {
+                    "item": {
+                        "id": "mcp1",
+                        "type": "mcpToolCall",
+                        "server": "cua",
+                        "tool": "computer_get_window_state",
+                        "arguments": {},
+                        "status": "completed",
+                        "result": {"content": [{"type": "text", "text": "window ready"}]},
+                    }
+                },
+            }
+        )
+        mcp_failed = _notification_to_agent_events(
+            {
+                "method": "item/completed",
+                "payload": {
+                    "item": {
+                        "id": "mcp2",
+                        "type": "mcpToolCall",
+                        "server": "cua",
+                        "tool": "computer_get_window_state",
+                        "arguments": {},
+                        "status": "failed",
+                        "error": {"message": "window missing"},
+                    }
+                },
+            }
+        )
+        command_declined = _notification_to_agent_events(
+            {
+                "method": "item/completed",
+                "payload": {
+                    "item": {
+                        "id": "cmd2",
+                        "type": "commandExecution",
+                        "command": "rm -rf /tmp/example",
+                        "status": "declined",
+                        "commandActions": [],
+                        "cwd": "/tmp",
+                        "exitCode": None,
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(command_delta[0]["event"], "tool_result")
+        self.assertEqual(command_delta[0]["tool_use_id"], "cmd1")
+        self.assertEqual(command_delta[0]["content"], "ok\n")
+        self.assertTrue(command_delta[0]["append"])
+        self.assertEqual(command_completed[0]["content"], "ok\n")
+        self.assertFalse(command_completed[0]["is_error"])
+        self.assertEqual(mcp_completed[0]["tool_use_id"], "mcp1")
+        self.assertEqual(mcp_completed[0]["content"], [{"type": "text", "text": "window ready"}])
+        self.assertFalse(mcp_completed[0]["is_error"])
+        self.assertEqual(mcp_failed[0]["content"], "window missing")
+        self.assertTrue(mcp_failed[0]["is_error"])
+        self.assertEqual(command_declined[0]["tool_use_id"], "cmd2")
+        self.assertEqual(command_declined[0]["content"], "Command blocked: rm -rf /tmp/example")
+        self.assertTrue(command_declined[0]["is_error"])
 
     def test_codex_notification_text_extraction_skips_non_text_dicts(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import _notification_to_agent_events
@@ -1442,6 +1549,7 @@ class AgentRunnerTests(unittest.TestCase):
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
 
         class FakeSandbox:
+            full_access = "full-access"
             workspace_write = "workspace-write"
 
         class FakeTurnHandle:
@@ -1529,6 +1637,7 @@ class AgentRunnerTests(unittest.TestCase):
         captured: dict[str, object] = {}
 
         class FakeSandbox:
+            full_access = "full-access"
             workspace_write = "workspace-write"
 
         class FakeTurnHandle:
@@ -1593,6 +1702,111 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertIn('mcp_servers.cua.url="http://127.0.0.1:58840/mcp/"', overrides)
         self.assertEqual(events[0], {"event": "session_started", "session_id": "codex-thread"})
         self.assertEqual(events[-1]["event"], "done")
+
+    def test_codex_stream_chat_accumulates_command_output_deltas(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+        from openai_codex import CodexConfig
+
+        class FakeSandbox:
+            full_access = "full-access"
+            workspace_write = "workspace-write"
+
+        class FakeTurnHandle:
+            async def stream(self):  # type: ignore[no-untyped-def]
+                yield {
+                    "method": "item/agentMessage/delta",
+                    "payload": {"itemId": "msg1", "delta": "Running command."},
+                }
+                yield {
+                    "method": "item/completed",
+                    "payload": {
+                        "item": {
+                            "id": "msg1",
+                            "type": "agent_message",
+                            "content": [{"type": "output_text", "text": "Running command."}],
+                        }
+                    },
+                }
+                yield {
+                    "method": "item/started",
+                    "payload": {
+                        "item": {
+                            "id": "cmd1",
+                            "type": "commandExecution",
+                            "command": "printf 'one two'",
+                            "commandActions": [],
+                            "cwd": "/tmp",
+                            "status": "inProgress",
+                        }
+                    },
+                }
+                yield {
+                    "method": "item/commandExecution/outputDelta",
+                    "payload": {"itemId": "cmd1", "delta": "one"},
+                }
+                yield {
+                    "method": "item/commandExecution/outputDelta",
+                    "payload": {"itemId": "cmd1", "delta": " two"},
+                }
+                yield {
+                    "method": "item/completed",
+                    "payload": {
+                        "item": {
+                            "id": "cmd1",
+                            "type": "commandExecution",
+                            "command": "printf 'one two'",
+                            "commandActions": [],
+                            "cwd": "/tmp",
+                            "status": "completed",
+                            "aggregatedOutput": "one two",
+                            "exitCode": 0,
+                        }
+                    },
+                }
+
+        class FakeThread:
+            id = "codex-thread"
+
+            async def turn(self, _input_data, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeTurnHandle()
+
+        class FakeAsyncCodex:
+            def __init__(self, *, config):  # type: ignore[no-untyped-def]
+                self.config = config
+
+            async def __aenter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            async def __aexit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            async def thread_start(self, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeThread()
+
+        async def collect() -> list[dict]:
+            with tempfile.TemporaryDirectory() as td:
+                workspace = Path(td)
+                request = AgentRunRequest(
+                    provider="codex_cli",
+                    mode="general",
+                    workflow_dir=workspace,
+                    workspace_dir=workspace,
+                )
+                runtime = CodexCliRuntime(codex_path="/bin/codex")
+                out = []
+                async for event in runtime.stream_chat(request, "hello", skills=[]):
+                    out.append(event)
+                return out
+
+        with patch(
+            "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+            return_value=(object, FakeAsyncCodex, CodexConfig, FakeSandbox),
+        ):
+            events = asyncio.run(collect())
+
+        result_events = [event for event in events if event.get("event") == "tool_result"]
+        self.assertEqual([event["content"] for event in result_events], ["one", "one two", "one two"])
+        self.assertFalse(any("append" in event for event in result_events))
 
     def test_codex_runtime_interrupts_active_turn(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
@@ -1689,7 +1903,7 @@ class AgentRunnerTests(unittest.TestCase):
             workspace.mkdir()
             with patch(
                 "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
-                return_value=(FakeCodex, object, CodexConfig, SimpleNamespace(workspace_write="workspace-write")),
+                return_value=(FakeCodex, object, CodexConfig, SimpleNamespace(full_access="full-access", workspace_write="workspace-write")),
             ):
                 messages = CodexCliRuntime(codex_path="/bin/codex").load_messages("test-session", workspace)
 
@@ -1726,7 +1940,7 @@ class AgentRunnerTests(unittest.TestCase):
             workspace.mkdir()
             with patch(
                 "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
-                return_value=(FakeCodex, object, CodexConfig, SimpleNamespace(workspace_write="workspace-write")),
+                return_value=(FakeCodex, object, CodexConfig, SimpleNamespace(full_access="full-access", workspace_write="workspace-write")),
             ):
                 runtime = CodexCliRuntime(codex_path="/bin/codex")
                 self.assertEqual(runtime.list_sessions(workspace), [])
