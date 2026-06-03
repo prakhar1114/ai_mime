@@ -529,6 +529,10 @@ def _required_input_keys(optimized_plan: dict) -> set[str]:
     return keys
 
 
+def _runtime_root_for_skill(skill_dir: Path) -> Path:
+    return skill_dir.parent.parent if skill_dir.parent.name == "skills" else skill_dir
+
+
 def validate_skill_package(skill_dir: str | Path, schema: dict, optimized_plan: dict) -> None:
     skill_dir_p = Path(skill_dir)
     if not skill_dir_p.exists() or not skill_dir_p.is_dir():
@@ -575,8 +579,9 @@ def validate_skill_package(skill_dir: str | Path, schema: dict, optimized_plan: 
 
     for rel in ("scripts/run.py",):
         script = skill_dir_p / rel
+        python = get_python_path(_runtime_root_for_skill(skill_dir_p))
         proc = subprocess.run(
-            [sys.executable, "-m", "py_compile", str(script)],
+            [str(python), "-m", "py_compile", str(script)],
             cwd=str(skill_dir_p),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -652,7 +657,7 @@ def run_skill_e2e_test(
     skill_dir_p = Path(skill_dir)
     run_sh = skill_dir_p / "run.sh"
     run_script = skill_dir_p / "scripts" / "run.py"
-    runtime_root = skill_dir_p.parent.parent if skill_dir_p.parent.name == "skills" else skill_dir_p
+    runtime_root = _runtime_root_for_skill(skill_dir_p)
 
     inputs_path, synthesized_inputs, early = _resolve_e2e_inputs(
         skill_dir_p, optimized_plan, confirmed_inputs_path

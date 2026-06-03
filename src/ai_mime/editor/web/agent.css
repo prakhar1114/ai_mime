@@ -518,8 +518,7 @@ textarea:disabled {
 }
 
 .model-select {
-  min-width: 230px;
-  max-width: 320px;
+  width: clamp(112px, var(--model-select-width, 132px), min(100%, 320px));
   min-height: 38px;
   border: 0;
   border-radius: 999px;
@@ -680,7 +679,6 @@ textarea:disabled {
     flex-wrap: wrap;
   }
   .model-select {
-    min-width: min(100%, 230px);
-    max-width: 100%;
+    width: min(100%, var(--model-select-width, 132px));
   }
 }

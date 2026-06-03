@@ -281,6 +281,14 @@
       const selected = id === defaultModel ? " selected" : "";
       return `<option value="${escapeAttr(id)}" title="${escapeAttr(description)}"${selected}>${escapeHtml(label)}</option>`;
     }).join("");
+    updateModelSelectWidth();
+  }
+
+  function updateModelSelectWidth() {
+    const selected = el.modelSelect.options[el.modelSelect.selectedIndex];
+    const text = selected ? selected.textContent || selected.value || "" : "";
+    const width = Math.ceil(Math.max(112, Math.min(320, text.length * 7.2 + 42)));
+    el.modelSelect.style.setProperty("--model-select-width", `${width}px`);
   }
 
   function getStoredMessageText(message) {
@@ -709,6 +717,8 @@
       }
     });
   }
+
+  el.modelSelect.addEventListener("change", updateModelSelectWidth);
 
   if (el.toggleOverlayBtn) {
     el.toggleOverlayBtn.addEventListener("click", async () => {

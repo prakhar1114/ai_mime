@@ -5,6 +5,7 @@ import io
 import json
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -630,6 +631,30 @@ class AgentRunnerTests(unittest.TestCase):
             _write_valid_skill_package(skill_dir, schema, plan)
 
             validate_skill_package(skill_dir, schema, plan)
+
+    def test_validate_skill_package_uses_managed_python_for_py_compile(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            skill_dir = root / "skills" / "record-expenses-in-a-sheet"
+            schema = _schema()
+            plan = _optimized_plan_with_default_input()
+            _write_valid_skill_package(skill_dir, schema, plan)
+            fake_cli = root / "ai_mime"
+            fake_cli.write_text(
+                "#!/usr/bin/env sh\n"
+                "echo \"Usage: ai_mime [OPTIONS]\" >&2\n"
+                "echo \"Error: No such option: -m\" >&2\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o755)
+            real_python = Path(sys.executable)
+
+            with (
+                patch("ai_mime.agent_runner.runner.sys.executable", str(fake_cli)),
+                patch("ai_mime.agent_runner.runner.get_python_path", return_value=real_python),
+            ):
+                validate_skill_package(skill_dir, schema, plan)
 
     def test_validate_skill_package_rejects_missing_required_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
