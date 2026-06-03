@@ -30,6 +30,7 @@
   let sending = false;
   let streamController = null;
   let pendingReplayContext = "";
+  let activeRuntime = null;
 
   if (taskId && explicitPrefix && explicitPrefix.includes("/replay-agent")) {
     try {
@@ -372,13 +373,41 @@
     }
   }
 
+  function checkComposerState() {
+    if (sending) {
+      el.sendBtn.disabled = true;
+      el.input.disabled = true;
+      el.modelSelect.disabled = true;
+      return;
+    }
+    if (!currentSessionId) {
+      el.sendBtn.disabled = false;
+      el.input.disabled = false;
+      el.modelSelect.disabled = false;
+      return;
+    }
+    const active = sessions.find((s) => s.session_id === currentSessionId);
+    const sessionRuntime = active && active.runtime_id;
+    if (sessionRuntime && activeRuntime && sessionRuntime !== activeRuntime) {
+      el.sendBtn.disabled = true;
+      el.input.disabled = true;
+      el.modelSelect.disabled = true;
+      setError(`This conversation uses ${sessionRuntime}. Switch your agent runtime to continue it.`);
+    } else {
+      el.sendBtn.disabled = false;
+      el.input.disabled = false;
+      el.modelSelect.disabled = false;
+      if (el.errorBox && el.errorBox.textContent.includes("Switch your agent runtime to continue it")) {
+        setError("");
+      }
+    }
+  }
+
   function setSending(value) {
     sending = value;
-    el.sendBtn.disabled = value;
-    el.input.disabled = value;
-    el.modelSelect.disabled = value;
     el.sendBtn.textContent = value ? "Sending" : "Send";
     if (el.stopBtn) el.stopBtn.hidden = !value;
+    checkComposerState();
   }
 
   async function loadSessions() {
@@ -391,8 +420,10 @@
       if (el.bashApprovalToggle && typeof data.bash_requires_approval === "boolean") {
         el.bashApprovalToggle.checked = data.bash_requires_approval;
       }
+      if (data.active_runtime) activeRuntime = data.active_runtime;
       renderSessions();
       renderHeader();
+      checkComposerState();
       try {
         window.dispatchEvent(new CustomEvent("agent-sessions-loaded", {
           detail: { active_session_id: currentSessionId, sessions },
@@ -416,6 +447,7 @@
       const data = await request(`${apiPrefix}/sessions/${encodeURIComponent(sessionId)}/messages`);
       messages = Array.isArray(data.messages) ? data.messages : [];
       renderMessages();
+      checkComposerState();
       try {
         window.dispatchEvent(new CustomEvent("agent-session-loaded", {
           detail: { session_id: sessionId, messages },
@@ -435,6 +467,7 @@
     renderMessages();
     renderHeader();
     renderSessions();
+    checkComposerState();
     el.input.focus();
     try {
       window.dispatchEvent(new CustomEvent("agent-session-loaded", {

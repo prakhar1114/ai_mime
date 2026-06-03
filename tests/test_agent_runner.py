@@ -1039,6 +1039,231 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(service.list_sessions()[0]["session_id"], "old")
             self.assertEqual(service.load_messages("old")[0]["message"], "hi")
 
+    def test_workspace_chat_service_lists_indexed_sessions_across_runtimes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps(
+                    {
+                        "claude-session": {
+                            "summary": "Claude chat",
+                            "updated_at": "2026-01-01T00:00:00Z",
+                            "runtime_id": "claude_code",
+                        },
+                        "codex-session": {
+                            "summary": "Codex chat",
+                            "updated_at": "2026-01-02T00:00:00Z",
+                            "runtime_id": "codex_cli",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual([s["session_id"] for s in sessions], ["codex-session", "claude-session"])
+            self.assertEqual(sessions[0]["runtime_id"], "codex_cli")
+
+    def test_workspace_chat_service_upserts_current_provider_sessions_into_index(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [{
+                    "session_id": "current-session",
+                    "summary": "Current chat",
+                    "last_modified": "2026-01-03T00:00:00Z",
+                }],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual(sessions[0]["session_id"], "current-session")
+            index = json.loads((workspace_dir / ".agent" / "agent_sessions.json").read_text(encoding="utf-8"))
+            self.assertEqual(index["current-session"]["runtime_id"], "claude_code")
+            self.assertEqual(index["current-session"]["summary"], "Current chat")
+
+    def test_workspace_chat_service_missing_index_upserts_current_provider_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [{"session_id": "current-session", "summary": "Current chat"}],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual(sessions[0]["session_id"], "current-session")
+            self.assertTrue((workspace_dir / ".agent" / "agent_sessions.json").exists())
+
+    def test_workspace_chat_service_empty_index_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text("{}", encoding="utf-8")
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda sid, _dir: [{"type": "user", "session_id": sid, "message": "current"}],
+            )
+
+            self.assertEqual(service.list_sessions(), [])
+            self.assertEqual(service.load_messages("missing-from-index")[0]["message"], "current")
+
+    def test_workspace_chat_service_invalid_index_is_ignored(self) -> None:
+        class ChatAdapter(FakeAdapter):
+            def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+                super().run(request, prompt)
+                return AgentRunResult(status="success", session_id="rebuilt-session", summary="ok")
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            index_path = agent_dir / "agent_sessions.json"
+            index_path.write_text("not-json{", encoding="utf-8")
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=ChatAdapter(),
+                session_lister=lambda _dir: [{"session_id": "current-session", "summary": "Current chat"}],
+                message_loader=lambda sid, _dir: [{"type": "user", "session_id": sid, "message": "current"}],
+            )
+
+            sessions = service.list_sessions()
+            messages = service.load_messages("any-session")
+            service.chat(message="hello")
+
+            self.assertEqual(sessions[0]["session_id"], "current-session")
+            self.assertEqual(messages[0]["message"], "current")
+            rebuilt = json.loads(index_path.read_text(encoding="utf-8"))
+            self.assertIn("rebuilt-session", rebuilt)
+
+    def test_workspace_chat_service_non_object_index_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text("[]", encoding="utf-8")
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [{"session_id": "current-session", "summary": "Current chat"}],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual(sessions[0]["session_id"], "current-session")
+
+    def test_workspace_chat_service_skips_non_object_index_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps(
+                    {
+                        "bad": "not-an-object",
+                        "good": {
+                            "summary": "Good chat",
+                            "updated_at": "2026-01-04T00:00:00Z",
+                            "runtime_id": "claude_code",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual([s["session_id"] for s in sessions], ["good"])
+
+    def test_workspace_chat_service_loads_mismatched_runtime_messages_from_indexed_runtime(self) -> None:
+        class OtherRuntime:
+            id = "codex_cli"
+
+            def load_messages(self, session_id: str, directory: Path) -> list[dict[str, object]]:
+                return [{"type": "user", "session_id": session_id, "directory": str(directory), "message": "from codex"}]
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"codex-session": {"runtime_id": "codex_cli", "summary": "Codex chat"}}),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: self.fail("current message_loader should not be used"),
+            )
+
+            with patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=OtherRuntime()) as get_runtime:
+                messages = service.load_messages("codex-session")
+
+            get_runtime.assert_called_once_with("codex_cli")
+            self.assertEqual(messages[0]["message"], "from codex")
+
+    def test_workspace_chat_service_rejects_mismatched_runtime_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"codex-session": {"runtime_id": "codex_cli", "summary": "Codex chat"}}),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            with self.assertRaisesRegex(ValueError, "Cannot resume a codex_cli session"):
+                service.chat(message="continue", session_id="codex-session")
+
+    def test_workspace_chat_service_missing_runtime_id_uses_current_loader(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"old-session": {"summary": "Old chat"}}),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda sid, _dir: [{"type": "user", "session_id": sid, "message": "current"}],
+            )
+
+            self.assertEqual(service.load_messages("old-session")[0]["message"], "current")
+
     def test_workspace_chat_service_accepts_sequential_recovery_turns(self) -> None:
         session_ids: list[str | None] = []
 

@@ -30,7 +30,10 @@ _MIN_EXPANDED_WIDTH = 280.0
 _MIN_EXPANDED_HEIGHT = 90.0
 _MAX_EXPANDED_HEIGHT = 280.0
 _SCREEN_MARGIN = 12.0
+_RIGHT_EDGE_MARGIN = 6.0
 _CONTENT_MARGIN = 10.0
+_MESSAGE_MAX_LINES = 4
+_TOOL_MAX_LINES = 2
 
 
 class PulsingDotView(AppKit.NSView):  # type: ignore[misc]
@@ -139,6 +142,29 @@ class ConversationOverlayActionHandler(AppKit.NSObject):  # type: ignore[misc]
             pass
 
 
+def _configure_wrapping_label(label, *, max_lines: int) -> None:
+    try:
+        label.setMaximumNumberOfLines_(int(max_lines))
+        label.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)  # type: ignore[attr-defined]
+        label.setTranslatesAutoresizingMaskIntoConstraints_(False)
+        label.setContentCompressionResistancePriority_forOrientation_(
+            250,
+            AppKit.NSLayoutConstraintOrientationHorizontal,  # type: ignore[attr-defined]
+        )
+    except Exception:
+        pass
+
+    try:
+        cell = label.cell()
+        cell.setUsesSingleLineMode_(False)
+        cell.setWraps_(True)
+        cell.setScrollable_(False)
+        if hasattr(cell, "setTruncatesLastVisibleLine_"):
+            cell.setTruncatesLastVisibleLine_(True)
+    except Exception:
+        pass
+
+
 class ConversationOverlay:
     """
     Floating, always-on-top, resizable HUD overlay indicating agent activity.
@@ -236,15 +262,9 @@ class ConversationOverlay:
         try:
             self._message_label.setFont_(sys_font(12.0))
             self._message_label.setTextColor_(AppKit.NSColor.labelColor())
-            self._message_label.setMaximumNumberOfLines_(6)
-            self._message_label.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)  # type: ignore[attr-defined]
-            self._message_label.setTranslatesAutoresizingMaskIntoConstraints_(False)
-            self._message_label.setContentCompressionResistancePriority_forOrientation_(
-                250,
-                AppKit.NSLayoutConstraintOrientationHorizontal,  # type: ignore[attr-defined]
-            )
         except Exception:
             pass
+        _configure_wrapping_label(self._message_label, max_lines=_MESSAGE_MAX_LINES)
 
         # Tool Status Label
         self._tool_label = AppKit.NSTextField.labelWithString_("Thinking...")
@@ -252,15 +272,9 @@ class ConversationOverlay:
             w_medium = float(getattr(AppKit, "NSFontWeightMedium", 0.23))  # type: ignore[attr-defined]
             self._tool_label.setFont_(sys_font(11.0, w_medium))
             self._tool_label.setTextColor_(AppKit.NSColor.secondaryLabelColor())
-            self._tool_label.setMaximumNumberOfLines_(1)
-            self._tool_label.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)  # type: ignore[attr-defined]
-            self._tool_label.setTranslatesAutoresizingMaskIntoConstraints_(False)
-            self._tool_label.setContentCompressionResistancePriority_forOrientation_(
-                250,
-                AppKit.NSLayoutConstraintOrientationHorizontal,  # type: ignore[attr-defined]
-            )
         except Exception:
             pass
+        _configure_wrapping_label(self._tool_label, max_lines=_TOOL_MAX_LINES)
 
         # Controls Row
         self._controls_row = AppKit.NSStackView.alloc().initWithFrame_(
@@ -399,7 +413,7 @@ class ConversationOverlay:
         available_height = max(_MIN_EXPANDED_HEIGHT, float(sh) - 2.0 * _SCREEN_MARGIN)
         h = float(height if height is not None else self.height)
         h = max(_MIN_EXPANDED_HEIGHT, min(_MAX_EXPANDED_HEIGHT, h, available_height))
-        x = max(float(sx) + _SCREEN_MARGIN, float(sx) + float(sw) - width - _SCREEN_MARGIN)
+        x = max(float(sx) + _SCREEN_MARGIN, float(sx) + float(sw) - width - _RIGHT_EDGE_MARGIN)
         centered_y = float(sy) + (float(sh) - h) / 2.0
         y = max(float(sy) + _SCREEN_MARGIN, min(float(sy) + float(sh) - h - _SCREEN_MARGIN, centered_y))
         return AppKit.NSMakeRect(x, y, width, h)
@@ -482,7 +496,7 @@ class ConversationOverlay:
             # Position on the right edge vertically centered
             sx, sy, sw, sh = active_screen_visible_frame()
             mini_w, mini_h = 36.0, 36.0
-            x = float(sx + sw - mini_w - _SCREEN_MARGIN)
+            x = float(sx + sw - mini_w - _RIGHT_EDGE_MARGIN)
             y = float(sy + (sh - mini_h) / 2.0)
 
             # Set new frame

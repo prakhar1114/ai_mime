@@ -40,19 +40,19 @@ DEFAULT_ANTHROPIC_LLM_CONFIG: dict[str, Any] = {
     },
     "agents": {
         "workspace_chat": {
-            "model": "anthropic/claude-sonnet-4-6",
+            "model": "anthropic/claude-opus-4-8",
             "api_base": None,
             "api_key_env": "ANTHROPIC_API_KEY",
             "extra_kwargs": {},
         },
         "skill_build": {
-            "model": "anthropic/claude-sonnet-4-6",
+            "model": "anthropic/claude-opus-4-8",
             "api_base": None,
             "api_key_env": "ANTHROPIC_API_KEY",
             "extra_kwargs": {},
         },
         "replay": {
-            "model": "anthropic/claude-sonnet-4-6",
+            "model": "anthropic/claude-opus-4-8",
             "api_base": None,
             "api_key_env": "ANTHROPIC_API_KEY",
             "extra_kwargs": {},

@@ -251,6 +251,240 @@ class WorkflowSkillBuildServiceTests(unittest.TestCase):
             self.assertEqual(events[-1]["event"], "done")
             self.assertEqual(events[-1]["session_id"], "skill-session-1")
 
+    def test_lists_indexed_sessions_across_runtimes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            agent_dir = workflow_dir / "agent"
+            agent_dir.mkdir(exist_ok=True)
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps(
+                    {
+                        "claude-build": {
+                            "summary": "Claude build",
+                            "updated_at": "2026-01-01T00:00:00Z",
+                            "runtime_id": "claude_code",
+                        },
+                        "codex-build": {
+                            "summary": "Codex build",
+                            "updated_at": "2026-01-02T00:00:00Z",
+                            "runtime_id": "codex_cli",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = _build_service(workflow_dir)
+
+            sessions = service.list_sessions()
+
+            self.assertEqual([s["session_id"] for s in sessions], ["codex-build", "claude-build"])
+            self.assertEqual(sessions[0]["runtime_id"], "codex_cli")
+
+    def test_upserts_current_provider_sessions_into_index(self) -> None:
+        class Adapter:
+            id = "claude_code"
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            service = WorkflowSkillBuildService(
+                workflow_dir=workflow_dir,
+                adapter=Adapter(),
+                session_lister=lambda _dir: [{
+                    "session_id": "current-build",
+                    "summary": "Current build",
+                    "last_modified": "2026-01-03T00:00:00Z",
+                }],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual(sessions[0]["session_id"], "current-build")
+            index = json.loads((workflow_dir / "agent" / "agent_sessions.json").read_text(encoding="utf-8"))
+            self.assertEqual(index["current-build"]["runtime_id"], "claude_code")
+            self.assertEqual(index["current-build"]["summary"], "Current build")
+
+    def test_missing_index_upserts_current_provider_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            service = WorkflowSkillBuildService(
+                workflow_dir=workflow_dir,
+                adapter=type("Adapter", (), {"id": "claude_code"})(),
+                session_lister=lambda _dir: [{"session_id": "current-build", "summary": "Current build"}],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual(sessions[0]["session_id"], "current-build")
+            self.assertTrue((workflow_dir / "agent" / "agent_sessions.json").exists())
+
+    def test_empty_index_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            agent_dir = workflow_dir / "agent"
+            agent_dir.mkdir(exist_ok=True)
+            (agent_dir / "agent_sessions.json").write_text("{}", encoding="utf-8")
+            service = WorkflowSkillBuildService(
+                workflow_dir=workflow_dir,
+                adapter=type("Adapter", (), {"id": "claude_code"})(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda sid, _dir: [{"type": "user", "session_id": sid, "message": "current"}],
+            )
+
+            self.assertEqual(service.list_sessions(), [])
+            self.assertEqual(service.load_messages("missing-from-index")[0]["message"], "current")
+
+    def test_invalid_index_is_ignored(self) -> None:
+        class StreamAdapter:
+            id = "claude_code"
+
+            async def stream_chat(self, *_args, **_kwargs):
+                yield {"event": "done", "status": "success", "session_id": "rebuilt-build", "summary": "done"}
+
+        async def collect_events(service: WorkflowSkillBuildService) -> list[dict]:
+            return [event async for event in service.chat_stream(message="continue build")]
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            agent_dir = workflow_dir / "agent"
+            agent_dir.mkdir(exist_ok=True)
+            index_path = agent_dir / "agent_sessions.json"
+            index_path.write_text("not-json{", encoding="utf-8")
+            service = WorkflowSkillBuildService(
+                workflow_dir=workflow_dir,
+                adapter=StreamAdapter(),
+                session_lister=lambda _dir: [{"session_id": "current-build", "summary": "Current build"}],
+                message_loader=lambda sid, _dir: [{"type": "user", "session_id": sid, "message": "current"}],
+            )
+
+            sessions = service.list_sessions()
+            messages = service.load_messages("any-build")
+            events = asyncio.run(collect_events(service))
+
+            self.assertEqual(sessions[0]["session_id"], "current-build")
+            self.assertEqual(messages[0]["message"], "current")
+            self.assertEqual(events[0]["event"], "done")
+            rebuilt = json.loads(index_path.read_text(encoding="utf-8"))
+            self.assertIn("rebuilt-build", rebuilt)
+
+    def test_non_object_index_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            agent_dir = workflow_dir / "agent"
+            agent_dir.mkdir(exist_ok=True)
+            (agent_dir / "agent_sessions.json").write_text("[]", encoding="utf-8")
+            service = WorkflowSkillBuildService(
+                workflow_dir=workflow_dir,
+                adapter=type("Adapter", (), {"id": "claude_code"})(),
+                session_lister=lambda _dir: [{"session_id": "current-build", "summary": "Current build"}],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual(sessions[0]["session_id"], "current-build")
+
+    def test_skips_non_object_index_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            agent_dir = workflow_dir / "agent"
+            agent_dir.mkdir(exist_ok=True)
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps(
+                    {
+                        "bad": "not-an-object",
+                        "good": {
+                            "summary": "Good build",
+                            "updated_at": "2026-01-04T00:00:00Z",
+                            "runtime_id": "claude_code",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = _build_service(workflow_dir)
+
+            sessions = service.list_sessions()
+
+            self.assertEqual([s["session_id"] for s in sessions], ["good"])
+
+    def test_loads_mismatched_runtime_messages_from_indexed_runtime(self) -> None:
+        class OtherRuntime:
+            id = "codex_cli"
+
+            def load_messages(self, session_id: str, directory: Path) -> list[dict[str, object]]:
+                return [{"type": "user", "session_id": session_id, "directory": str(directory), "message": "from codex"}]
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            agent_dir = workflow_dir / "agent"
+            agent_dir.mkdir(exist_ok=True)
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"codex-build": {"runtime_id": "codex_cli", "summary": "Codex build"}}),
+                encoding="utf-8",
+            )
+            service = WorkflowSkillBuildService(
+                workflow_dir=workflow_dir,
+                adapter=type("Adapter", (), {"id": "claude_code"})(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: self.fail("current message_loader should not be used"),
+            )
+
+            with patch("ai_mime.agent_runner.skill_build_chat.get_agent_runtime", return_value=OtherRuntime()) as get_runtime:
+                messages = service.load_messages("codex-build")
+
+            get_runtime.assert_called_once_with("codex_cli")
+            self.assertEqual(messages[0]["message"], "from codex")
+
+    def test_rejects_mismatched_runtime_resume(self) -> None:
+        async def collect_events(service: WorkflowSkillBuildService) -> list[dict]:
+            return [event async for event in service.chat_stream(message="continue build", session_id="codex-build")]
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            agent_dir = workflow_dir / "agent"
+            agent_dir.mkdir(exist_ok=True)
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"codex-build": {"runtime_id": "codex_cli", "summary": "Codex build"}}),
+                encoding="utf-8",
+            )
+            service = _build_service(workflow_dir)
+
+            events = asyncio.run(collect_events(service))
+
+            self.assertEqual(events[0]["event"], "done")
+            self.assertEqual(events[0]["status"], "failed")
+            self.assertIn("Cannot resume a codex_cli session", events[0]["error"])
+
+    def test_missing_runtime_id_uses_current_loader(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            agent_dir = workflow_dir / "agent"
+            agent_dir.mkdir(exist_ok=True)
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"old-build": {"summary": "Old build"}}),
+                encoding="utf-8",
+            )
+            service = WorkflowSkillBuildService(
+                workflow_dir=workflow_dir,
+                adapter=type("Adapter", (), {"id": "claude_code"})(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda sid, _dir: [{"type": "user", "session_id": sid, "message": "current"}],
+            )
+
+            self.assertEqual(service.load_messages("old-build")[0]["message"], "current")
+
 
 class AuthorizeToolTests(unittest.TestCase):
     def _request(self, workflow_dir: Path, mcp_servers: dict | None = None):
