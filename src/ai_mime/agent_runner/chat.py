@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 import time
@@ -9,57 +10,77 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 from ai_mime.agent_runner.adapters.claude_sdk import (
-    ClaudeAgentSdkAdapter,
-    list_claude_sessions,
-    load_claude_session_messages,
-    stream_chat,
     to_permission_result,
 )
+from ai_mime.agent_runner.adapters.registry import get_agent_runtime
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.agent_runner.runner import build_agent_run_request, _build_prompt, _read_json, _write_json
 from ai_mime.app_data import get_workflows_dir
+from ai_mime.debug_log import log as debug_log
+from ai_mime.user_config import load_user_config
+from llm_resolver import runtime_model_name
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log(message: str, *, exc_info: bool = False) -> None:
+    logger.info(message)
+    debug_log(f"[agent-chat] {message}", exc_info=exc_info)
 
 
 class AgentBusyError(RuntimeError):
     pass
 
 
-DEFAULT_CLAUDE_MODEL_OPTIONS: list[dict[str, str]] = [
-    {
-        "id": "opus",
-        "label": "Default",
-        "description": "Claude Code chooses the recommended model for the account.",
-    },
-    {
-        "id": "sonnet",
-        "label": "Sonnet",
-        "description": "Balanced default for coding and agentic work.",
-    },
-    {
-        "id": "opus",
-        "label": "Opus",
-        "description": "Best for deeper reasoning and architecture.",
-    },
-    {
-        "id": "haiku",
-        "label": "Haiku",
-        "description": "Fastest option for lighter debugging.",
-    },
-    {
-        "id": "sonnet[1m]",
-        "label": "Sonnet 1M",
-        "description": "Long-context Sonnet alias when available for the account.",
-    },
-    {
-        "id": "opusplan",
-        "label": "Opus Plan",
-        "description": "Uses Opus for planning and Sonnet for execution.",
-    },
-]
-
-
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _flow_for_mode(mode: str) -> str:
+    return "replay" if mode == "replay_execution" else "workspace_chat"
+
+
+def _runtime_id_from_session_meta(meta: dict[str, Any]) -> str | None:
+    runtime_id = meta.get("runtime_id")
+    if isinstance(runtime_id, str) and runtime_id:
+        return runtime_id
+    model = str(meta.get("model") or "").strip().lower()
+    if not model:
+        return None
+    if model.startswith("openai/") or model.startswith("gpt-") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4"):
+        return "codex_cli"
+    if (
+        model.startswith("anthropic/")
+        or model.startswith("claude-")
+        or model in {"opus", "sonnet", "haiku"}
+        or model.startswith("claude_opus")
+        or model.startswith("claude_sonnet")
+    ):
+        return "claude_code"
+    return None
+
+
+def agent_config_for_flow(config: Any, flow: str) -> Any:
+    agents = getattr(config, "agents", None)
+    if agents is None:
+        raise RuntimeError("user_config.yml is missing resolved llm.agents configuration.")
+    try:
+        return getattr(agents, flow)
+    except AttributeError as e:
+        raise RuntimeError(f"Unknown agent flow {flow!r}.") from e
+
+
+def configured_agent_runtime(config: Any | None = None, *, flow: str = "workspace_chat") -> Any:
+    cfg = config or load_user_config()
+    agent_cfg = agent_config_for_flow(cfg, flow)
+    return get_agent_runtime(agent_cfg.agent_runtime)
+
+
+def model_options_from_config(config: Any, *, flow: str = "workspace_chat") -> list[dict[str, str]]:
+    agent_cfg = agent_config_for_flow(config, flow)
+    model = str(getattr(agent_cfg, "model", "") or "").strip()
+    return [{"id": model, "label": model, "description": "Configured in user_config.yml."}]
 
 
 class WorkspaceAgentChatService:
@@ -76,10 +97,14 @@ class WorkspaceAgentChatService:
     ) -> None:
         self.workspace_dir = workspace_dir or get_workflows_dir()
         self.mode = mode
+        self.agent_flow = _flow_for_mode(mode)
         self.agent_dir = agent_dir or (self.workspace_dir / ".agent")
-        self.adapter = adapter or ClaudeAgentSdkAdapter()
-        self.session_lister = session_lister or list_claude_sessions
-        self.message_loader = message_loader or load_claude_session_messages
+        self.config = None if adapter is not None else load_user_config()
+        self.agent_config = None if self.config is None else agent_config_for_flow(self.config, self.agent_flow)
+        self.adapter = adapter or configured_agent_runtime(self.config, flow=self.agent_flow)
+        self.runtime_id = self.adapter.id
+        self.session_lister = session_lister or self.adapter.list_sessions
+        self.message_loader = message_loader or self.adapter.load_messages
         if bash_requires_approval is None:
             env_val = (os.getenv("AI_MIME_BASH_REQUIRES_APPROVAL") or "").strip().lower()
             bash_requires_approval = env_val in ("1", "true", "yes", "on")
@@ -89,7 +114,6 @@ class WorkspaceAgentChatService:
         self._pending_permissions: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._session_bash_allow_all: bool = False
         self.model_options = self._load_model_options()
-        self.default_model = self.model_options[0]["id"] if self.model_options else "default"
 
     def status(self) -> dict[str, Any]:
         active = self._read_active()
@@ -98,8 +122,8 @@ class WorkspaceAgentChatService:
             "active_session_id": active.get("session_id"),
             "sessions": self.list_sessions(),
             "models": self.model_options,
-            "default_model": self.default_model,
             "bash_requires_approval": self.bash_requires_approval,
+            "active_runtime": self.runtime_id,
         }
 
     def set_bash_requires_approval(self, value: bool) -> bool:
@@ -109,7 +133,26 @@ class WorkspaceAgentChatService:
         return self.bash_requires_approval
 
     def list_models(self) -> dict[str, Any]:
-        return {"models": self.model_options, "default_model": self.default_model}
+        return {"models": self.model_options}
+
+    def _session_runtime_id(self, session_id: str | None) -> str | None:
+        if not session_id or session_id.startswith("draft-"):
+            return None
+        meta = self._read_index().get(session_id)
+        if isinstance(meta, dict):
+            return _runtime_id_from_session_meta(meta)
+        return None
+
+    def _runtime_mismatch_error(self, runtime_id: str) -> str:
+        return (
+            f"Cannot resume a {runtime_id} session while the active agent is set to {self.adapter.id}. "
+            "Please switch back your agent setting to continue this chat."
+        )
+
+    def _adapter_for_session(self, session_id: str | None) -> Any:
+        # Resuming a different recorded runtime is blocked by chat/chat_stream.
+        # Same-runtime resumes must keep the injected/current adapter.
+        return self.adapter
 
     def list_sessions(self) -> list[dict[str, Any]]:
         index = self._read_index()
@@ -117,6 +160,7 @@ class WorkspaceAgentChatService:
         for sid, meta in index.items():
             if not isinstance(sid, str) or not isinstance(meta, dict):
                 continue
+            runtime_id = _runtime_id_from_session_meta(meta)
             out_by_id[sid] = {
                 "session_id": sid,
                 "summary": meta.get("summary") or sid,
@@ -124,25 +168,56 @@ class WorkspaceAgentChatService:
                 "updated_at": meta.get("updated_at"),
                 "mode": meta.get("mode") or "general",
                 "model": meta.get("model"),
-                "source": "ai_mime",
+                "runtime_id": runtime_id,
+                "source": runtime_id or "ai_mime",
             }
+
         try:
-            for item in self.session_lister(self.workspace_dir):
-                sid = item.get("session_id") if isinstance(item, dict) else None
-                if not isinstance(sid, str) or not sid:
-                    continue
-                current = out_by_id.get(sid, {})
-                out_by_id[sid] = {
-                    **current,
-                    "session_id": sid,
-                    "summary": current.get("summary") or item.get("summary") or sid,
-                    "last_modified": item.get("last_modified"),
-                    "custom_title": item.get("custom_title"),
-                    "first_prompt": item.get("first_prompt"),
-                    "source": "claude",
-                }
+            current_provider_sessions = self.session_lister(self.workspace_dir)
         except Exception as e:
-            return [{"session_id": "", "summary": f"Failed to list Claude sessions: {e}", "error": str(e)}]
+            if not out_by_id:
+                return [{"session_id": "", "summary": f"Failed to list {self.adapter.label} sessions: {e}", "error": str(e)}]
+            current_provider_sessions = []
+
+        changed = False
+        now = _utc_now()
+        for item in current_provider_sessions:
+            sid = item.get("session_id") if isinstance(item, dict) else None
+            if not isinstance(sid, str) or not sid:
+                continue
+            existing = index.get(sid) if isinstance(index.get(sid), dict) else {}
+            updated_at = item.get("updated_at") or item.get("last_modified") or existing.get("updated_at") or now
+            merged = {
+                **existing,
+                "summary": existing.get("summary") or item.get("summary") or item.get("custom_title") or item.get("first_prompt") or sid,
+                "created_at": existing.get("created_at") or updated_at,
+                "updated_at": updated_at,
+                "mode": existing.get("mode") or ("Run" if self.mode == "replay_execution" else "Chat"),
+                "model": existing.get("model") or item.get("model"),
+                "last_modified": item.get("last_modified") or existing.get("last_modified") or updated_at,
+                "custom_title": item.get("custom_title") or existing.get("custom_title"),
+                "first_prompt": item.get("first_prompt") or existing.get("first_prompt"),
+                "runtime_id": self.runtime_id,
+            }
+            if index.get(sid) != merged:
+                index[sid] = merged
+                changed = True
+            out_by_id[sid] = {
+                "session_id": sid,
+                "summary": merged.get("summary") or sid,
+                "created_at": merged.get("created_at"),
+                "updated_at": merged.get("updated_at"),
+                "mode": merged.get("mode") or "general",
+                "model": merged.get("model"),
+                "last_modified": merged.get("last_modified"),
+                "custom_title": merged.get("custom_title"),
+                "first_prompt": merged.get("first_prompt"),
+                "runtime_id": merged.get("runtime_id"),
+                "source": merged.get("runtime_id") or "ai_mime",
+            }
+        if changed:
+            self._write_index(index)
+
         return sorted(
             out_by_id.values(),
             key=lambda x: str(x.get("updated_at") or x.get("last_modified") or ""),
@@ -155,22 +230,29 @@ class WorkspaceAgentChatService:
     def load_messages(self, session_id: str) -> list[dict[str, Any]]:
         if not session_id or session_id.startswith("draft-"):
             return []
+        runtime_id = self._session_runtime_id(session_id)
+        if runtime_id and runtime_id != self.runtime_id:
+            return get_agent_runtime(runtime_id).load_messages(session_id, self.workspace_dir)
         return self.message_loader(session_id, self.workspace_dir)
 
     def chat(self, *, message: str, session_id: str | None = None, model: str | None = None) -> dict[str, Any]:
         text = message.strip()
         if not text:
             raise ValueError("message must be non-empty")
-        selected_model = self._validate_model(model)
+        selected_model = self._model_for_request(model)
         resume_id = session_id if session_id and not session_id.startswith("draft-") else None
-        request = self._build_request(session_id=resume_id, model=selected_model)
+        resume_runtime_id = self._session_runtime_id(resume_id)
+        if resume_id and resume_runtime_id and resume_runtime_id != self.adapter.id:
+            raise ValueError(self._runtime_mismatch_error(resume_runtime_id))
+        adapter = self._adapter_for_session(resume_id)
+        request = self._build_request(session_id=resume_id, model=selected_model, runtime_id=adapter.id)
         if resume_id is None:
             system_prompt = _build_prompt(request)
             request = request.model_copy(update={"system_prompt": system_prompt})
         prompt = text
         with tempfile.TemporaryDirectory(prefix="ai-mime-agent-") as td:
             request = request.model_copy(update={"temp_dir": Path(td)})
-            result: AgentRunResult = self.adapter.run(request, prompt)
+            result: AgentRunResult = adapter.run(request, prompt)
         sid = result.session_id or resume_id
         if not sid:
             raise RuntimeError("Claude did not return a session_id")
@@ -181,6 +263,7 @@ class WorkspaceAgentChatService:
             status=result.status,
             error=result.error,
             model=selected_model,
+            runtime_id=adapter.id,
         )
         return {
             "session_id": sid,
@@ -200,12 +283,27 @@ class WorkspaceAgentChatService:
         text = message.strip()
         if not text:
             raise ValueError("message must be non-empty")
-        selected_model = self._validate_model(model)
+        selected_model = self._model_for_request(model)
 
         resume_id = session_id if session_id and not session_id.startswith("draft-") else None
-        request = self._build_request(session_id=resume_id, model=selected_model)
+        resume_runtime_id = self._session_runtime_id(resume_id)
+        if resume_id and resume_runtime_id and resume_runtime_id != self.adapter.id:
+            yield {
+                "event": "done",
+                "session_id": resume_id,
+                "status": "failed",
+                "error": self._runtime_mismatch_error(resume_runtime_id),
+                "summary": "",
+            }
+            return
+        adapter = self._adapter_for_session(resume_id)
+        request = self._build_request(session_id=resume_id, model=selected_model, runtime_id=adapter.id)
         if resume_id is None:
             request = request.model_copy(update={"system_prompt": _build_prompt(request)})
+        _log(
+            f"chat_stream start runtime={adapter.id} mode={self.mode} workspace={self.workspace_dir} "
+            f"session_id={resume_id or '<new>'} model={selected_model or '<default>'} message_chars={len(text)}"
+        )
 
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
@@ -253,15 +351,19 @@ class WorkspaceAgentChatService:
             try:
                 with tempfile.TemporaryDirectory(prefix="ai-mime-agent-") as td:
                     local_request = request.model_copy(update={"temp_dir": Path(td)})
-                    async for event in stream_chat(
+                    _log(f"chat_stream pump start temp_dir={td} runtime={adapter.id} mode={self.mode}")
+                    async for event in adapter.stream_chat(
                         local_request,
                         text,
                         can_use_tool=can_use_tool,
                         auto_allow_tools=auto_allow,
                         on_client=_store_client,
                     ):
+                        if event.get("event") in {"error", "done", "tool_use"}:
+                            _log(f"chat_stream event {event}")
                         await event_queue.put(event)
             except Exception as e:
+                _log(f"chat_stream pump failed: {e}", exc_info=True)
                 await event_queue.put({"event": "error", "message": str(e)})
             finally:
                 stream_done.set()
@@ -296,6 +398,10 @@ class WorkspaceAgentChatService:
             self._active_loop = None
 
         if final_session_id:
+            _log(
+                f"chat_stream complete runtime={adapter.id} mode={self.mode} session_id={final_session_id} "
+                f"status={final_status} summary_chars={len(final_summary)} error={final_error or ''}"
+            )
             self._record_session(
                 session_id=final_session_id,
                 previous_session_id=session_id,
@@ -303,13 +409,14 @@ class WorkspaceAgentChatService:
                 status=final_status,
                 error=final_error,
                 model=selected_model,
+                runtime_id=adapter.id,
             )
 
     def interrupt(self) -> bool:
         client = self._active_client
         loop = self._active_loop
         if client is None or loop is None:
-            return False
+            return self.adapter.interrupt()
         try:
             fut = asyncio.run_coroutine_threadsafe(client.interrupt(), loop)
             fut.result(timeout=5)
@@ -418,18 +525,19 @@ class WorkspaceAgentChatService:
                 continue
         return False
 
-    def _build_request(self, *, session_id: str | None, model: str | None) -> AgentRunRequest:
+    def _build_request(self, *, session_id: str | None, model: str | None, runtime_id: str | None = None) -> AgentRunRequest:
+        rt_id = runtime_id or self.runtime_id
         if self.mode != "general":
             return build_agent_run_request(
                 workflow_dir=self.workspace_dir,
-                provider="claude",
+                provider=rt_id if rt_id in {"claude", "claude_code", "codex_cli"} else "claude",
                 mode=self.mode,  # type: ignore[arg-type]
                 model=model,
                 session_id=session_id,
             )
         agent_dir = self.agent_dir
         return AgentRunRequest(
-            provider="claude",
+            provider=rt_id if rt_id in {"claude", "claude_code", "codex_cli"} else "claude",
             mode="general",
             model=model,
             session_id=session_id,
@@ -456,6 +564,7 @@ class WorkspaceAgentChatService:
         status: str,
         error: str | None,
         model: str | None,
+        runtime_id: str | None = None,
     ) -> None:
         now = _utc_now()
         index = self._read_index()
@@ -471,33 +580,33 @@ class WorkspaceAgentChatService:
             "model": model,
             "last_status": status,
             "last_error": error,
+            "runtime_id": runtime_id or existing.get("runtime_id") or self.runtime_id,
         }
         self._write_index(index)
         self._write_active({"session_id": session_id, "model": model, "updated_at": now})
 
-    def _validate_model(self, model: str | None) -> str:
-        value = (model or self.default_model).strip()
-        allowed = {item["id"] for item in self.model_options}
-        if value not in allowed:
-            raise ValueError(f"Unsupported Claude model: {value}")
-        return value
+    def _model_for_request(self, model: str | None) -> str | None:
+        if self.config is None:
+            value = (model or "").strip()
+            return value or None
+        assert self.agent_config is not None
+        configured_model = str(getattr(self.agent_config, "model", "") or "").strip()
+        return runtime_model_name(configured_model) or None
 
     def _load_model_options(self) -> list[dict[str, str]]:
-        raw = (os.getenv("AI_MIME_CLAUDE_MODELS") or "").strip()
-        if not raw:
-            return list(DEFAULT_CLAUDE_MODEL_OPTIONS)
-        options: list[dict[str, str]] = []
-        for item in raw.split(","):
-            model_id = item.strip()
-            if model_id:
-                options.append({"id": model_id, "label": model_id, "description": "Configured by AI_MIME_CLAUDE_MODELS."})
-        return options or list(DEFAULT_CLAUDE_MODEL_OPTIONS)
+        if self.config is None:
+            return []
+        return model_options_from_config(self.config, flow=self.agent_flow)
 
     def _read_index(self) -> dict[str, Any]:
         path = self._agent_sessions_path()
         if not path.exists():
             return {}
-        return _read_json(path)
+        try:
+            index = _read_json(path)
+        except Exception:
+            return {}
+        return index
 
     def _write_index(self, index: dict[str, Any]) -> None:
         path = self._agent_sessions_path()

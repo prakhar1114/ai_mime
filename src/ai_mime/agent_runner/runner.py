@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -10,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Protocol
 
-from ai_mime.agent_runner.adapters.claude_sdk import cua_mcp_servers
+from ai_mime.agent_runner.mcp import cua_mcp_servers
 from ai_mime.agent_runner.models import (
     AgentProvider,
     AgentRunMode,
@@ -28,6 +29,15 @@ from ai_mime.app_data import (
     get_workflows_dir,
     workflow_runtime_env,
 )
+from ai_mime.debug_log import log as debug_log
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log(message: str, *, exc_info: bool = False) -> None:
+    logger.info(message)
+    debug_log(f"[agent-runner] {message}", exc_info=exc_info)
 
 
 class AgentAdapter(Protocol):
@@ -85,6 +95,9 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 def _resolved_skill_context() -> str:
     return (
         f"Browser skill: `{resolved_browser_skill_name()}` at {resolved_browser_skill_path()}\n"
+        "Browser-harness is the AI Mime browser automation route. If your runtime exposes the "
+        "browser skill directly, read it for API guidance; always run browser automation through "
+        "`$AI_MIME_BROWSER_HARNESS_BIN` in shell commands or generated scripts.\n"
         "Computer-use: the cua MCP server is attached to this session — call the `mcp__cua__*` "
         "tools directly (`computer_screenshot`, `computer_find_element`, `computer_click`, "
         "`computer_type`, `computer_hotkey`, `computer_launch_app`, …) to drive native macOS "
@@ -178,8 +191,8 @@ def _filesystem_access_from_plan(optimized_plan: dict) -> FilesystemAccess:
 def build_agent_run_request(
     *,
     workflow_dir: str | Path,
+    mode: AgentRunMode,
     provider: AgentProvider = "claude",
-    mode: AgentRunMode = "execute_optimized_plan",
     model: str | None = None,
     session_id: str | None = None,
 ) -> AgentRunRequest:
@@ -356,6 +369,8 @@ Current environment and tools state:
 - uv: `{uv_path}`
 - browser-harness: `{browser_harness_bin}`
 - Browser skill is `{resolved_browser_skill_name()}` at `{resolved_browser_skill_path()}`
+- If you need browser automation, read the attached browser-harness skill for API details and invoke `{browser_harness_bin}` (or `$AI_MIME_BROWSER_HARNESS_BIN`).
+- Codex native/plugin Computer Use is unavailable by design. For native GUI exploration use the attached `mcp__cua__*` tools; in generated skill code delegate native GUI work through `$AI_MIME_UI_AGENT_CMD`.
 
 Existing skill files:
 {json.dumps(existing_skill_files, indent=2)}
@@ -395,6 +410,8 @@ Your detailed instructions are located in the instructions folder:
 Shared UI-agent guide, read only for UI-only recovery:
 {INSTRUCTIONS_ROOT / "ui_agent" / "00_ui_agent.md"}
 
+Browser-harness is available through the AI Mime browser skill path `{resolved_browser_skill_path()}` and the app-managed command `$AI_MIME_BROWSER_HARNESS_BIN`. Use that route for browser automation Native GUI fallback must use attached `mcp__cua__*` tools in chat and `$AI_MIME_UI_AGENT_CMD` in helper scripts.
+
 You MUST execute the task following these instructions step-by-step:
 1. First, read and follow `00_rules.md` in the instructions directory.
 2. Next, read and execute `01_replay.md` to run/verify the skill.
@@ -414,36 +431,16 @@ Existing memory:
 {memory}
 """
 
-    return f"""You are the task agent for this AI Mime workflow.
-
-Mode: {request.mode}
-Workflow directory: {request.workflow_dir}
-Schema: {request.schema_path}
-Optimized plan: {request.optimized_plan_path}
-Memory file: {memory_path}
-
-Read only the schema, optimized plan, current memory, and existing skill files if present.
-Use the provided readable/writable roots as the permission boundary.
-Write the latest machine-readable result to outputs/result.json and a human-readable summary to outputs/README.md.
-Do not create per-run result directories unless debug artifacts are explicitly requested.
-
-Resolved Claude skills:
-{skill_context}
-
-Readable roots:
-{json.dumps([str(p) for p in request.readable_roots], indent=2)}
-
-Writable roots:
-{json.dumps([str(p) for p in request.writable_roots], indent=2)}
-
-Existing memory:
-{memory}
-"""
+    raise ValueError(f"Unsupported agent mode: {request.mode}")
 
 
 def run_agent_task(request: AgentRunRequest, adapter: AgentAdapter, prompt: str | None = None) -> AgentRunResult:
     session_id = _load_or_create_session_id(request)
     request = request.model_copy(update={"session_id": session_id or None})
+    _log(
+        f"run_agent_task start provider={request.provider} mode={request.mode} workspace={request.workspace_dir} "
+        f"workflow={request.workflow_dir} session_id={request.session_id or '<new>'} adapter={getattr(adapter, 'id', type(adapter).__name__)}"
+    )
 
     agent_dir = request.workflow_dir / (".agent" if request.mode == "general" else "agent")
     outputs_dir = request.workflow_dir / "outputs"
@@ -462,10 +459,20 @@ def run_agent_task(request: AgentRunRequest, adapter: AgentAdapter, prompt: str 
         # The app-managed runtime env is injected into the SDK run via
         # ClaudeAgentOptions.env (see _options_kwargs_for), so no global
         # os.environ mutation is needed here.
-        result = adapter.run(request, prompt or _build_prompt(request))
+        run_prompt = prompt or _build_prompt(request)
+        _log(f"run_agent_task invoking adapter prompt_chars={len(run_prompt)} temp_dir={td}")
+        try:
+            result = adapter.run(request, run_prompt)
+        except Exception as e:
+            _log(f"run_agent_task adapter raised: {e}", exc_info=True)
+            raise
 
     final_session_id = result.session_id or session_id
     result = result.model_copy(update={"session_id": final_session_id})
+    _log(
+        f"run_agent_task complete status={result.status} session_id={final_session_id or '<none>'} "
+        f"summary_chars={len(result.summary or '')} error={result.error or ''}"
+    )
     _write_json(
         agent_dir / "session.json",
         {
@@ -522,6 +529,10 @@ def _required_input_keys(optimized_plan: dict) -> set[str]:
     return keys
 
 
+def _runtime_root_for_skill(skill_dir: Path) -> Path:
+    return skill_dir.parent.parent if skill_dir.parent.name == "skills" else skill_dir
+
+
 def validate_skill_package(skill_dir: str | Path, schema: dict, optimized_plan: dict) -> None:
     skill_dir_p = Path(skill_dir)
     if not skill_dir_p.exists() or not skill_dir_p.is_dir():
@@ -568,8 +579,9 @@ def validate_skill_package(skill_dir: str | Path, schema: dict, optimized_plan: 
 
     for rel in ("scripts/run.py",):
         script = skill_dir_p / rel
+        python = get_python_path(_runtime_root_for_skill(skill_dir_p))
         proc = subprocess.run(
-            [sys.executable, "-m", "py_compile", str(script)],
+            [str(python), "-m", "py_compile", str(script)],
             cwd=str(skill_dir_p),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -645,7 +657,7 @@ def run_skill_e2e_test(
     skill_dir_p = Path(skill_dir)
     run_sh = skill_dir_p / "run.sh"
     run_script = skill_dir_p / "scripts" / "run.py"
-    runtime_root = skill_dir_p.parent.parent if skill_dir_p.parent.name == "skills" else skill_dir_p
+    runtime_root = _runtime_root_for_skill(skill_dir_p)
 
     inputs_path, synthesized_inputs, early = _resolve_e2e_inputs(
         skill_dir_p, optimized_plan, confirmed_inputs_path

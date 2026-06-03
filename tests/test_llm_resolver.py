@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import importlib
 import sys
@@ -16,14 +17,17 @@ from llm_resolver import (
     DEFAULT_USER_CONFIG,
     LiteLLMChatClient,
     ask_llm,
+    get_computer_use_config,
     get_llm_section,
     load_llm_config,
+    runtime_for_model,
 )
 
 
 def _write_config(path: Path) -> None:
     path.write_text(
         "config_version: 1\n"
+        "provider: custom\n"
         "llm:\n"
         "  runtime:\n"
         '    model: "openai/test-runtime"\n'
@@ -41,7 +45,24 @@ def _write_config(path: Path) -> None:
         "      max_tokens: 22\n"
         "    pass_c:\n"
         '      model: "openai/test-pass-c"\n'
-        "      max_tokens: 33\n",
+        "      max_tokens: 33\n"
+        "  agents:\n"
+        "    workspace_chat:\n"
+        '      model: "openai/test-workspace-chat"\n'
+        '      api_key_env: "TEST_LLM_KEY"\n'
+        "      extra_kwargs: {}\n"
+        "    skill_build:\n"
+        '      model: "openai/test-skill-build"\n'
+        '      api_key_env: "TEST_LLM_KEY"\n'
+        "      extra_kwargs: {}\n"
+        "    replay:\n"
+        '      model: "openai/test-replay"\n'
+        '      api_key_env: "TEST_LLM_KEY"\n'
+        "      extra_kwargs: {}\n"
+        "    computer_use:\n"
+        '      model: "openai/test-computer-use"\n'
+        '      api_key_env: "TEST_LLM_KEY"\n'
+        "      extra_kwargs: {}\n",
         encoding="utf-8",
     )
 
@@ -63,35 +84,155 @@ class LLMResolverConfigTests(unittest.TestCase):
             _write_config(path)
             with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
                 cfg = load_llm_config()
+                self.assertEqual(cfg.provider, "custom")
+                self.assertEqual(cfg.agent_runtime, "codex_cli")
                 self.assertEqual(cfg.runtime.model, "openai/test-runtime")
                 self.assertEqual(cfg.reflect.pass_a_model, "openai/test-pass-a")
                 self.assertEqual(cfg.reflect.pass_b_max_tokens, 22)
                 self.assertEqual(cfg.reflect.pass_c_model, "openai/test-pass-c")
+                self.assertEqual(cfg.agents.workspace_chat.model, "openai/test-workspace-chat")
+                self.assertEqual(cfg.agents.skill_build.model, "openai/test-skill-build")
+                self.assertEqual(cfg.agents.replay.model, "openai/test-replay")
+                self.assertEqual(cfg.agents.computer_use.model, "openai/test-computer-use")
+                self.assertEqual(cfg.agents.computer_use.agent_runtime, "codex_cli")
                 with self.assertRaisesRegex(RuntimeError, "Unknown LLM config section"):
                     get_llm_section("replay")
 
-    def test_deep_merges_partial_user_config_with_defaults(self) -> None:
+    def test_provider_anthropic_uses_builtin_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "user_config.yml"
             path.write_text(
-                "llm:\n"
-                "  runtime:\n"
-                '    model: "openai/custom-runtime"\n'
-                "  reflect:\n"
-                "    pass_a:\n"
-                "      max_tokens: 123\n",
+                "config_version: 1\n"
+                "provider: anthropic\n",
                 encoding="utf-8",
             )
 
             with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
                 cfg = load_llm_config()
 
-            self.assertEqual(cfg.runtime.model, "openai/custom-runtime")
+            self.assertEqual(cfg.provider, "anthropic")
+            self.assertEqual(cfg.agent_runtime, "claude_code")
+            self.assertEqual(cfg.runtime.model, "anthropic/claude-sonnet-4-6")
             self.assertEqual(cfg.runtime.api_key_env, "ANTHROPIC_API_KEY")
             self.assertEqual(cfg.reflect.model, "anthropic/claude-sonnet-4-6")
-            self.assertEqual(cfg.reflect.pass_a_max_tokens, 123)
-            self.assertIsNone(cfg.reflect.pass_a_model)
             self.assertEqual(cfg.reflect.pass_b_max_tokens, 7000)
+            self.assertEqual(cfg.agents.workspace_chat.model, "anthropic/claude-opus-4-8")
+            self.assertEqual(cfg.agents.skill_build.model, "anthropic/claude-opus-4-8")
+            self.assertEqual(cfg.agents.replay.model, "anthropic/claude-opus-4-8")
+            self.assertEqual(cfg.agents.computer_use.model, "anthropic/claude-opus-4-8")
+            self.assertEqual(cfg.agents.computer_use.agent_runtime, "claude_code")
+
+    def test_provider_openai_uses_builtin_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "user_config.yml"
+            path.write_text(
+                "config_version: 1\n"
+                "provider: openai\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
+                cfg = load_llm_config()
+
+            self.assertEqual(cfg.provider, "openai")
+            self.assertEqual(cfg.agent_runtime, "codex_cli")
+            self.assertEqual(cfg.runtime.model, "openai/gpt-5.4-mini")
+            self.assertEqual(cfg.runtime.api_key_env, "OPENAI_API_KEY")
+            self.assertIsNone(cfg.reflect.pass_c_model)
+            self.assertEqual(cfg.agents.workspace_chat.model, "openai/gpt-5.5")
+            self.assertEqual(cfg.agents.skill_build.model, "openai/gpt-5.5")
+            self.assertEqual(cfg.agents.replay.model, "openai/gpt-5.5")
+            self.assertEqual(cfg.agents.computer_use.model, "openai/gpt-5.5")
+            self.assertEqual(cfg.agents.computer_use.api_key_env, "OPENAI_API_KEY")
+            self.assertEqual(cfg.agents.computer_use.agent_runtime, "codex_cli")
+
+    def test_provider_is_required(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "user_config.yml"
+            path.write_text("config_version: 1\n", encoding="utf-8")
+            with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "must set provider"):
+                    load_llm_config()
+
+    def test_unknown_provider_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "user_config.yml"
+            path.write_text("config_version: 1\nprovider: local\n", encoding="utf-8")
+            with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "Invalid LLM config"):
+                    load_llm_config()
+
+    def test_provider_rejects_detailed_llm_unless_custom(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "user_config.yml"
+            path.write_text(
+                "config_version: 1\n"
+                "provider: anthropic\n"
+                "llm:\n"
+                "  runtime:\n"
+                '    model: "anthropic/claude-sonnet-4-6"\n'
+                "  reflect:\n"
+                '    model: "anthropic/claude-sonnet-4-6"\n',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "remove the detailed llm block"):
+                    load_llm_config()
+
+    def test_custom_provider_requires_detailed_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "user_config.yml"
+            path.write_text("config_version: 1\nprovider: custom\n", encoding="utf-8")
+            with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "requires a detailed llm block"):
+                    load_llm_config()
+
+    def test_custom_provider_agent_flow_runtime_override(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "user_config.yml"
+            _write_config(path)
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text + "agent:\n  replay_runtime: hermes_cli\n", encoding="utf-8")
+            with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
+                cfg = load_llm_config()
+            self.assertEqual(cfg.provider, "custom")
+            self.assertEqual(cfg.agent_runtime, "codex_cli")
+            self.assertEqual(cfg.agents.replay.agent_runtime, "hermes_cli")
+
+    def test_custom_provider_requires_agent_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "user_config.yml"
+            path.write_text(
+                "config_version: 1\n"
+                "provider: custom\n"
+                "llm:\n"
+                "  runtime:\n"
+                '    model: "openai/test-runtime"\n'
+                "  reflect:\n"
+                '    model: "openai/test-reflect"\n',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "agents"):
+                    load_llm_config()
+
+    def test_custom_provider_computer_use_runtime_infers_from_model(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "user_config.yml"
+            _write_config(path)
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text.replace('model: "openai/test-computer-use"', 'model: "anthropic/claude-opus-4-8"'), encoding="utf-8")
+            with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
+                cfg = load_llm_config()
+                computer_cfg = get_computer_use_config()
+            self.assertEqual(cfg.agents.computer_use.agent_runtime, "claude_code")
+            self.assertEqual(computer_cfg.model, "anthropic/claude-opus-4-8")
+            self.assertEqual(computer_cfg.agent_runtime, "claude_code")
+
+    def test_runtime_for_model_uses_model_prefix_before_provider(self) -> None:
+        self.assertEqual(runtime_for_model("anthropic", "openai/gpt-5.5"), "codex_cli")
+        self.assertEqual(runtime_for_model("openai", "anthropic/claude-opus-4-8"), "claude_code")
+        self.assertEqual(runtime_for_model("openai", "gpt-5.5"), "codex_cli")
 
     def test_default_user_config_is_valid(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -101,10 +242,13 @@ class LLMResolverConfigTests(unittest.TestCase):
             with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True):
                 cfg = load_llm_config()
 
+            self.assertEqual(cfg.provider, "anthropic")
+            self.assertEqual(cfg.agent_runtime, "claude_code")
             self.assertEqual(cfg.runtime.model, "anthropic/claude-sonnet-4-6")
             self.assertEqual(cfg.runtime.api_key_env, "ANTHROPIC_API_KEY")
             self.assertEqual(cfg.reflect.pass_c_max_tokens, 7000)
             self.assertEqual(cfg.reflect.pass_c_model, "anthropic/claude-opus-4-8")
+            self.assertEqual(cfg.agents.computer_use.model, "anthropic/claude-opus-4-8")
 
     def test_ask_llm_uses_runtime_config(self) -> None:
         class FakeCompletions:
@@ -140,12 +284,12 @@ class LLMResolverConfigTests(unittest.TestCase):
         assert FakeOpenAI.last_completions is not None
         self.assertEqual(FakeOpenAI.last_completions.kwargs["model"], "test-runtime")
 
-    def test_ask_llm_missing_configured_key_uses_claude_fallback(self) -> None:
+    def test_ask_llm_missing_openai_key_uses_codex(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "user_config.yml"
             _write_config(path)
             with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True), patch(
-                "llm_resolver.runtime._run_claude_structured_fallback",
+                "llm_resolver.runtime._run_codex_structured",
                 return_value={"ok": True},
             ) as fallback:
                 result = ask_llm(
@@ -156,17 +300,193 @@ class LLMResolverConfigTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         fallback.assert_called_once()
         self.assertEqual(fallback.call_args.kwargs["where"], "ask_llm")
-        self.assertIsNone(fallback.call_args.kwargs["model"])
+        self.assertEqual(fallback.call_args.kwargs["model"], "openai/test-runtime")
+
+    def test_codex_structured_sends_prompt_on_stdin(self) -> None:
+        from llm_resolver.codex import run_codex_structured
+
+        captured: dict[str, object] = {}
+
+        class FakeCodexConfig:
+            def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured["config"] = kwargs
+
+        class FakeTextInput:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+        class FakeLocalImageInput:
+            def __init__(self, path: str) -> None:
+                self.path = path
+
+        class FakeSandbox:
+            read_only = "read_only"
+
+        class FakeThread:
+            async def run(self, run_input, **kwargs):  # type: ignore[no-untyped-def]
+                captured["run_input"] = run_input
+                captured["run_kwargs"] = kwargs
+                return SimpleNamespace(final_response='{"ok": true}')
+
+        class FakeAsyncCodex:
+            def __init__(self, *, config):  # type: ignore[no-untyped-def]
+                captured["sdk_config"] = config
+
+            async def __aenter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+                return None
+
+            async def thread_start(self, **kwargs):  # type: ignore[no-untyped-def]
+                captured["thread_kwargs"] = kwargs
+                return FakeThread()
+
+        with patch("llm_resolver.codex._codex_exe", return_value="/bin/codex"), patch(
+            "llm_resolver.codex._load_codex_sdk",
+            return_value=(FakeAsyncCodex, FakeCodexConfig, FakeLocalImageInput, FakeSandbox, FakeTextInput),
+        ):
+            result = run_codex_structured(
+                messages=[{"role": "user", "content": "Return ok"}],
+                response_schema={"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+                where="codex test",
+                model="openai/gpt-5.5",
+            )
+
+        config = captured["config"]
+        self.assertIsInstance(config, dict)
+        self.assertEqual(config["codex_bin"], "/bin/codex")
+        env = config["env"]
+        self.assertIsInstance(env, dict)
+        self.assertIn("/usr/local/bin", env["PATH"].split(os.pathsep))
+        run_input = captured["run_input"]
+        self.assertIsInstance(run_input, list)
+        self.assertEqual(run_input[0].text, "Return ok")
+        run_kwargs = captured["run_kwargs"]
+        self.assertIsInstance(run_kwargs, dict)
+        self.assertEqual(run_kwargs["model"], "gpt-5.5")
+        self.assertEqual(run_kwargs["sandbox"], "read_only")
+        self.assertEqual(run_kwargs["output_schema"]["additionalProperties"], False)
+        self.assertEqual(run_kwargs["output_schema"]["required"], ["ok"])
+        self.assertEqual(result, {"ok": True})
+
+    def test_codex_structured_parses_current_jsonl_fallback(self) -> None:
+        from llm_resolver.codex import run_codex_structured
+
+        class FakeCodexConfig:
+            def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+        class FakeTextInput:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+        class FakeSandbox:
+            read_only = "read_only"
+
+        class FakeThread:
+            async def run(self, run_input, **kwargs):  # type: ignore[no-untyped-def]
+                return SimpleNamespace(final_response='extra text {"ok": true} trailing text')
+
+        class FakeAsyncCodex:
+            def __init__(self, *, config):  # type: ignore[no-untyped-def]
+                pass
+
+            async def __aenter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+                return None
+
+            async def thread_start(self, **kwargs):  # type: ignore[no-untyped-def]
+                return FakeThread()
+
+        with patch("llm_resolver.codex._codex_exe", return_value="/bin/codex"), patch(
+            "llm_resolver.codex._load_codex_sdk",
+            return_value=(FakeAsyncCodex, FakeCodexConfig, object, FakeSandbox, FakeTextInput),
+        ):
+            result = run_codex_structured(
+                messages=[{"role": "user", "content": "Return ok"}],
+                response_schema={"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+                where="codex test",
+                model="openai/gpt-5.5",
+            )
+
+        self.assertEqual(result, {"ok": True})
+
+    def test_codex_output_schema_requires_all_object_properties(self) -> None:
+        from llm_resolver.codex import _codex_output_schema
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "target": {"$ref": "#/$defs/Target", "description": "Target element."},
+                "post_action": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["target"],
+            "$defs": {
+                "Target": {
+                    "type": "object",
+                    "properties": {
+                        "primary": {"type": "string"},
+                        "fallback": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
+                    },
+                    "required": ["primary"],
+                }
+            },
+        }
+
+        normalized = _codex_output_schema(schema)
+
+        self.assertEqual(normalized["required"], ["target", "post_action"])
+        self.assertEqual(normalized["additionalProperties"], False)
+        self.assertNotIn("$ref", normalized["properties"]["target"])
+        self.assertEqual(normalized["properties"]["target"]["required"], ["primary", "fallback"])
+        self.assertEqual(normalized["properties"]["target"]["description"], "Target element.")
+        target = normalized["$defs"]["Target"]
+        self.assertEqual(target["required"], ["primary", "fallback"])
+        self.assertEqual(target["additionalProperties"], False)
+        self.assertNotIn("default", target["properties"]["fallback"])
+        self.assertEqual(schema["required"], ["target"])
 
     def test_ask_llm_missing_anthropic_key_passes_configured_model_to_claude_code(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "user_config.yml"
             path.write_text(
+                "provider: custom\n"
                 "llm:\n"
                 "  runtime:\n"
                 '    model: "anthropic/claude-opus-4-8"\n'
                 '    api_key_env: "ANTHROPIC_API_KEY"\n'
-                "    extra_kwargs: {}\n",
+                "    extra_kwargs: {}\n"
+                "  reflect:\n"
+                '    model: "anthropic/claude-opus-4-8"\n'
+                '    api_key_env: "ANTHROPIC_API_KEY"\n'
+                "    extra_kwargs: {}\n"
+                "    pass_a:\n"
+                "      max_tokens: 2000\n"
+                "    pass_b:\n"
+                "      max_tokens: 7000\n"
+                "    pass_c:\n"
+                '      model: "anthropic/claude-opus-4-8"\n'
+                "      max_tokens: 7000\n"
+                "  agents:\n"
+                "    workspace_chat:\n"
+                '      model: "anthropic/claude-opus-4-8"\n'
+                '      api_key_env: "ANTHROPIC_API_KEY"\n'
+                "      extra_kwargs: {}\n"
+                "    skill_build:\n"
+                '      model: "anthropic/claude-opus-4-8"\n'
+                '      api_key_env: "ANTHROPIC_API_KEY"\n'
+                "      extra_kwargs: {}\n"
+                "    replay:\n"
+                '      model: "anthropic/claude-opus-4-8"\n'
+                '      api_key_env: "ANTHROPIC_API_KEY"\n'
+                "      extra_kwargs: {}\n"
+                "    computer_use:\n"
+                '      model: "anthropic/claude-opus-4-8"\n'
+                '      api_key_env: "ANTHROPIC_API_KEY"\n'
+                "      extra_kwargs: {}\n",
                 encoding="utf-8",
             )
             with patch.dict(os.environ, {CONFIG_ENV_VAR: str(path)}, clear=True), patch(
@@ -204,7 +524,7 @@ class LLMResolverConfigTests(unittest.TestCase):
                 return {"ok": True}
 
             with patch.dict(os.environ, {CONFIG_ENV_VAR: str(cfg_path)}, clear=True), patch(
-                "llm_resolver.runtime._run_claude_structured_fallback",
+                "llm_resolver.runtime._run_codex_structured",
                 side_effect=fake_fallback,
             ):
                 result = ask_llm(
@@ -226,7 +546,7 @@ class LLMResolverConfigTests(unittest.TestCase):
             image_path.write_bytes(b"bmp")
 
             with patch.dict(os.environ, {CONFIG_ENV_VAR: str(cfg_path)}, clear=True), patch(
-                "llm_resolver.runtime._run_claude_structured_fallback",
+                "llm_resolver.runtime._run_codex_structured",
                 return_value={"ok": True},
             ) as fallback:
                 with self.assertRaisesRegex(RuntimeError, "ask_llm: unsupported image extension"):
@@ -238,12 +558,12 @@ class LLMResolverConfigTests(unittest.TestCase):
 
         fallback.assert_not_called()
 
-    def test_structured_client_missing_configured_key_uses_claude_fallback(self) -> None:
+    def test_structured_client_missing_openai_key_uses_codex(self) -> None:
         class Answer(BaseModel):
             ok: bool
 
         with patch.dict(os.environ, {}, clear=True), patch(
-            "llm_resolver.client._run_claude_structured_fallback",
+            "llm_resolver.client._run_codex_structured",
             return_value={"ok": True},
         ) as fallback:
             client = LiteLLMChatClient(model="openai/test", api_base=None, api_key_env="TEST_LLM_KEY")
@@ -251,7 +571,7 @@ class LLMResolverConfigTests(unittest.TestCase):
 
         self.assertEqual(result.ok, True)
         fallback.assert_called_once()
-        self.assertIsNone(fallback.call_args.kwargs["model"])
+        self.assertEqual(fallback.call_args.kwargs["model"], "openai/test")
 
     def test_structured_client_missing_anthropic_key_passes_model_to_claude_code(self) -> None:
         class Answer(BaseModel):

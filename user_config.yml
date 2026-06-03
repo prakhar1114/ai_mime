@@ -1,22 +1,2 @@
 config_version: 1
-
-llm:
-  runtime:
-    model: "anthropic/claude-sonnet-4-6"
-    api_base: null
-    api_key_env: "ANTHROPIC_API_KEY"
-    extra_kwargs: {}
-  reflect:
-    model: "anthropic/claude-sonnet-4-6"
-    api_base: null
-    api_key_env: "ANTHROPIC_API_KEY"
-    extra_kwargs: {}
-    pass_a:
-      model: null
-      max_tokens: 2000
-    pass_b:
-      model: null
-      max_tokens: 7000
-    pass_c:
-      model: "anthropic/claude-opus-4-8"
-      max_tokens: 7000
+provider: anthropic

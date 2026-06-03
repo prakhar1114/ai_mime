@@ -30,6 +30,7 @@ dependencies = [
     "uvicorn>=0.27.0",
     "lmnr[all]",
     "llm-resolver",
+    "openai-codex",
     "claude-agent-sdk==0.2.82",
     "cua-computer-server[mcp]>=0.1.25",
 ]

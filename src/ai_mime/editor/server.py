@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue as thread_queue
@@ -24,9 +25,10 @@ from fastapi.staticfiles import StaticFiles
 
 from ai_mime.reflect.runner import run_reflect_and_compile_schema
 from ai_mime.screenshot import ScreenshotRecorder
-from ai_mime.debug_log import log
+from ai_mime.debug_log import log, log_server, open_server_log_file
 from ai_mime.agent_runner import AgentBusyError, WorkflowSkillBuildService, WorkspaceAgentChatService
-from ai_mime.app_data import workflow_runtime_env
+from ai_mime.app_data import is_frozen, workflow_runtime_env
+from ai_mime.provider_settings import provider_settings_status, save_provider_settings
 
 EDITOR_SERVER_PORT = 58838
 
@@ -806,6 +808,32 @@ def create_app(
             app_command_queue.put({"type": "toggle_conversation_overlay"})
         return {"ok": True}
 
+    @app.get("/api/settings/provider")
+    def api_provider_settings():
+        return provider_settings_status()
+
+    @app.post("/api/settings/provider")
+    def api_update_provider_settings(payload: dict[str, Any] = Body(...)):
+        nonlocal agent_service
+        provider = payload.get("provider")
+        if not isinstance(provider, str):
+            raise HTTPException(status_code=400, detail="provider must be anthropic or openai")
+        api_key = payload.get("api_key")
+        if api_key is not None and not isinstance(api_key, str):
+            raise HTTPException(status_code=400, detail="api_key must be a string or null")
+        try:
+            status = save_provider_settings(provider, api_key=api_key)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        agent_service = WorkspaceAgentChatService()
+        task_agent_services.clear()
+        replay_agent_services.clear()
+        skill_build_services.clear()
+        return status
+
     @app.get("/api/agent/sessions")
     def api_agent_sessions():
         return agent_service.status()
@@ -1553,13 +1581,58 @@ def _run_uvicorn(
     # unless the editor is actually used.
     import uvicorn  # type: ignore[import-not-found]
 
+    if is_frozen():
+        log_server(f"Editor server: child process started, binding {host}:{port}")
+    try:
+        if is_frozen():
+            with open_server_log_file() as server_log_file:
+                with contextlib.redirect_stdout(server_log_file), contextlib.redirect_stderr(server_log_file):
+                    _serve_uvicorn(
+                        uvicorn,
+                        host=host,
+                        port=port,
+                        workflows_root=workflows_root,
+                        recordings_root=recordings_root,
+                        app_command_queue=app_command_queue,
+                        app_state=app_state,
+                    )
+        else:
+            _serve_uvicorn(
+                uvicorn,
+                host=host,
+                port=port,
+                workflows_root=workflows_root,
+                recordings_root=recordings_root,
+                app_command_queue=app_command_queue,
+                app_state=app_state,
+            )
+    except Exception as e:
+        if is_frozen():
+            log_server(f"Editor server: crashed on {host}:{port}: {e}", exc_info=True)
+        raise
+
+
+def _serve_uvicorn(
+    uvicorn: Any,
+    *,
+    host: str,
+    port: int,
+    workflows_root: str,
+    recordings_root: str,
+    app_command_queue: Any | None,
+    app_state: Any | None,
+) -> None:
+    print(
+        f"[ai-mime] editor server starting on http://{host}:{port}",
+        file=sys.stderr,
+        flush=True,
+    )
     app = create_app(
         workflows_root=Path(workflows_root),
         recordings_root=Path(recordings_root),
         app_command_queue=app_command_queue,
         app_state=app_state,
     )
-    # Ensure logs go to the parent terminal (stdout/stderr).
     uvicorn.run(app, host=host, port=port, log_level="info", access_log=True)
 
 
@@ -1592,5 +1665,7 @@ def start_editor_server(
         daemon=False,
     )
     p.start()
+    if is_frozen():
+        log_server(f"Editor server: launched on port {port} (pid {p.pid})")
     print(f"[ai-mime] editor server starting on http://127.0.0.1:{port}", file=sys.stderr)
     return p, port

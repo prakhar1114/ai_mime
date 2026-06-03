@@ -11,6 +11,8 @@
 
 import sys  # os is already injected by PyInstaller
 
+from PyInstaller.utils.hooks import copy_metadata
+
 # ---------------------------------------------------------------------------
 # Paths — SPECPATH is injected by PyInstaller (== dirname of this .spec file).
 # ---------------------------------------------------------------------------
@@ -49,7 +51,12 @@ a = Analysis(
         (os.path.join(_repo, "docs", "logo", "icon60.png"), os.path.join("docs", "logo")),
         # Agent runner instructions (containing build_skill, replay, and example_skill)
         (os.path.join(_src, "ai_mime", "agent_runner", "instructions"), os.path.join("ai_mime", "agent_runner", "instructions")),
-    ],
+    ]
+    + copy_metadata("fastmcp")
+    + copy_metadata("mcp")
+    + copy_metadata("pydocket")
+    + copy_metadata("burner-redis")
+    + copy_metadata("cua-computer-server"),
     hiddenimports=[
         # --- Cocoa / AppKit stack -------------------------------------------
         "objc",
@@ -106,10 +113,32 @@ a = Analysis(
         "ai_mime.agent_runner.computer_use",
         "ai_mime.agent_runner.adapters",
         "ai_mime.agent_runner.adapters.claude_sdk",
+        "ai_mime.agent_runner.adapters.codex_cli",
+        "ai_mime.computer_server_custom",
+        # --- CUA computer server / MCP ----------------------------------------
+        "computer_server",
+        "computer_server.main",
+        "computer_server.mcp_server",
+        "fastmcp",
+        "docket",
+        "docket._redis",
+        "burner_redis",
+        "burner_redis._burner_redis",
+        "burner_redis.pipeline",
+        "burner_redis.lock",
+        "burner_redis.pubsub",
+        "mcp",
+        "mcp.client",
+        "mcp.client.session",
+        "mcp.client.streamable_http",
+        "mcp.types",
         # --- LLM / inference ------------------------------------------------
         "llm_resolver",
+        "llm_resolver.codex",
         "litellm",
         "openai",
+        "openai_codex",
+        "openai_codex.types",
         # --- Observability --------------------------------------------------
         "lmnr",
         # --- Editor server (FastAPI + uvicorn) ------------------------------

@@ -2,6 +2,7 @@
   const el = {
     taskList: document.getElementById("taskList"),
     refreshBtn: document.getElementById("refreshBtn"),
+    providerBtn: document.getElementById("providerBtn"),
     startRecordingBtn: document.getElementById("startRecordingBtn"),
     agentModeBtn: document.getElementById("agentModeBtn"),
     openWorkflowsBtn: document.getElementById("openWorkflowsBtn"),
@@ -17,6 +18,7 @@
   const ATTENTION = new Set(["pending_reflection", "failed_reflection", "replay_failed"]);
   let tasks = [];
   let appStatus = {};
+  let providerSettings = null;
   let busy = false;
   let openMenuTaskId = null;
 
@@ -149,6 +151,26 @@
     }
   }
 
+  function providerLabel(provider) {
+    const settings = providerSettings && providerSettings.providers && providerSettings.providers[provider];
+    return settings && settings.label ? settings.label : (provider || "Provider");
+  }
+
+  function renderProviderButton() {
+    if (!el.providerBtn) return;
+    const provider = providerSettings && providerSettings.provider;
+    el.providerBtn.textContent = provider ? providerLabel(provider) : "Provider";
+  }
+
+  async function loadProviderSettings() {
+    try {
+      providerSettings = await request("/api/settings/provider");
+    } catch {
+      providerSettings = null;
+    }
+    renderProviderButton();
+  }
+
   async function loadTasks() {
     if (busy) return;
     busy = true;
@@ -208,6 +230,82 @@
     }
   }
 
+  function closeProviderModal() {
+    const existing = document.querySelector(".modal-overlay.provider-modal");
+    if (existing) existing.remove();
+  }
+
+  async function openProviderModal() {
+    if (!providerSettings) await loadProviderSettings();
+    const current = providerSettings && providerSettings.provider === "openai" ? "openai" : "anthropic";
+    const providers = providerSettings && providerSettings.providers ? providerSettings.providers : {};
+    const anth = providers.anthropic || {};
+    const openai = providers.openai || {};
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay provider-modal";
+    overlay.innerHTML = `
+      <div class="modal-card provider-card" role="dialog" aria-modal="true" aria-label="Provider settings">
+        <div class="modal-header">
+          <div class="modal-title">Provider</div>
+          <div class="modal-desc">Choose the default AI provider for new tasks, chat, replay, computer-use, and reflection.</div>
+        </div>
+        <label class="provider-option">
+          <input type="radio" name="provider" value="anthropic" ${current === "anthropic" ? "checked" : ""}>
+          <span>
+            <strong>Anthropic / Claude Code</strong>
+            <small>${escapeHtml(anth.status || "")}</small>
+          </span>
+        </label>
+        <label class="provider-option">
+          <input type="radio" name="provider" value="openai" ${current === "openai" ? "checked" : ""}>
+          <span>
+            <strong>OpenAI / Codex</strong>
+            <small>${escapeHtml(openai.status || "")}</small>
+          </span>
+        </label>
+        <label class="provider-key">
+          <span>Optional API key</span>
+          <input type="password" id="providerApiKey" placeholder="Paste key for selected provider">
+        </label>
+        <div class="provider-message" id="providerMessage"></div>
+        <div class="modal-actions row">
+          <button class="modal-btn secondary" id="cancelProviderBtn">Cancel</button>
+          <button class="modal-btn primary" id="saveProviderBtn">Save Provider</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const keyInput = overlay.querySelector("#providerApiKey");
+    const message = overlay.querySelector("#providerMessage");
+    const saveBtn = overlay.querySelector("#saveProviderBtn");
+    overlay.querySelector("#cancelProviderBtn").addEventListener("click", closeProviderModal);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) closeProviderModal();
+    });
+    saveBtn.addEventListener("click", async () => {
+      const selected = overlay.querySelector('input[name="provider"]:checked');
+      const provider = selected ? selected.value : "anthropic";
+      const apiKey = keyInput.value.trim();
+      message.textContent = "Checking provider...";
+      saveBtn.disabled = true;
+      try {
+        providerSettings = await request("/api/settings/provider", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider, api_key: apiKey || null }),
+        });
+        renderProviderButton();
+        closeProviderModal();
+        await loadTasks();
+      } catch (e) {
+        message.textContent = e.message || String(e);
+        saveBtn.disabled = false;
+      }
+    });
+    const checked = overlay.querySelector('input[name="provider"]:checked');
+    if (checked) checked.focus();
+  }
+
   function positionOpenMenu() {
     const menu = el.taskList.querySelector(".menu.open");
     if (!menu) return;
@@ -239,6 +337,7 @@
   });
 
   el.refreshBtn.addEventListener("click", loadTasks);
+  el.providerBtn.addEventListener("click", openProviderModal);
   el.agentModeBtn.addEventListener("click", () => {
     window.location.href = "/agent";
   });
@@ -274,6 +373,7 @@
       await loadTasks();
     }
   });
+  loadProviderSettings();
   loadTasks();
   window.setInterval(loadTasks, 1600);
 })();

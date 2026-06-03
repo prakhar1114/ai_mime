@@ -1,8 +1,10 @@
 import atexit
 import click
+import contextlib
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 import logging
 import multiprocessing
@@ -13,7 +15,7 @@ from ai_mime.permissions import check_permissions
 from ai_mime.reflect.workflow import reflect_session, compile_schema_for_workflow_dir
 from ai_mime.app import run_app
 from ai_mime.onboarding import run_onboarding
-from ai_mime.debug_log import log
+from ai_mime.debug_log import log, log_server, open_server_log_file
 
 
 COMPUTER_SERVER_PORT = 58840
@@ -40,23 +42,46 @@ def _free_port(port: int) -> None:
 def _run_computer_server(port: int) -> None:
     """Child-process entrypoint: serve the cua computer server (with MCP)."""
     log(f"Computer server: child process started, binding port {port}")
+    if is_frozen():
+        log_server(f"Computer server: child process started, binding port {port}")
     try:
-        try:
-            from ai_mime.computer_server_custom import install_custom_tools
+        if is_frozen():
+            with open_server_log_file() as server_log_file:
+                with contextlib.redirect_stdout(server_log_file), contextlib.redirect_stderr(server_log_file):
+                    _serve_computer_server(port)
+        else:
+            _serve_computer_server(port)
+    except Exception as e:
+        log(f"Computer server: crashed on port {port}: {e}", exc_info=True)
+        if is_frozen():
+            log_server(f"Computer server: crashed on port {port}: {e}", exc_info=True)
+        raise
 
-            install_custom_tools()
-        except Exception as e:
-            log(
+
+def _serve_computer_server(port: int) -> None:
+    print(
+        f"[ai-mime] computer server starting on 0.0.0.0:{port}",
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        from ai_mime.computer_server_custom import install_custom_tools
+
+        install_custom_tools()
+    except Exception as e:
+        log(
+            f"Computer server: custom MCP tools unavailable; continuing without them: {e}",
+            exc_info=True,
+        )
+        if is_frozen():
+            log_server(
                 f"Computer server: custom MCP tools unavailable; continuing without them: {e}",
                 exc_info=True,
             )
 
-        from computer_server import Server
+    from computer_server import Server
 
-        Server(host="0.0.0.0", port=port).start()
-    except Exception as e:
-        log(f"Computer server: crashed on port {port}: {e}", exc_info=True)
-        raise
+    Server(host="0.0.0.0", port=port).start()
 
 
 def _start_computer_server(port: int = COMPUTER_SERVER_PORT) -> None:
@@ -73,6 +98,8 @@ def _start_computer_server(port: int = COMPUTER_SERVER_PORT) -> None:
     proc.start()
     atexit.register(proc.terminate)
     log(f"Computer server: launched on port {port} (pid {proc.pid})")
+    if is_frozen():
+        log_server(f"Computer server: launched on port {port} (pid {proc.pid})")
     click.echo(f"Computer server starting on port {port} (pid {proc.pid}).")
 
 
@@ -86,6 +113,10 @@ def start_app():
     if not get_onboarding_done_path().exists():
         log("start_app: running onboarding")
         run_onboarding()
+        if not get_onboarding_done_path().exists():
+            log("start_app: onboarding was not completed. Exiting.")
+            import sys
+            sys.exit(0)
 
     # Reload .env so that any key written by onboarding is live.
     load_dotenv(get_env_path(), override=True)

@@ -8,10 +8,12 @@ from typing import Any
 from .client import (
     LiteLLMChatClient,
     _claude_fallback_model,
+    _run_codex_structured,
     _load_litellm_completion,
     _load_openai,
     _missing_configured_api_key,
     _run_claude_structured_fallback,
+    _structured_fallback_kind,
 )
 from .config import get_llm_section
 
@@ -77,6 +79,13 @@ def ask_llm(
             key = value.strip()
 
     if _missing_configured_api_key(cfg.api_key_env):
+        if _structured_fallback_kind(selected_model, cfg.provider) == "codex":
+            return _run_codex_structured(
+                messages=messages,
+                response_schema=schema,
+                where="ask_llm",
+                model=selected_model,
+            )
         return _run_claude_structured_fallback(
             messages=messages,
             response_schema=schema,

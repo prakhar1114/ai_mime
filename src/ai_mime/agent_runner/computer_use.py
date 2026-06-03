@@ -1,8 +1,7 @@
 """Natural-language macOS computer-use task runner.
 
 Drives the Mac through cua-computer-server's MCP tools (mounted at /mcp on the
-API server started by ``cli.start_app``) using the Claude Agent SDK, reusing the
-option-building/parsing helpers from the claude_sdk adapter.
+API server started by ``cli.start_app``) using the configured agent runtime.
 """
 from __future__ import annotations
 
@@ -11,20 +10,13 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
-from claude_agent_sdk import ClaudeAgentOptions, TextBlock, ToolResultBlock, ToolUseBlock, query
-from ai_mime.agent_runner.adapters.claude_sdk import (
-    _options_kwargs_for,
-    _result_summary,
-    _text_from_message,
-    cua_mcp_servers,
-    DEFAULT_ALLOWED_TOOLS,
-)
+from typing import Any
+from ai_mime.agent_runner.adapters.registry import get_agent_runtime
+from ai_mime.agent_runner.mcp import cua_mcp_servers
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.debug_log import log as debug_log
-
-COMPUTER_USE_MODEL = "claude-opus-4-8"
-# COMPUTER_USE_MODEL = "claude-sonnet-4-6"
+from ai_mime.user_config import load_user_config
+from llm_resolver import runtime_model_name
 
 COMPUTER_USE_SYSTEM_PROMPT = """You drive this macOS computer through the `cua` MCP server's \
 `computer_*` tools to accomplish the user's task in the FOREGROUND, then report what you did.
@@ -32,6 +24,7 @@ COMPUTER_USE_SYSTEM_PROMPT = """You drive this macOS computer through the `cua` 
 ## Operational Rules — FOREGROUND DRIVE
 
 You operate the macOS GUI exclusively in the foreground. Keep the target applications visible, active, and focused.
+Use ONLY the attached `cua` MCP server API/tools to inspect state and perform actions. Do not use any built-in computer-use, browser, shell, file, automation, or other action capability you may have outside the attached `cua` MCP server.
 
 1. **Active Foreground Launch & App Activation**:
    - To start or focus an application, use `computer_launch_app`.
@@ -102,94 +95,106 @@ def _extract_result_json(text: str) -> dict[str, Any] | None:
     return None
 
 
-async def _run_computer_use_task_async(
-    task: str, *, model: str, response_schema: dict[str, Any] | None = None
+def _prompt_for_task(task: str, response_schema: dict[str, Any] | None) -> str:
+    if response_schema is None:
+        return task
+    return (
+        f"{task}\n\n"
+        "When the task is complete, end your final message with ONLY a JSON object "
+        "matching this schema (no surrounding prose or code fence):\n"
+        f"{json.dumps(response_schema)}"
+    )
+
+
+def _configured_computer_use_runtime() -> tuple[str, str]:
+    cfg = load_user_config()
+    computer_use_cfg = cfg.agents.computer_use
+    return computer_use_cfg.agent_runtime, computer_use_cfg.model.strip()
+
+
+async def _run_agent_runtime_computer_use_task_async(
+    task: str,
+    *,
+    runtime_id: str,
+    model: str,
+    response_schema: dict[str, Any] | None = None,
 ) -> AgentRunResult:
+    runtime = get_agent_runtime(runtime_id)
+    prompt = f"{COMPUTER_USE_SYSTEM_PROMPT}\n\n{_prompt_for_task(task, response_schema)}"
     request = AgentRunRequest(
-        provider="claude",
+        provider=runtime_id if runtime_id in {"claude", "claude_code", "codex_cli"} else "claude",
         mode="general",
-        model=model,
+        model=runtime_model_name(model),
         workflow_dir=Path("/tmp"),
         workspace_dir=Path("/tmp"),
         system_prompt=COMPUTER_USE_SYSTEM_PROMPT,
         mcp_servers=cua_mcp_servers(),
     )
-    # allowed_tools = [t for t in DEFAULT_ALLOWED_TOOLS if t != "Skill"]
-    allowed_tools = []
-    kwargs = _options_kwargs_for(request, allowed_tools=allowed_tools, skills=[], setting_sources=[])
-    # Autonomous run: no human to answer permission prompts for the cua tools.
-    kwargs["permission_mode"] = "bypassPermissions"
-    options = ClaudeAgentOptions(**kwargs)
 
-    prompt = task
-    if response_schema is not None:
-        prompt = (
-            f"{task}\n\n"
-            "When the task is complete, end your final message with ONLY a JSON object "
-            "matching this schema (no surrounding prose or code fence):\n"
-            f"{json.dumps(response_schema)}"
-        )
+    async def allow_tool(_tool_name: str, input_data: dict[str, Any], _ctx: Any) -> Any:
+        from ai_mime.agent_runner.adapters.claude_sdk import to_permission_result
 
-    assistant_parts: list[str] = []
-    last_text: str = ""
-    result_text: str | None = None
-    session_id = ""
-    status: Literal["success", "failed", "cancelled"] = "success"
-    error: str | None = None
-    # Ordered transcript of what the agent did (assistant narration + tool calls),
-    # returned so a fallback agent can see how far the task got and resume it.
+        return to_permission_result({"behavior": "allow", "updated_input": input_data})
+
     logs: list[str] = []
+    text_parts: list[str] = []
+    assistant_log_parts: list[str] = []
+    session_id = ""
+    status = "success"
+    error: str | None = None
+    done_summary = ""
 
-    def _emit(line: str) -> None:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_line = f"[{timestamp}] {line}"
+    def record(line: str) -> None:
+        log_line = f"[{datetime.now().strftime('%H:%M:%S')}] {line}"
         logs.append(log_line)
         print(log_line, file=sys.stderr, flush=True)
+        debug_log(f"[computer-use] {log_line}")
 
-    try:
-        async for message in query(prompt=prompt, options=options):
-            for block in getattr(message, "content", None) or []:
-                if isinstance(block, TextBlock):
-                    text = str(getattr(block, "text", "") or "")
-                    if text:
-                        last_text = text
-                        _emit(f"assistant: {text}")
-                elif isinstance(block, ToolUseBlock):
-                    _emit(f"tool_use: {block.name} input={block.input}")
-                elif isinstance(block, ToolResultBlock):
-                    timestamp = datetime.now().strftime("%H:%M:%S")
-                    line = f"[{timestamp}] tool_result: {block.name if hasattr(block, 'name') else block.tool_use_id} is_error={bool(block.is_error)}"
-                    debug_log(f"[computer-use] {line}")
-                    logs.append(line)
-            assistant_parts.extend(_text_from_message(message))
-            result_text = _result_summary(message) or result_text
-            sid = getattr(message, "session_id", None)
-            if isinstance(sid, str) and sid:
-                session_id = sid
-            subtype = getattr(message, "subtype", None)
-            if isinstance(subtype, str) and subtype.startswith("error"):
-                status = "failed"
-                error = subtype
-    except Exception as e:
-        debug_log(f"[computer-use] task failed: {e}", exc_info=True)
-        return AgentRunResult(
-            status="failed",
-            session_id=session_id,
-            summary="Computer-use task failed.",
-            logs=logs,
-            error=str(e),
-        )
+    def flush_assistant_log() -> None:
+        text = "".join(assistant_log_parts).strip()
+        assistant_log_parts.clear()
+        if text:
+            record(f"assistant: {text}")
 
-    summary = "\n".join(assistant_parts).strip() or result_text or "Computer-use task completed."
-    result_json = (
-        _extract_result_json(last_text or summary) if response_schema is not None else None
-    )
-    debug_log(
-        f"[computer-use] done status={status} session={session_id} "
-        f"result_json={'yes' if result_json is not None else 'no'} steps={len(logs)}"
-    )
+    async for event in runtime.stream_chat(
+        request,
+        prompt,
+        allowed_tools=[],
+        can_use_tool=allow_tool,
+        skills=[],
+        setting_sources=[],
+    ):
+        event_type = event.get("event")
+        if event_type == "text":
+            text = str(event.get("text") or "")
+            if text:
+                text_parts.append(text)
+                assistant_log_parts.append(text)
+        elif event_type == "tool_use":
+            flush_assistant_log()
+            record(f"tool_use: {event.get('name') or 'tool'} input={event.get('input') or {}}")
+        elif event_type == "error":
+            flush_assistant_log()
+            status = "failed"
+            error = str(event.get("message") or "Computer-use runtime error.")
+            record(f"error: {error}")
+        elif event_type == "interrupted":
+            flush_assistant_log()
+            status = "cancelled"
+            error = "interrupted"
+            record("interrupted")
+        elif event_type == "done":
+            flush_assistant_log()
+            session_id = str(event.get("session_id") or session_id)
+            status = str(event.get("status") or status)
+            event_error = event.get("error")
+            error = str(event_error) if event_error else error
+            done_summary = str(event.get("summary") or "")
+
+    summary = "\n".join(text_parts).strip() or done_summary or "Computer-use task completed."
+    result_json = _extract_result_json(summary) if response_schema is not None else None
     return AgentRunResult(
-        status=status,
+        status=status,  # type: ignore[arg-type]
         session_id=session_id,
         summary=summary,
         result_json=result_json,
@@ -198,10 +203,20 @@ async def _run_computer_use_task_async(
     )
 
 
+async def _run_computer_use_task_async(
+    task: str, *, runtime_id: str, model: str, response_schema: dict[str, Any] | None = None
+) -> AgentRunResult:
+    return await _run_agent_runtime_computer_use_task_async(
+        task,
+        runtime_id=runtime_id,
+        model=model,
+        response_schema=response_schema,
+    )
+
+
 def run_computer_use_task(
     task: str,
     *,
-    model: str = COMPUTER_USE_MODEL,
     response_schema: dict[str, Any] | None = None,
 ) -> AgentRunResult:
     """Run a natural-language computer-use ``task`` via the cua MCP server and return the result.
@@ -213,9 +228,15 @@ def run_computer_use_task(
     is parsed into ``result_json`` so callers can branch deterministically. Requires the computer
     server (cli.start_app / _start_computer_server) to be running.
     """
-    debug_log(f"[computer-use] starting task (model={model}): {task!r}")
+    runtime_id, selected_model = _configured_computer_use_runtime()
+    debug_log(f"[computer-use] starting task (runtime={runtime_id}, model={selected_model}): {task!r}")
     return asyncio.run(
-        _run_computer_use_task_async(task, model=model, response_schema=response_schema)
+        _run_computer_use_task_async(
+            task,
+            runtime_id=runtime_id,
+            model=selected_model,
+            response_schema=response_schema,
+        )
     )
 
 
@@ -246,7 +267,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("task", nargs="*", help="natural-language task")
     parser.add_argument("-s", "--schema", help="JSON schema for structured output, or @path")
-    parser.add_argument("--model", default=COMPUTER_USE_MODEL, help="model id")
     parser.add_argument("--json", action="store_true", help="emit result JSON on stdout")
     args = parser.parse_args(argv)
 
@@ -254,9 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     if not task:
         parser.error('a task is required, e.g. "open Safari"')
 
-    result = run_computer_use_task(
-        task, model=args.model, response_schema=_load_schema_arg(args.schema)
-    )
+    result = run_computer_use_task(task, response_schema=_load_schema_arg(args.schema))
     if args.json:
         print(
             json.dumps(

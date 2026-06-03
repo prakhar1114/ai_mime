@@ -28,6 +28,9 @@ from AppKit import (
     NSImageView,
     NSMenu,
     NSMenuItem,
+    NSPopUpButton,
+    NSEvent,
+    NSEventTypeApplicationDefined,
     NSWindowStyleMaskTitled,
     NSWindowStyleMaskClosable,
     NSBackingStoreBuffered,
@@ -63,7 +66,7 @@ _W = 560          # window width
 _H = 480          # window height
 _M = 40           # side margin
 _CW = _W - 2 * _M  # content width
-_STEPS = ("Welcome", "Permissions", "Claude", "Skills", "Done")
+_STEPS = ("Welcome", "Permissions", "Provider", "Skills", "Done")
 _CENTER = 1       # NSTextAlignmentCenter
 _ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 _BROWSER_SKILL_NAME_ENV = "AI_MIME_BROWSER_SKILL_NAME"
@@ -443,9 +446,14 @@ class _OnboardingWizard(NSObject):
         self._window = None
         self._content = None
         self._continue_btn = None
-        self._claude_key_field = None
-        self._claude_detected = False
-        self._claude_status_label = None
+        self._back_btn = None
+        self._provider_popup = None
+        self._api_key_field = None
+        self._api_key_label = None
+        self._provider_status_label = None
+        self._test_btn = None
+        self._provider_detected = False
+        self._provider_verified = False
         self._install_btn = None
         self._installing = False
         self._install_progress = None
@@ -496,7 +504,26 @@ class _OnboardingWizard(NSObject):
         if self._start_timer is not None:
             self._start_timer.invalidate()
             self._start_timer = None
-        NSApplication.sharedApplication().stop_(None)
+        
+        app = NSApplication.sharedApplication()
+        app.stop_(None)
+        
+        # Post a dummy event to break the event loop immediately.
+        try:
+            event = NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+                NSEventTypeApplicationDefined,
+                (0, 0),
+                0,
+                0,
+                0,
+                None,
+                0,
+                0,
+                0
+            )
+            app.postEvent_atStart_(event, True)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------
     # NSWindowDelegate
@@ -511,8 +538,12 @@ class _OnboardingWizard(NSObject):
         for v in list(self._content.subviews() or []):
             v.removeFromSuperview()
         self._continue_btn = None
-        self._claude_key_field = None
-        self._claude_status_label = None
+        self._back_btn = None
+        self._provider_popup = None
+        self._api_key_field = None
+        self._api_key_label = None
+        self._provider_status_label = None
+        self._test_btn = None
         self._install_btn = None
         self._install_progress = None
         self._install_progress_label = None
@@ -529,7 +560,7 @@ class _OnboardingWizard(NSObject):
         (
             self._render_welcome,
             self._render_permissions,
-            self._render_claude_setup,
+            self._render_provider_setup,
             self._render_skills_setup,
             self._render_done,
         )[self._step]()
@@ -604,7 +635,7 @@ class _OnboardingWizard(NSObject):
             self._add_perm_row(perm, y, row_h)
             y -= (row_h + gap)
 
-        self._add_continue("Continue", enabled=False)
+        self._add_navigation_buttons(continue_enabled=False)
 
         # Poll for permission state every 0.5 s
         self._perm_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -750,81 +781,169 @@ class _OnboardingWizard(NSObject):
     # ------------------------------------------------------------------
     # Step 2 – Claude Setup
     # ------------------------------------------------------------------
-    def _render_claude_setup(self):
+    # ------------------------------------------------------------------
+    # Step 2 – AI Provider Setup
+    # ------------------------------------------------------------------
+    def _render_provider_setup(self):
         if self._perm_timer is not None:
             self._perm_timer.invalidate()
             self._perm_timer = None
 
-        self._claude_detected, claude_msg = _detect_local_claude()
-
-        self._add_label("Claude Setup",
+        self._add_label("AI Provider Setup",
                         x=0, y=_H - 86, w=_W, h=34,
                         size=24, bold=True, align=_CENTER)
         self._add_label(
-            "Connect AI Mime with Claude. Use your local Claude Code\n"
-            "installation, or paste an Anthropic API key below.",
-            x=0, y=_H - 150, w=_W, h=48,
+            "Select your AI provider. You can use a local CLI installation\n"
+            "or configure an API key for Anthropic or OpenAI.",
+            x=0, y=_H - 145, w=_W, h=48,
             size=15, align=_CENTER, color=NSColor.secondaryLabelColor(),
         )
 
-        self._claude_status_label = self._add_label(
-            claude_msg,
-            x=_M, y=_H - 200, w=_CW, h=24,
-            size=13, align=_CENTER,
-            color=NSColor.systemGreenColor() if self._claude_detected else NSColor.secondaryLabelColor(),
-        )
-
-        refresh_btn_w, refresh_btn_h = 150, 30
-        refresh_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect((_W - refresh_btn_w) / 2, _H - 244, refresh_btn_w, refresh_btn_h)
-        )
-        refresh_btn.setTitle_("Check Claude Code")
-        refresh_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        refresh_btn.setTarget_(self)
-        refresh_btn.setAction_("checkClaudeCode:")
-        refresh_btn.setBezelStyle_(1)
-        refresh_btn.setFont_(NSFont.systemFontOfSize_(12))
-        self._content.addSubview_(refresh_btn)
-
+        # Provider Selector Label
         self._add_label(
-            "Anthropic API key",
-            x=_M, y=_H - 295, w=_CW, h=18,
+            "AI Provider",
+            x=_M, y=_H - 188, w=_CW, h=18,
             size=12, bold=True, color=NSColor.secondaryLabelColor(),
         )
-        self._claude_key_field = NSTextField.alloc().initWithFrame_(NSMakeRect(_M, _H - 335, _CW, 36))
-        self._claude_key_field.setPlaceholderString_("sk-ant-...")
-        self._claude_key_field.setFont_(NSFont.systemFontOfSize_(15))
-        self._content.addSubview_(self._claude_key_field)
-        if not self._claude_detected:
-            self._window.makeFirstResponder_(self._claude_key_field)
 
-        NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
-            self,
-            "claudeKeyChanged:",
-            NSControlTextDidChangeNotification,
-            self._claude_key_field,
+        # Provider Popup Button
+        self._provider_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(_M, _H - 215, _CW, 26), False
+        )
+        self._provider_popup.addItemsWithTitles_(["Anthropic / Claude Code", "OpenAI / Codex"])
+        self._provider_popup.setTarget_(self)
+        self._provider_popup.setAction_("providerChanged:")
+        self._content.addSubview_(self._provider_popup)
+
+        # API Key Label
+        self._api_key_label = self._add_label(
+            "Anthropic API key",
+            x=_M, y=_H - 260, w=_CW, h=18,
+            size=12, bold=True, color=NSColor.secondaryLabelColor(),
         )
 
-        self._add_continue("Continue", enabled=self._claude_detected)
+        # API Key Field
+        self._api_key_field = NSTextField.alloc().initWithFrame_(NSMakeRect(_M, _H - 300, _CW, 36))
+        self._api_key_field.setPlaceholderString_("sk-ant-...")
+        self._api_key_field.setFont_(NSFont.systemFontOfSize_(15))
+        self._content.addSubview_(self._api_key_field)
 
-    # Cocoa selector  checkClaudeCode:
-    def checkClaudeCode_(self, sender):
-        self._claude_detected, msg = _detect_local_claude()
-        if self._claude_status_label is not None:
-            self._claude_status_label.setStringValue_(msg)
-            self._claude_status_label.setTextColor_(
-                NSColor.systemGreenColor() if self._claude_detected else NSColor.secondaryLabelColor()
-            )
-        self._update_claude_continue()
+        # Status Label
+        self._provider_status_label = self._add_label(
+            "",
+            x=_M, y=_H - 345, w=_CW, h=40,
+            size=12, align=_CENTER, color=NSColor.secondaryLabelColor(),
+        )
 
-    # Cocoa selector  claudeKeyChanged:
-    def claudeKeyChanged_(self, notification):
-        self._update_claude_continue()
+        # Test & Save button
+        test_btn_w, test_btn_h = 160, 30
+        self._test_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect((_W - test_btn_w) / 2, _H - 390, test_btn_w, test_btn_h)
+        )
+        self._test_btn.setTitle_("Test & Save")
+        self._test_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        self._test_btn.setTarget_(self)
+        self._test_btn.setAction_("testProvider:")
+        self._test_btn.setBezelStyle_(1)
+        self._test_btn.setFont_(NSFont.systemFontOfSize_(12))
+        self._content.addSubview_(self._test_btn)
 
-    def _update_claude_continue(self):
-        val = (self._claude_key_field.stringValue() or "").strip() if self._claude_key_field is not None else ""
+        # Standard Continue button (disabled by default)
+        self._add_navigation_buttons(continue_enabled=False)
+
+        # Notification for key change
+        NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
+            self,
+            "apiKeyChanged:",
+            NSControlTextDidChangeNotification,
+            self._api_key_field,
+        )
+
+        # Set default selection or loaded configuration
+        from ai_mime.provider_settings import _read_provider
+        current_prov = _read_provider()
+        if current_prov == "openai":
+            self._provider_popup.selectItemAtIndex_(1)
+        else:
+            self._provider_popup.selectItemAtIndex_(0)
+
+        # Trigger initial UI sync and check
+        self._sync_provider_ui(is_initial=True)
+
+    def _sync_provider_ui(self, is_initial=False):
+        idx = self._provider_popup.indexOfSelectedItem()
+        provider = "openai" if idx == 1 else "anthropic"
+
+        # Update labels and placeholders
+        if provider == "anthropic":
+            self._api_key_label.setStringValue_("Anthropic API key")
+            self._api_key_field.setPlaceholderString_("sk-ant-...")
+        else:
+            self._api_key_label.setStringValue_("OpenAI API key")
+            self._api_key_field.setPlaceholderString_("sk-...")
+
+        # Load existing API key from env if available (on initial load only)
+        if is_initial:
+            from ai_mime.provider_settings import _read_dotenv_value
+            existing_key = _read_dotenv_value("OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY")
+            if existing_key:
+                self._api_key_field.setStringValue_(existing_key)
+
+        # Perform quick local runtime detection
+        from ai_mime.provider_settings import _provider_runtime_status
+        detected, msg = _provider_runtime_status(provider)
+        self._provider_detected = detected
+
+        self._provider_status_label.setStringValue_(msg)
+        if detected:
+            self._provider_status_label.setTextColor_(NSColor.systemGreenColor())
+        else:
+            self._provider_status_label.setTextColor_(NSColor.secondaryLabelColor())
+
+        self._update_provider_continue()
+
+    def _update_provider_continue(self):
+        val = (self._api_key_field.stringValue() or "").strip() if self._api_key_field is not None else ""
+        is_enabled = self._provider_detected or self._provider_verified or len(val) > 0
         if self._continue_btn is not None:
-            self._continue_btn.setEnabled_(self._claude_detected or len(val) > 0)
+            self._continue_btn.setEnabled_(is_enabled)
+
+    # Cocoa selector providerChanged:
+    def providerChanged_(self, sender):
+        self._provider_verified = False
+        self._sync_provider_ui(is_initial=False)
+
+    # Cocoa selector apiKeyChanged:
+    def apiKeyChanged_(self, notification):
+        self._provider_verified = False
+        self._update_provider_continue()
+
+    # Cocoa selector testProvider:
+    def testProvider_(self, sender):
+        idx = self._provider_popup.indexOfSelectedItem()
+        provider = "openai" if idx == 1 else "anthropic"
+        key = (self._api_key_field.stringValue() or "").strip() if self._api_key_field is not None else ""
+
+        self._test_btn.setEnabled_(False)
+        self._test_btn.setTitle_("Testing...")
+
+        from ai_mime.provider_settings import save_provider_settings
+        try:
+            status = save_provider_settings(provider, api_key=key if key else None)
+            self._provider_verified = True
+            
+            prov_status = status["providers"][provider]
+            msg = prov_status["status"]
+            self._provider_status_label.setStringValue_(f"Success! {msg}")
+            self._provider_status_label.setTextColor_(NSColor.systemGreenColor())
+        except Exception as e:
+            self._provider_verified = False
+            self._provider_status_label.setStringValue_(f"Failed: {e}")
+            self._provider_status_label.setTextColor_(NSColor.systemRedColor())
+
+        self._test_btn.setEnabled_(True)
+        self._test_btn.setTitle_("Test & Save")
+        self._update_provider_continue()
 
     # ------------------------------------------------------------------
     # Step 3 – Skills Setup
@@ -879,7 +998,7 @@ class _OnboardingWizard(NSObject):
             x=_M, y=8, w=_CW, h=36,
             size=12, align=_CENTER, color=NSColor.systemRedColor(),
         )
-        self._add_continue("Continue", enabled=False)
+        self._add_navigation_buttons(continue_enabled=False)
         self._refresh_skill_status()
 
     def _add_skill_row(self, name, detail, y):
@@ -965,6 +1084,9 @@ class _OnboardingWizard(NSObject):
         if self._continue_btn is not None:
             self._continue_btn.setEnabled_(False)
             self._continue_btn.setHidden_(True)
+        if self._back_btn is not None:
+            self._back_btn.setEnabled_(False)
+            self._back_btn.setHidden_(True)
 
         thread = threading.Thread(target=self._install_skills_worker, daemon=True)
         thread.start()
@@ -1049,6 +1171,9 @@ class _OnboardingWizard(NSObject):
             self._install_progress_label.setStringValue_("")
         if self._continue_btn is not None:
             self._continue_btn.setHidden_(False)
+        if self._back_btn is not None:
+            self._back_btn.setEnabled_(True)
+            self._back_btn.setHidden_(False)
         self._refresh_skill_status()
 
     # ------------------------------------------------------------------
@@ -1114,6 +1239,42 @@ class _OnboardingWizard(NSObject):
         self._content.addSubview_(lbl)
         return lbl
 
+    def _add_navigation_buttons(self, *, continue_enabled):
+        """Add a 'Back' button at the top-left and a standard continue button centered at the bottom."""
+        # Small elegant Back button at top-left
+        back_btn = NSButton.alloc().initWithFrame_(NSMakeRect(24, _H - 36, 60, 24))
+        back_btn.setTitle_("Back")
+        back_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        back_btn.setTarget_(self)
+        back_btn.setAction_("onBack:")
+        back_btn.setEnabled_(True)
+        try:
+            back_btn.setBezelStyle_(1)
+            back_btn.setFont_(NSFont.systemFontOfSize_(11))
+        except Exception:
+            pass
+        self._content.addSubview_(back_btn)
+        self._back_btn = back_btn
+
+        # Standard centered Continue button at the bottom
+        btn_w, btn_h = 140, 40
+        cont_btn = NSButton.alloc().initWithFrame_(NSMakeRect((_W - btn_w) / 2, 48, btn_w, btn_h))
+        cont_btn.setTitle_("Continue")
+        cont_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        cont_btn.setTarget_(self)
+        cont_btn.setAction_("onContinue:")
+        cont_btn.setEnabled_(continue_enabled)
+        self._content.addSubview_(cont_btn)
+        self._continue_btn = cont_btn
+
+        return cont_btn
+
+    # Cocoa selector  onBack:
+    def onBack_(self, sender):
+        if self._step > 0:
+            self._step -= 1
+            self._render()
+
     def _add_continue(self, title, *, enabled):
         """Standard centred continue button at the bottom."""
         btn_w, btn_h = 140, 40
@@ -1153,12 +1314,20 @@ class _OnboardingWizard(NSObject):
             self._begin_onboarding_start()
             return
 
-        # --- Persist Anthropic API key before advancing past step 2 ---
+        # --- Persist provider settings before advancing past step 2 ---
         if self._step == 2:
-            key = (self._claude_key_field.stringValue() or "").strip() if self._claude_key_field is not None else ""
-            if key:
-                _merge_env_var(get_env_path(), _ANTHROPIC_API_KEY_ENV, key)
-                os.environ[_ANTHROPIC_API_KEY_ENV] = key
+            idx = self._provider_popup.indexOfSelectedItem()
+            provider = "openai" if idx == 1 else "anthropic"
+            key = (self._api_key_field.stringValue() or "").strip() if self._api_key_field is not None else ""
+            
+            from ai_mime.provider_settings import save_provider_settings
+            try:
+                save_provider_settings(provider, api_key=key if key else None)
+            except Exception as e:
+                if self._provider_status_label is not None:
+                    self._provider_status_label.setStringValue_(f"Error: {e}")
+                    self._provider_status_label.setTextColor_(NSColor.systemRedColor())
+                return
 
         self._step += 1
 

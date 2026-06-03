@@ -30,6 +30,7 @@
   let sending = false;
   let streamController = null;
   let pendingReplayContext = "";
+  let activeRuntime = null;
 
   if (taskId && explicitPrefix && explicitPrefix.includes("/replay-agent")) {
     try {
@@ -240,6 +241,20 @@
     return rawTitle;
   }
 
+  function runtimeLabel(runtimeId) {
+    if (runtimeId === "claude_code" || runtimeId === "claude") return "Claude Code";
+    if (runtimeId === "codex_cli") return "Codex CLI";
+    return runtimeId || "";
+  }
+
+  function sessionMeta(session) {
+    const parts = [];
+    const runtime = runtimeLabel(session.runtime_id);
+    if (runtime) parts.push(runtime);
+    if (session.model) parts.push(session.model);
+    return parts.join(" · ");
+  }
+
   function renderSessions() {
     if (!sessions.length) {
       el.sessionsList.innerHTML = `<div class="empty">No previous sessions.</div>`;
@@ -248,9 +263,11 @@
     el.sessionsList.innerHTML = sessions.map((session) => {
       const sid = session.session_id || "";
       const active = sid && sid === currentSessionId;
+      const meta = sessionMeta(session);
       return `
         <button class="session-item ${active ? "active" : ""}" data-session-id="${escapeHtml(sid)}">
           <div class="session-title">${escapeHtml(sessionTitle(session))}</div>
+          ${meta ? `<div class="session-meta">${escapeHtml(meta)}</div>` : ""}
         </button>
       `;
     }).join("");
@@ -264,6 +281,14 @@
       const selected = id === defaultModel ? " selected" : "";
       return `<option value="${escapeAttr(id)}" title="${escapeAttr(description)}"${selected}>${escapeHtml(label)}</option>`;
     }).join("");
+    updateModelSelectWidth();
+  }
+
+  function updateModelSelectWidth() {
+    const selected = el.modelSelect.options[el.modelSelect.selectedIndex];
+    const text = selected ? selected.textContent || selected.value || "" : "";
+    const width = Math.ceil(Math.max(112, Math.min(320, text.length * 7.2 + 42)));
+    el.modelSelect.style.setProperty("--model-select-width", `${width}px`);
   }
 
   function getStoredMessageText(message) {
@@ -372,13 +397,41 @@
     }
   }
 
+  function checkComposerState() {
+    if (sending) {
+      el.sendBtn.disabled = true;
+      el.input.disabled = true;
+      el.modelSelect.disabled = true;
+      return;
+    }
+    if (!currentSessionId) {
+      el.sendBtn.disabled = false;
+      el.input.disabled = false;
+      el.modelSelect.disabled = false;
+      return;
+    }
+    const active = sessions.find((s) => s.session_id === currentSessionId);
+    const sessionRuntime = active && active.runtime_id;
+    if (sessionRuntime && activeRuntime && sessionRuntime !== activeRuntime) {
+      el.sendBtn.disabled = true;
+      el.input.disabled = true;
+      el.modelSelect.disabled = true;
+      setError(`This conversation uses ${runtimeLabel(sessionRuntime)} (${sessionRuntime}). Switch your agent runtime to ${sessionRuntime} to continue here. Active runtime: ${runtimeLabel(activeRuntime)} (${activeRuntime}).`);
+    } else {
+      el.sendBtn.disabled = false;
+      el.input.disabled = false;
+      el.modelSelect.disabled = false;
+      if (el.errorBox && el.errorBox.textContent.includes("Switch your agent runtime to continue it")) {
+        setError("");
+      }
+    }
+  }
+
   function setSending(value) {
     sending = value;
-    el.sendBtn.disabled = value;
-    el.input.disabled = value;
-    el.modelSelect.disabled = value;
     el.sendBtn.textContent = value ? "Sending" : "Send";
     if (el.stopBtn) el.stopBtn.hidden = !value;
+    checkComposerState();
   }
 
   async function loadSessions() {
@@ -391,8 +444,10 @@
       if (el.bashApprovalToggle && typeof data.bash_requires_approval === "boolean") {
         el.bashApprovalToggle.checked = data.bash_requires_approval;
       }
+      if (data.active_runtime) activeRuntime = data.active_runtime;
       renderSessions();
       renderHeader();
+      checkComposerState();
       try {
         window.dispatchEvent(new CustomEvent("agent-sessions-loaded", {
           detail: { active_session_id: currentSessionId, sessions },
@@ -416,6 +471,7 @@
       const data = await request(`${apiPrefix}/sessions/${encodeURIComponent(sessionId)}/messages`);
       messages = Array.isArray(data.messages) ? data.messages : [];
       renderMessages();
+      checkComposerState();
       try {
         window.dispatchEvent(new CustomEvent("agent-session-loaded", {
           detail: { session_id: sessionId, messages },
@@ -435,6 +491,7 @@
     renderMessages();
     renderHeader();
     renderSessions();
+    checkComposerState();
     el.input.focus();
     try {
       window.dispatchEvent(new CustomEvent("agent-session-loaded", {
@@ -660,6 +717,8 @@
       }
     });
   }
+
+  el.modelSelect.addEventListener("change", updateModelSelectWidth);
 
   if (el.toggleOverlayBtn) {
     el.toggleOverlayBtn.addEventListener("click", async () => {

@@ -38,6 +38,15 @@ def _claude_fallback_model(model: str) -> str | None:
     return None
 
 
+def _structured_fallback_kind(model: str, provider: str | None = None) -> str:
+    provider_value = (provider or "").strip().lower()
+    model_value = str(model or "").strip()
+    model_provider = model_value.split("/", 1)[0].lower() if "/" in model_value else ""
+    if provider_value == "openai" or model_provider == "openai":
+        return "codex"
+    return "claude"
+
+
 def _messages_to_claude_inputs(messages: list[dict[str, Any]]) -> tuple[str | None, str, list[str]]:
     system_parts: list[str] = []
     prompt_parts: list[str] = []
@@ -103,6 +112,26 @@ def _run_claude_structured_fallback(
         raise RuntimeError(f"{where}: Claude fallback failed: {e}") from e
 
 
+def _run_codex_structured(
+    *,
+    messages: list[dict[str, Any]],
+    response_schema: dict[str, Any],
+    where: str,
+    model: str | None = None,
+) -> Any:
+    from .codex import run_codex_structured
+
+    try:
+        return run_codex_structured(
+            messages=messages,
+            response_schema=response_schema,
+            where=where,
+            model=model,
+        )
+    except Exception as e:
+        raise RuntimeError(f"{where}: Codex failed: {e}") from e
+
+
 class LiteLLMChatClient:
     """Single generic LLM client for OpenAI-compatible and LiteLLM providers."""
 
@@ -123,6 +152,7 @@ class LiteLLMChatClient:
         self._api_key_env = api_key_env.strip() if isinstance(api_key_env, str) and api_key_env.strip() else None
         self._api_key: str | None = None
         self._use_claude_fallback = _missing_configured_api_key(self._api_key_env)
+        self._structured_fallback_kind = _structured_fallback_kind(self._model)
         if self._api_key_env is not None:
             value = os.getenv(self._api_key_env)
             if value is not None and str(value).strip():
@@ -342,12 +372,20 @@ class LiteLLMChatClient:
 
         response_model_t = cast(type[BaseModel], response_model)
         if self._use_claude_fallback:
-            parsed = _run_claude_structured_fallback(
-                messages=messages,
-                response_schema=response_model_t.model_json_schema(),
-                where=f"Structured parse {response_model_t.__name__}",
-                model=_claude_fallback_model(model),
-            )
+            if self._structured_fallback_kind == "codex":
+                parsed = _run_codex_structured(
+                    messages=messages,
+                    response_schema=response_model_t.model_json_schema(),
+                    where=f"Structured parse {response_model_t.__name__}",
+                    model=model,
+                )
+            else:
+                parsed = _run_claude_structured_fallback(
+                    messages=messages,
+                    response_schema=response_model_t.model_json_schema(),
+                    where=f"Structured parse {response_model_t.__name__}",
+                    model=_claude_fallback_model(model),
+                )
             return response_model_t.model_validate(parsed)
 
         if provider == "openai":

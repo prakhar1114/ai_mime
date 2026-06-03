@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 import time
@@ -10,13 +11,16 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 from ai_mime.agent_runner.adapters.claude_sdk import (
-    ClaudeAgentSdkAdapter,
-    list_claude_sessions,
-    load_claude_session_messages,
-    stream_chat,
     to_permission_result,
 )
-from ai_mime.agent_runner.chat import AgentBusyError, DEFAULT_CLAUDE_MODEL_OPTIONS
+from ai_mime.agent_runner.adapters.registry import get_agent_runtime
+from ai_mime.agent_runner.chat import (
+    AgentBusyError,
+    _runtime_id_from_session_meta,
+    agent_config_for_flow,
+    configured_agent_runtime,
+    model_options_from_config,
+)
 from ai_mime.agent_runner.models import AgentRunRequest
 from ai_mime.agent_runner.runner import (
     BUILD_SIGNAL_FILENAME,
@@ -28,6 +32,17 @@ from ai_mime.agent_runner.runner import (
     run_skill_e2e_test,
     validate_skill_package,
 )
+from ai_mime.debug_log import log as debug_log
+from ai_mime.user_config import load_user_config
+from llm_resolver import runtime_model_name
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log(message: str, *, exc_info: bool = False) -> None:
+    logger.info(message)
+    debug_log(f"[skill-build-chat] {message}", exc_info=exc_info)
 
 
 def _utc_now() -> str:
@@ -53,9 +68,13 @@ class WorkflowSkillBuildService:
         self.workflow_dir = Path(workflow_dir)
         self.agent_dir = self.workflow_dir / "agent"
         self.signal_path = self.agent_dir / BUILD_SIGNAL_FILENAME
-        self.adapter = adapter or ClaudeAgentSdkAdapter()
-        self.session_lister = session_lister or list_claude_sessions
-        self.message_loader = message_loader or load_claude_session_messages
+        self.agent_flow = "skill_build"
+        self.config = None if adapter is not None else load_user_config()
+        self.agent_config = None if self.config is None else agent_config_for_flow(self.config, self.agent_flow)
+        self.adapter = adapter or configured_agent_runtime(self.config, flow=self.agent_flow)
+        self.runtime_id = self.adapter.id
+        self.session_lister = session_lister or self.adapter.list_sessions
+        self.message_loader = message_loader or self.adapter.load_messages
         if bash_requires_approval is None:
             env_val = (os.getenv("AI_MIME_BASH_REQUIRES_APPROVAL") or "").strip().lower()
             bash_requires_approval = env_val in ("1", "true", "yes", "on")
@@ -65,7 +84,6 @@ class WorkflowSkillBuildService:
         self._pending_permissions: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._session_bash_allow_all: bool = False
         self.model_options = self._load_model_options()
-        self.default_model = self.model_options[0]["id"] if self.model_options else "default"
         self._terminal_status: str | None = None
 
     def status(self) -> dict[str, Any]:
@@ -77,12 +95,12 @@ class WorkflowSkillBuildService:
             "active_session_id": active_session_id,
             "sessions": self.list_sessions(),
             "models": self.model_options,
-            "default_model": self.default_model,
             "bash_requires_approval": self.bash_requires_approval,
             "terminal_status": self._terminal_status,
             "skill_dir": str(skill_dir),
             "has_skill": self._has_runnable_skill(skill_dir),
             "has_optimized_plan": (self.workflow_dir / "optimized_plan.json").exists(),
+            "active_runtime": self.runtime_id,
         }
 
     def set_bash_requires_approval(self, value: bool) -> bool:
@@ -92,7 +110,26 @@ class WorkflowSkillBuildService:
         return self.bash_requires_approval
 
     def list_models(self) -> dict[str, Any]:
-        return {"models": self.model_options, "default_model": self.default_model}
+        return {"models": self.model_options}
+
+    def _session_runtime_id(self, session_id: str | None) -> str | None:
+        if not session_id or session_id.startswith("draft-"):
+            return None
+        meta = self._read_index().get(session_id)
+        if isinstance(meta, dict):
+            return _runtime_id_from_session_meta(meta)
+        return None
+
+    def _runtime_mismatch_error(self, runtime_id: str) -> str:
+        return (
+            f"Cannot resume a {runtime_id} session while the active agent is set to {self.adapter.id}. "
+            "Please switch back your agent setting to continue this chat."
+        )
+
+    def _adapter_for_session(self, session_id: str | None) -> Any:
+        # Resuming a different recorded runtime is blocked by chat_stream.
+        # Same-runtime resumes must keep the injected/current adapter.
+        return self.adapter
 
     def list_sessions(self) -> list[dict[str, Any]]:
         index = self._read_index()
@@ -100,6 +137,7 @@ class WorkflowSkillBuildService:
         for sid, meta in index.items():
             if not isinstance(sid, str) or not isinstance(meta, dict):
                 continue
+            runtime_id = _runtime_id_from_session_meta(meta)
             out_by_id[sid] = {
                 "session_id": sid,
                 "summary": meta.get("summary") or sid,
@@ -107,25 +145,56 @@ class WorkflowSkillBuildService:
                 "updated_at": meta.get("updated_at"),
                 "mode": meta.get("mode") or "build_skill_chat",
                 "model": meta.get("model"),
-                "source": "ai_mime",
+                "runtime_id": runtime_id,
+                "source": runtime_id or "ai_mime",
             }
+
         try:
-            for item in self.session_lister(self.workflow_dir):
-                sid = item.get("session_id") if isinstance(item, dict) else None
-                if not isinstance(sid, str) or not sid:
-                    continue
-                current = out_by_id.get(sid, {})
-                out_by_id[sid] = {
-                    **current,
-                    "session_id": sid,
-                    "summary": current.get("summary") or item.get("summary") or sid,
-                    "last_modified": item.get("last_modified"),
-                    "custom_title": item.get("custom_title"),
-                    "first_prompt": item.get("first_prompt"),
-                    "source": "claude",
-                }
+            current_provider_sessions = self.session_lister(self.workflow_dir)
         except Exception as e:
-            return [{"session_id": "", "summary": f"Failed to list Claude sessions: {e}", "error": str(e)}]
+            if not out_by_id:
+                return [{"session_id": "", "summary": f"Failed to list {self.adapter.label} sessions: {e}", "error": str(e)}]
+            current_provider_sessions = []
+
+        changed = False
+        now = _utc_now()
+        for item in current_provider_sessions:
+            sid = item.get("session_id") if isinstance(item, dict) else None
+            if not isinstance(sid, str) or not sid:
+                continue
+            existing = index.get(sid) if isinstance(index.get(sid), dict) else {}
+            updated_at = item.get("updated_at") or item.get("last_modified") or existing.get("updated_at") or now
+            merged = {
+                **existing,
+                "summary": existing.get("summary") or item.get("summary") or item.get("custom_title") or item.get("first_prompt") or sid,
+                "created_at": existing.get("created_at") or updated_at,
+                "updated_at": updated_at,
+                "mode": existing.get("mode") or ("Improve" if self._has_runnable_skill(self._skill_dir_hint()) else "Build"),
+                "model": existing.get("model") or item.get("model"),
+                "last_modified": item.get("last_modified") or existing.get("last_modified") or updated_at,
+                "custom_title": item.get("custom_title") or existing.get("custom_title"),
+                "first_prompt": item.get("first_prompt") or existing.get("first_prompt"),
+                "runtime_id": self.runtime_id,
+            }
+            if index.get(sid) != merged:
+                index[sid] = merged
+                changed = True
+            out_by_id[sid] = {
+                "session_id": sid,
+                "summary": merged.get("summary") or sid,
+                "created_at": merged.get("created_at"),
+                "updated_at": merged.get("updated_at"),
+                "mode": merged.get("mode") or "build_skill_chat",
+                "model": merged.get("model"),
+                "last_modified": merged.get("last_modified"),
+                "custom_title": merged.get("custom_title"),
+                "first_prompt": merged.get("first_prompt"),
+                "runtime_id": merged.get("runtime_id"),
+                "source": merged.get("runtime_id") or "ai_mime",
+            }
+        if changed:
+            self._write_index(index)
+
         return sorted(
             out_by_id.values(),
             key=lambda x: str(x.get("updated_at") or x.get("last_modified") or ""),
@@ -138,6 +207,9 @@ class WorkflowSkillBuildService:
     def load_messages(self, session_id: str) -> list[dict[str, Any]]:
         if not session_id or session_id.startswith("draft-"):
             return []
+        runtime_id = self._session_runtime_id(session_id)
+        if runtime_id and runtime_id != self.runtime_id:
+            return get_agent_runtime(runtime_id).load_messages(session_id, self.workflow_dir)
         return self.message_loader(session_id, self.workflow_dir)
 
     async def chat_stream(
@@ -152,12 +224,27 @@ class WorkflowSkillBuildService:
             raise ValueError("message must be non-empty")
         if self._terminal_status:
             raise AgentBusyError(f"Skill build already concluded ({self._terminal_status}); start a new workflow build to continue")
-        selected_model = self._validate_model(model)
+        selected_model = self._model_for_request(model)
 
         resume_id = session_id if session_id and not session_id.startswith("draft-") else None
-        request = self._build_request(session_id=resume_id, model=selected_model)
+        resume_runtime_id = self._session_runtime_id(resume_id)
+        if resume_id and resume_runtime_id and resume_runtime_id != self.adapter.id:
+            yield {
+                "event": "done",
+                "session_id": resume_id,
+                "status": "failed",
+                "error": self._runtime_mismatch_error(resume_runtime_id),
+                "summary": "",
+            }
+            return
+        adapter = self._adapter_for_session(resume_id)
+        request = self._build_request(session_id=resume_id, model=selected_model, runtime_id=adapter.id)
         if resume_id is None:
             request = request.model_copy(update={"system_prompt": _build_prompt(request)})
+        _log(
+            f"chat_stream start runtime={adapter.id} workflow={self.workflow_dir} "
+            f"session_id={resume_id or '<new>'} model={selected_model or '<default>'} message_chars={len(text)}"
+        )
 
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
@@ -194,6 +281,7 @@ class WorkflowSkillBuildService:
         final_error: str | None = None
         final_summary = ""
         stream_done = asyncio.Event()
+        recorded_started_session = False
 
         auto_allow = [
             "Glob", "Grep", "Read", "Write", "Edit", "MultiEdit", "Skill",
@@ -206,15 +294,19 @@ class WorkflowSkillBuildService:
             try:
                 with tempfile.TemporaryDirectory(prefix="ai-mime-skill-build-") as td:
                     local_request = request.model_copy(update={"temp_dir": Path(td)})
-                    async for event in stream_chat(
+                    _log(f"chat_stream pump start temp_dir={td} runtime={adapter.id}")
+                    async for event in adapter.stream_chat(
                         local_request,
                         text,
                         can_use_tool=can_use_tool,
                         auto_allow_tools=auto_allow,
                         on_client=_store_client,
                     ):
+                        if event.get("event") in {"error", "done", "tool_use", "interrupted", "session_started"}:
+                            _log(f"chat_stream event {event}")
                         await event_queue.put(event)
             except Exception as e:
+                _log(f"chat_stream pump failed: {e}", exc_info=True)
                 await event_queue.put({"event": "error", "message": str(e)})
             finally:
                 stream_done.set()
@@ -226,7 +318,27 @@ class WorkflowSkillBuildService:
                 event = await event_queue.get()
                 if event.get("__sentinel__"):
                     break
-                if event.get("event") == "done":
+                event_type = event.get("event")
+                if event_type == "session_started":
+                    final_session_id = str(event.get("session_id") or final_session_id)
+                    if final_session_id and not recorded_started_session:
+                        self._record_session(
+                            session_id=final_session_id,
+                            previous_session_id=session_id,
+                            summary=(text[:80] or final_session_id),
+                            status="running",
+                            error=None,
+                            model=selected_model,
+                            runtime_id=adapter.id,
+                        )
+                        recorded_started_session = True
+                elif event_type == "error":
+                    final_status = "failed"
+                    final_error = str(event.get("message") or "Skill-build runtime error.")
+                elif event_type == "interrupted":
+                    final_status = "cancelled"
+                    final_error = "interrupted"
+                elif event_type == "done":
                     final_session_id = str(event.get("session_id") or final_session_id)
                     final_status = str(event.get("status") or "success")
                     final_error = event.get("error")
@@ -249,6 +361,10 @@ class WorkflowSkillBuildService:
             self._active_loop = None
 
         if final_session_id:
+            _log(
+                f"chat_stream complete runtime={adapter.id} session_id={final_session_id} "
+                f"status={final_status} summary_chars={len(final_summary)} error={final_error or ''}"
+            )
             self._record_session(
                 session_id=final_session_id,
                 previous_session_id=session_id,
@@ -256,6 +372,7 @@ class WorkflowSkillBuildService:
                 status=final_status,
                 error=final_error,
                 model=selected_model,
+                runtime_id=adapter.id,
             )
 
         terminal_event = self._consume_terminal_signal()
@@ -266,7 +383,7 @@ class WorkflowSkillBuildService:
         client = self._active_client
         loop = self._active_loop
         if client is None or loop is None:
-            return False
+            return self.adapter.interrupt()
         try:
             fut = asyncio.run_coroutine_threadsafe(client.interrupt(), loop)
             fut.result(timeout=5)
@@ -467,11 +584,12 @@ class WorkflowSkillBuildService:
                 continue
         return False
 
-    def _build_request(self, *, session_id: str | None, model: str | None) -> AgentRunRequest:
+    def _build_request(self, *, session_id: str | None, model: str | None, runtime_id: str | None = None) -> AgentRunRequest:
+        rt_id = runtime_id or self.runtime_id
         base = build_agent_run_request(
             workflow_dir=self.workflow_dir,
             mode="build_skill_chat",
-            provider="claude",
+            provider=rt_id if rt_id in {"claude", "claude_code", "codex_cli"} else "claude",
             model=model,
             session_id=session_id,
         )
@@ -502,6 +620,7 @@ class WorkflowSkillBuildService:
         status: str,
         error: str | None,
         model: str | None,
+        runtime_id: str | None = None,
     ) -> None:
         now = _utc_now()
         index = self._read_index()
@@ -521,33 +640,33 @@ class WorkflowSkillBuildService:
             "model": model,
             "last_status": status,
             "last_error": error,
+            "runtime_id": runtime_id or existing.get("runtime_id") or self.runtime_id,
         }
         self._write_index(index)
         self._write_active({"session_id": session_id, "model": model, "updated_at": now})
 
-    def _validate_model(self, model: str | None) -> str:
-        value = (model or self.default_model).strip()
-        allowed = {item["id"] for item in self.model_options}
-        if value not in allowed:
-            raise ValueError(f"Unsupported Claude model: {value}")
-        return value
+    def _model_for_request(self, model: str | None) -> str | None:
+        if self.config is None:
+            value = (model or "").strip()
+            return value or None
+        assert self.agent_config is not None
+        configured_model = str(getattr(self.agent_config, "model", "") or "").strip()
+        return runtime_model_name(configured_model) or None
 
     def _load_model_options(self) -> list[dict[str, str]]:
-        raw = (os.getenv("AI_MIME_CLAUDE_MODELS") or "").strip()
-        if not raw:
-            return list(DEFAULT_CLAUDE_MODEL_OPTIONS)
-        options: list[dict[str, str]] = []
-        for item in raw.split(","):
-            model_id = item.strip()
-            if model_id:
-                options.append({"id": model_id, "label": model_id, "description": "Configured by AI_MIME_CLAUDE_MODELS."})
-        return options or list(DEFAULT_CLAUDE_MODEL_OPTIONS)
+        if self.config is None:
+            return []
+        return model_options_from_config(self.config, flow=self.agent_flow)
 
     def _read_index(self) -> dict[str, Any]:
         path = self._agent_sessions_path()
         if not path.exists():
             return {}
-        return _read_json(path)
+        try:
+            index = _read_json(path)
+        except Exception:
+            return {}
+        return index
 
     def _write_index(self, index: dict[str, Any]) -> None:
         path = self._agent_sessions_path()

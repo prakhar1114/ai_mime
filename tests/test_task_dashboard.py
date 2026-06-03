@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import stat
 import tempfile
@@ -13,6 +14,14 @@ from fastapi.testclient import TestClient
 from ai_mime.editor.server import TaskRunner, create_app
 from ai_mime.agent_runner import AgentRunRequest, AgentRunResult, WorkspaceAgentChatService
 from ai_mime.reflect.workflow import reflect_session
+
+
+class FakeDashboardAdapter:
+    id = "claude_code"
+    label = "Claude Code"
+
+    def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+        return AgentRunResult(status="success", session_id=request.session_id or "session-1", summary="agent reply")
 
 
 class TaskDashboardTests(unittest.TestCase):
@@ -327,6 +336,8 @@ class TaskDashboardTests(unittest.TestCase):
         seen_models: list[str | None] = []
 
         class ChatAdapter:
+            id = "claude_code"
+
             def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
                 seen_models.append(request.model)
                 return AgentRunResult(status="success", session_id=request.session_id or "session-1", summary="agent reply")
@@ -354,19 +365,19 @@ class TaskDashboardTests(unittest.TestCase):
 
         models = client.get("/api/agent/models")
         self.assertEqual(models.status_code, 200, models.text)
-        self.assertTrue(any(item["id"] == "sonnet" for item in models.json()["models"]))
+        self.assertEqual(models.json()["models"], [])
 
         created = client.post("/api/agent/sessions")
         self.assertEqual(created.status_code, 200, created.text)
         self.assertIsNone(created.json()["session_id"])
         self.assertFalse((self.workflows / ".agent" / "agent_sessions.json").exists())
 
-        chat = client.post("/api/agent/chat", json={"message": "hello", "session_id": None, "model": "opus"})
+        chat = client.post("/api/agent/chat", json={"message": "hello", "session_id": None, "model": None})
         self.assertEqual(chat.status_code, 200, chat.text)
         self.assertEqual(chat.json()["session_id"], "session-1")
         self.assertEqual(chat.json()["assistant_text"], "agent reply")
-        self.assertEqual(chat.json()["model"], "opus")
-        self.assertEqual(seen_models, ["opus"])
+        self.assertIsNone(chat.json()["model"])
+        self.assertEqual(seen_models, [None])
 
         messages = client.get("/api/agent/sessions/session-1/messages")
         self.assertEqual(messages.status_code, 200, messages.text)
@@ -376,6 +387,8 @@ class TaskDashboardTests(unittest.TestCase):
         seen_session_ids: list[str | None] = []
 
         class ChatAdapter:
+            id = "claude_code"
+
             def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
                 seen_session_ids.append(request.session_id)
                 return AgentRunResult(
@@ -412,6 +425,157 @@ class TaskDashboardTests(unittest.TestCase):
         response = client.get("/tasks")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("Agent Mode", response.text)
+        self.assertIn("Provider", response.text)
+
+    def test_provider_settings_api_reports_status(self) -> None:
+        app = create_app(
+            workflows_root=self.workflows,
+            recordings_root=self.recordings,
+            agent_chat_service=WorkspaceAgentChatService(
+                workspace_dir=self.workflows,
+                adapter=FakeDashboardAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            ),
+        )
+        client = TestClient(app)
+
+        with patch(
+            "ai_mime.editor.server.provider_settings_status",
+            return_value={
+                "provider": "anthropic",
+                "providers": {
+                    "anthropic": {"available": True, "label": "Anthropic / Claude Code"},
+                    "openai": {"available": False, "label": "OpenAI / Codex"},
+                },
+            },
+        ):
+            response = client.get("/api/settings/provider")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["provider"], "anthropic")
+
+    def test_provider_settings_api_updates_provider_and_rebuilds_services(self) -> None:
+        created_services: list[WorkspaceAgentChatService] = []
+
+        class FakeService:
+            def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                created_services.append(self)  # type: ignore[arg-type]
+
+            def status(self):  # type: ignore[no-untyped-def]
+                return {"active_session_id": None, "sessions": [], "models": []}
+
+            def list_models(self):  # type: ignore[no-untyped-def]
+                return {"models": []}
+
+        app = create_app(
+            workflows_root=self.workflows,
+            recordings_root=self.recordings,
+            agent_chat_service=WorkspaceAgentChatService(
+                workspace_dir=self.workflows,
+                adapter=FakeDashboardAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            ),
+        )
+        client = TestClient(app)
+
+        with patch(
+            "ai_mime.editor.server.save_provider_settings",
+            return_value={"provider": "openai", "providers": {}},
+        ) as save, patch("ai_mime.editor.server.WorkspaceAgentChatService", FakeService):
+            response = client.post("/api/settings/provider", json={"provider": "openai", "api_key": "sk-test"})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        save.assert_called_once_with("openai", api_key="sk-test")
+        self.assertEqual(response.json()["provider"], "openai")
+        self.assertEqual(len(created_services), 1)
+
+    def test_provider_settings_helper_writes_provider_and_api_key(self) -> None:
+        from ai_mime import provider_settings
+
+        config_path = self.root / "user_config.yml"
+        env_path = self.root / ".env"
+        with patch("ai_mime.provider_settings.get_user_config_path", return_value=config_path), patch(
+            "ai_mime.provider_settings.get_env_path",
+            return_value=env_path,
+        ), patch.dict("os.environ", {}, clear=True), patch(
+            "ai_mime.provider_settings._provider_runtime_status",
+            return_value=(False, "runtime unavailable"),
+        ):
+            status = provider_settings.save_provider_settings("openai", api_key="sk-test")
+
+        self.assertEqual(status["provider"], "openai")
+        self.assertEqual(config_path.read_text(encoding="utf-8"), "config_version: 1\nprovider: openai\n")
+        self.assertIn("OPENAI_API_KEY=sk-test", env_path.read_text(encoding="utf-8"))
+
+    def test_provider_settings_helper_allows_runtime_login_without_key(self) -> None:
+        from ai_mime import provider_settings
+
+        config_path = self.root / "user_config.yml"
+        env_path = self.root / ".env"
+        with patch("ai_mime.provider_settings.get_user_config_path", return_value=config_path), patch(
+            "ai_mime.provider_settings.get_env_path",
+            return_value=env_path,
+        ), patch.dict("os.environ", {}, clear=True), patch(
+            "ai_mime.provider_settings._provider_runtime_status",
+            return_value=(True, "Codex login detected"),
+        ):
+            status = provider_settings.save_provider_settings("openai")
+
+        self.assertEqual(status["provider"], "openai")
+        self.assertEqual(config_path.read_text(encoding="utf-8"), "config_version: 1\nprovider: openai\n")
+
+    def test_codex_login_status_uses_app_aware_path(self) -> None:
+        from ai_mime import provider_settings
+
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
+            return type("Proc", (), {"returncode": 0, "stdout": "Logged in using ChatGPT\n", "stderr": ""})()
+
+        with (
+            patch.dict("os.environ", {"HOME": str(self.root), "PATH": "/usr/bin:/bin"}, clear=True),
+            patch(
+                "ai_mime.provider_settings._find_codex_exe",
+                return_value="/opt/homebrew/bin/codex",
+            ),
+            patch("ai_mime.provider_settings.subprocess.run", side_effect=fake_run),
+        ):
+            ok, message = provider_settings._provider_runtime_status("openai")
+
+        self.assertTrue(ok)
+        self.assertIn("Logged in", message)
+        env = captured["env"]
+        self.assertIsInstance(env, dict)
+        path = env["PATH"].split(os.pathsep)
+        self.assertIn("/opt/homebrew/bin", path)
+        self.assertIn("/usr/local/bin", path)
+        self.assertEqual(env["HOME"], str(self.root))
+
+    def test_provider_settings_helper_rejects_unavailable_provider(self) -> None:
+        from ai_mime import provider_settings
+
+        config_path = self.root / "user_config.yml"
+        env_path = self.root / ".env"
+        with patch("ai_mime.provider_settings.get_user_config_path", return_value=config_path), patch(
+            "ai_mime.provider_settings.get_env_path",
+            return_value=env_path,
+        ), patch.dict("os.environ", {}, clear=True), patch(
+            "ai_mime.provider_settings._provider_runtime_status",
+            return_value=(False, "Codex login check failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Codex login check failed"):
+                provider_settings.save_provider_settings("openai")
+        self.assertFalse(config_path.exists())
+
+    def test_provider_settings_helper_rejects_unknown_provider(self) -> None:
+        from ai_mime import provider_settings
+
+        with self.assertRaisesRegex(ValueError, "provider must be anthropic or openai"):
+            provider_settings.save_provider_settings("custom")
 
 
 if __name__ == "__main__":

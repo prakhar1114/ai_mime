@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from ai_mime.agent_runner import (
@@ -18,12 +21,12 @@ from ai_mime.agent_runner import (
     run_skill_e2e_test,
     validate_skill_package,
 )
-from ai_mime.agent_runner.adapters.claude_sdk import cua_mcp_servers
-from ai_mime.app_data import get_bundled_resource
+from ai_mime.agent_runner.mcp import cua_mcp_servers
+from ai_mime.agent_runner.models import resolved_browser_skill_path
 
 
 def _default_browser_skill_root() -> Path:
-    return get_bundled_resource("harness/browser-harness")
+    return resolved_browser_skill_path()
 
 
 def _schema() -> dict:
@@ -152,6 +155,8 @@ def _write_valid_skill_package(skill_dir: Path, schema: dict, optimized_plan: di
 
 
 class FakeAdapter:
+    id = "claude_code"
+
     def __init__(self) -> None:
         self.request: AgentRunRequest | None = None
         self.prompt: str | None = None
@@ -174,6 +179,25 @@ class FakeAdapter:
         )
 
 
+def _agents_config(
+    *,
+    workspace_chat_model: str = "anthropic/claude-sonnet-4-6",
+    workspace_chat_runtime: str = "claude_code",
+    skill_build_model: str = "anthropic/claude-sonnet-4-6",
+    skill_build_runtime: str = "claude_code",
+    replay_model: str = "anthropic/claude-sonnet-4-6",
+    replay_runtime: str = "claude_code",
+    computer_use_model: str = "anthropic/claude-opus-4-8",
+    computer_use_runtime: str = "claude_code",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        workspace_chat=SimpleNamespace(model=workspace_chat_model, agent_runtime=workspace_chat_runtime),
+        skill_build=SimpleNamespace(model=skill_build_model, agent_runtime=skill_build_runtime),
+        replay=SimpleNamespace(model=replay_model, agent_runtime=replay_runtime),
+        computer_use=SimpleNamespace(model=computer_use_model, agent_runtime=computer_use_runtime),
+    )
+
+
 class AgentRunnerTests(unittest.TestCase):
     def test_agent_run_request_defaults_include_runtime_read_write_roots(self) -> None:
         request = AgentRunRequest(
@@ -194,7 +218,7 @@ class AgentRunnerTests(unittest.TestCase):
             (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
             (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
 
-            request = build_agent_run_request(workflow_dir=workflow_dir, provider="claude")
+            request = build_agent_run_request(workflow_dir=workflow_dir, provider="claude", mode="build_skill_chat")
 
         self.assertIn(Path("/Users/prakharjain/Desktop/expenses"), request.readable_roots)
         self.assertIn(Path("/tmp"), request.readable_roots)
@@ -213,6 +237,7 @@ class AgentRunnerTests(unittest.TestCase):
             request = build_agent_run_request(
                 workflow_dir=workflow_dir,
                 provider="claude",
+                mode="build_skill_chat",
                 session_id="existing-session",
             )
             adapter = FakeAdapter()
@@ -287,7 +312,7 @@ class AgentRunnerTests(unittest.TestCase):
     def test_workflow_mode_rejects_missing_schema(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(FileNotFoundError):
-                build_agent_run_request(workflow_dir=Path(td), provider="claude")
+                build_agent_run_request(workflow_dir=Path(td), provider="claude", mode="build_skill_chat")
 
     def test_build_skill_chat_prompt_contains_iteration_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -502,6 +527,8 @@ class AgentRunnerTests(unittest.TestCase):
         system_prompts: list[str | None] = []
 
         class ChatAdapter:
+            id = "claude_code"
+
             def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
                 prompts.append(prompt)
                 modes.append(request.mode)
@@ -536,6 +563,8 @@ class AgentRunnerTests(unittest.TestCase):
         session_ids: list[str | None] = []
 
         class ChatAdapter:
+            id = "claude_code"
+
             def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
                 session_ids.append(request.session_id)
                 return AgentRunResult(status="success", session_id=request.session_id or "replay-session-1", summary="ok")
@@ -563,9 +592,12 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(session_ids, [None, "replay-session-1"])
 
     def test_replay_execution_stream_runs_without_turn_lock(self) -> None:
-        async def fake_stream_chat(*_args, **_kwargs):
-            yield {"event": "text", "text": "ok"}
-            yield {"event": "done", "status": "success", "session_id": "replay-session-1", "summary": "ok"}
+        class StreamAdapter:
+            id = "claude_code"
+
+            async def stream_chat(self, *_args, **_kwargs):
+                yield {"event": "text", "text": "ok"}
+                yield {"event": "done", "status": "success", "session_id": "replay-session-1", "summary": "ok"}
 
         async def collect_events(service: WorkspaceAgentChatService) -> list[dict]:
             return [event async for event in service.chat_stream(message="continue replay")]
@@ -581,13 +613,12 @@ class AgentRunnerTests(unittest.TestCase):
                 workspace_dir=workflow_dir,
                 mode="replay_execution",
                 agent_dir=workflow_dir / "agent" / "replay",
-                adapter=object(),
+                adapter=StreamAdapter(),
                 session_lister=lambda _dir: [],
                 message_loader=lambda _sid, _dir: [],
             )
 
-            with patch("ai_mime.agent_runner.chat.stream_chat", new=fake_stream_chat):
-                events = asyncio.run(collect_events(service))
+            events = asyncio.run(collect_events(service))
 
             self.assertEqual(events[-1]["event"], "done")
             self.assertEqual(events[-1]["session_id"], "replay-session-1")
@@ -600,6 +631,30 @@ class AgentRunnerTests(unittest.TestCase):
             _write_valid_skill_package(skill_dir, schema, plan)
 
             validate_skill_package(skill_dir, schema, plan)
+
+    def test_validate_skill_package_uses_managed_python_for_py_compile(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            skill_dir = root / "skills" / "record-expenses-in-a-sheet"
+            schema = _schema()
+            plan = _optimized_plan_with_default_input()
+            _write_valid_skill_package(skill_dir, schema, plan)
+            fake_cli = root / "ai_mime"
+            fake_cli.write_text(
+                "#!/usr/bin/env sh\n"
+                "echo \"Usage: ai_mime [OPTIONS]\" >&2\n"
+                "echo \"Error: No such option: -m\" >&2\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o755)
+            real_python = Path(sys.executable)
+
+            with (
+                patch("ai_mime.agent_runner.runner.sys.executable", str(fake_cli)),
+                patch("ai_mime.agent_runner.runner.get_python_path", return_value=real_python),
+            ):
+                validate_skill_package(skill_dir, schema, plan)
 
     def test_validate_skill_package_rejects_missing_required_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -918,6 +973,8 @@ class AgentRunnerTests(unittest.TestCase):
         system_prompts: list[str | None] = []
 
         class ChatAdapter:
+            id = "claude_code"
+
             def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
                 prompts.append(prompt)
                 models.append(request.model)
@@ -946,6 +1003,8 @@ class AgentRunnerTests(unittest.TestCase):
         system_prompts: list[str | None] = []
 
         class ChatAdapter:
+            id = "claude_code"
+
             def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
                 prompts.append(prompt)
                 system_prompts.append(request.system_prompt)
@@ -966,16 +1025,32 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(prompts[1], "second")
             self.assertIsNone(system_prompts[1])
 
-    def test_workspace_chat_service_rejects_unknown_model(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
+    def test_workspace_chat_service_uses_config_model_even_when_request_model_is_sent(self) -> None:
+        captured: dict[str, AgentRunRequest] = {}
+
+        class ChatAdapter:
+            id = "claude_code"
+
+            def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+                captured["request"] = request
+                return AgentRunResult(status="success", session_id="configured-session", summary="ok")
+
+        with tempfile.TemporaryDirectory() as td, patch(
+            "ai_mime.agent_runner.chat.load_user_config",
+            return_value=SimpleNamespace(
+                agent_runtime="claude_code",
+                agents=_agents_config(workspace_chat_model="anthropic/claude-sonnet-4-6"),
+            ),
+        ), patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=ChatAdapter()):
             service = WorkspaceAgentChatService(
                 workspace_dir=Path(td),
-                adapter=FakeAdapter(),
                 session_lister=lambda _dir: [],
                 message_loader=lambda _sid, _dir: [],
             )
-            with self.assertRaisesRegex(ValueError, "Unsupported Claude model"):
-                service.chat(message="hello", model="not-a-model")
+            result = service.chat(message="hello", model="not-a-model")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(captured["request"].model, "claude-sonnet-4-6")
 
     def test_workspace_chat_service_lists_and_loads_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -989,10 +1064,268 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(service.list_sessions()[0]["session_id"], "old")
             self.assertEqual(service.load_messages("old")[0]["message"], "hi")
 
+    def test_workspace_chat_service_lists_indexed_sessions_across_runtimes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps(
+                    {
+                        "claude-session": {
+                            "summary": "Claude chat",
+                            "updated_at": "2026-01-01T00:00:00Z",
+                            "runtime_id": "claude_code",
+                        },
+                        "codex-session": {
+                            "summary": "Codex chat",
+                            "updated_at": "2026-01-02T00:00:00Z",
+                            "runtime_id": "codex_cli",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual([s["session_id"] for s in sessions], ["codex-session", "claude-session"])
+            self.assertEqual(sessions[0]["runtime_id"], "codex_cli")
+
+    def test_workspace_chat_service_upserts_current_provider_sessions_into_index(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [{
+                    "session_id": "current-session",
+                    "summary": "Current chat",
+                    "last_modified": "2026-01-03T00:00:00Z",
+                }],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual(sessions[0]["session_id"], "current-session")
+            index = json.loads((workspace_dir / ".agent" / "agent_sessions.json").read_text(encoding="utf-8"))
+            self.assertEqual(index["current-session"]["runtime_id"], "claude_code")
+            self.assertEqual(index["current-session"]["summary"], "Current chat")
+
+    def test_workspace_chat_service_missing_index_upserts_current_provider_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [{"session_id": "current-session", "summary": "Current chat"}],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual(sessions[0]["session_id"], "current-session")
+            self.assertTrue((workspace_dir / ".agent" / "agent_sessions.json").exists())
+
+    def test_workspace_chat_service_empty_index_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text("{}", encoding="utf-8")
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda sid, _dir: [{"type": "user", "session_id": sid, "message": "current"}],
+            )
+
+            self.assertEqual(service.list_sessions(), [])
+            self.assertEqual(service.load_messages("missing-from-index")[0]["message"], "current")
+
+    def test_workspace_chat_service_invalid_index_is_ignored(self) -> None:
+        class ChatAdapter(FakeAdapter):
+            def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+                super().run(request, prompt)
+                return AgentRunResult(status="success", session_id="rebuilt-session", summary="ok")
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            index_path = agent_dir / "agent_sessions.json"
+            index_path.write_text("not-json{", encoding="utf-8")
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=ChatAdapter(),
+                session_lister=lambda _dir: [{"session_id": "current-session", "summary": "Current chat"}],
+                message_loader=lambda sid, _dir: [{"type": "user", "session_id": sid, "message": "current"}],
+            )
+
+            sessions = service.list_sessions()
+            messages = service.load_messages("any-session")
+            service.chat(message="hello")
+
+            self.assertEqual(sessions[0]["session_id"], "current-session")
+            self.assertEqual(messages[0]["message"], "current")
+            rebuilt = json.loads(index_path.read_text(encoding="utf-8"))
+            self.assertIn("rebuilt-session", rebuilt)
+
+    def test_workspace_chat_service_non_object_index_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text("[]", encoding="utf-8")
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [{"session_id": "current-session", "summary": "Current chat"}],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual(sessions[0]["session_id"], "current-session")
+
+    def test_workspace_chat_service_skips_non_object_index_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps(
+                    {
+                        "bad": "not-an-object",
+                        "good": {
+                            "summary": "Good chat",
+                            "updated_at": "2026-01-04T00:00:00Z",
+                            "runtime_id": "claude_code",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            sessions = service.list_sessions()
+
+            self.assertEqual([s["session_id"] for s in sessions], ["good"])
+
+    def test_workspace_chat_service_loads_mismatched_runtime_messages_from_indexed_runtime(self) -> None:
+        class OtherRuntime:
+            id = "codex_cli"
+
+            def load_messages(self, session_id: str, directory: Path) -> list[dict[str, object]]:
+                return [{"type": "user", "session_id": session_id, "directory": str(directory), "message": "from codex"}]
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"codex-session": {"runtime_id": "codex_cli", "summary": "Codex chat"}}),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: self.fail("current message_loader should not be used"),
+            )
+
+            with patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=OtherRuntime()) as get_runtime:
+                messages = service.load_messages("codex-session")
+
+            get_runtime.assert_called_once_with("codex_cli")
+            self.assertEqual(messages[0]["message"], "from codex")
+
+    def test_workspace_chat_service_rejects_mismatched_runtime_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"codex-session": {"runtime_id": "codex_cli", "summary": "Codex chat"}}),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+
+            with self.assertRaisesRegex(ValueError, "Cannot resume a codex_cli session"):
+                service.chat(message="continue", session_id="codex-session")
+
+    def test_workspace_chat_service_missing_runtime_id_uses_current_loader(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"old-session": {"summary": "Old chat"}}),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda sid, _dir: [{"type": "user", "session_id": sid, "message": "current"}],
+            )
+
+            self.assertEqual(service.load_messages("old-session")[0]["message"], "current")
+
+    def test_workspace_chat_service_infers_runtime_id_from_legacy_openai_model(self) -> None:
+        class OtherRuntime:
+            id = "codex_cli"
+
+            def load_messages(self, session_id: str, _directory: Path) -> list[dict[str, object]]:
+                return [{"type": "user", "session_id": session_id, "message": "from codex"}]
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"legacy-codex": {"summary": "Legacy Codex", "model": "gpt-5.5"}}),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: self.fail("current message_loader should not be used"),
+            )
+
+            sessions = service.list_sessions()
+            with patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=OtherRuntime()):
+                messages = service.load_messages("legacy-codex")
+
+            self.assertEqual(sessions[0]["runtime_id"], "codex_cli")
+            self.assertEqual(messages[0]["message"], "from codex")
+            with self.assertRaisesRegex(ValueError, "Cannot resume a codex_cli session"):
+                service.chat(message="continue", session_id="legacy-codex")
+
     def test_workspace_chat_service_accepts_sequential_recovery_turns(self) -> None:
         session_ids: list[str | None] = []
 
         class ChatAdapter:
+            id = "claude_code"
+
             def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
                 session_ids.append(request.session_id)
                 return AgentRunResult(status="success", session_id=request.session_id or "workspace-session-1", summary="ok")
@@ -1011,9 +1344,12 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertEqual(session_ids, [None, "workspace-session-1"])
 
     def test_workspace_chat_stream_runs_without_turn_lock(self) -> None:
-        async def fake_stream_chat(*_args, **_kwargs):
-            yield {"event": "text", "text": "ok"}
-            yield {"event": "done", "status": "success", "session_id": "workspace-session-1", "summary": "ok"}
+        class StreamAdapter:
+            id = "claude_code"
+
+            async def stream_chat(self, *_args, **_kwargs):
+                yield {"event": "text", "text": "ok"}
+                yield {"event": "done", "status": "success", "session_id": "workspace-session-1", "summary": "ok"}
 
         async def collect_events(service: WorkspaceAgentChatService) -> list[dict]:
             return [event async for event in service.chat_stream(message="continue workspace")]
@@ -1021,16 +1357,34 @@ class AgentRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             service = WorkspaceAgentChatService(
                 workspace_dir=Path(td),
-                adapter=object(),
+                adapter=StreamAdapter(),
                 session_lister=lambda _dir: [],
                 message_loader=lambda _sid, _dir: [],
             )
 
-            with patch("ai_mime.agent_runner.chat.stream_chat", new=fake_stream_chat):
-                events = asyncio.run(collect_events(service))
+            events = asyncio.run(collect_events(service))
 
             self.assertEqual(events[-1]["event"], "done")
             self.assertEqual(events[-1]["session_id"], "workspace-session-1")
+
+    def test_workspace_chat_interrupt_falls_back_to_adapter(self) -> None:
+        class InterruptAdapter:
+            id = "codex_cli"
+            label = "Codex CLI"
+
+            def list_sessions(self, _directory: Path) -> list[dict[str, object]]:
+                return []
+
+            def load_messages(self, _session_id: str, _directory: Path) -> list[dict[str, object]]:
+                return []
+
+            def interrupt(self) -> bool:
+                return True
+
+        with tempfile.TemporaryDirectory() as td:
+            service = WorkspaceAgentChatService(workspace_dir=Path(td), adapter=InterruptAdapter())
+
+            self.assertTrue(service.interrupt())
 
     @patch("ai_mime.agent_runner.adapters.claude_sdk.list_sessions", return_value=[])
     @patch("ai_mime.agent_runner.adapters.claude_sdk.query")
@@ -1066,6 +1420,989 @@ class AgentRunnerTests(unittest.TestCase):
             mock_list_sessions.assert_called_once_with(directory=str(Path(td)))
             called_options = mock_query.call_args[1]["options"]
             self.assertIsNone(called_options.resume)
+
+    def test_agent_runtime_registry_resolves_claude_and_codex(self) -> None:
+        from ai_mime.agent_runner.adapters.registry import available_agent_runtimes, get_agent_runtime
+
+        runtime_ids = {item.id for item in available_agent_runtimes()}
+
+        self.assertIn("claude_code", runtime_ids)
+        self.assertIn("codex_cli", runtime_ids)
+        self.assertEqual(get_agent_runtime("claude_code").id, "claude_code")
+        self.assertEqual(get_agent_runtime("codex_cli").id, "codex_cli")
+        with self.assertRaisesRegex(ValueError, "Unknown agent runtime"):
+            get_agent_runtime("not-real")
+
+    def test_workspace_chat_service_defaults_to_configured_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as td, patch(
+            "ai_mime.agent_runner.chat.load_user_config",
+            return_value=SimpleNamespace(
+                agent_runtime="codex_cli",
+                agents=_agents_config(
+                    workspace_chat_model="openai/gpt-config-agent",
+                    workspace_chat_runtime="codex_cli",
+                ),
+            ),
+        ):
+            service = WorkspaceAgentChatService(workspace_dir=Path(td))
+
+        self.assertEqual(service.runtime_id, "codex_cli")
+        self.assertEqual(service.adapter.id, "codex_cli")
+        self.assertEqual(service.model_options, [
+            {"id": "openai/gpt-config-agent", "label": "openai/gpt-config-agent", "description": "Configured in user_config.yml."}
+        ])
+
+    def test_workspace_chat_uses_workspace_chat_model_and_strips_provider_prefix(self) -> None:
+        captured: dict[str, AgentRunRequest] = {}
+
+        class Runtime:
+            id = "codex_cli"
+
+            def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+                captured["request"] = request
+                return AgentRunResult(status="success", session_id="workspace-session", summary="ok")
+
+        with tempfile.TemporaryDirectory() as td, patch(
+            "ai_mime.agent_runner.chat.load_user_config",
+            return_value=SimpleNamespace(
+                provider="openai",
+                agent_runtime="codex_cli",
+                agents=_agents_config(
+                    workspace_chat_model="openai/gpt-workspace",
+                    workspace_chat_runtime="codex_cli",
+                ),
+            ),
+        ), patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=Runtime()):
+            service = WorkspaceAgentChatService(
+                workspace_dir=Path(td),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: [],
+            )
+            result = service.chat(message="hello")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(captured["request"].model, "gpt-workspace")
+
+    def test_replay_chat_uses_replay_model(self) -> None:
+        captured: dict[str, AgentRunRequest] = {}
+
+        class Runtime:
+            id = "claude_code"
+
+            def run(self, request: AgentRunRequest, prompt: str) -> AgentRunResult:
+                captured["request"] = request
+                return AgentRunResult(status="success", session_id="replay-session", summary="ok")
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
+            with patch(
+                "ai_mime.agent_runner.chat.load_user_config",
+                return_value=SimpleNamespace(
+                    provider="anthropic",
+                    agent_runtime="claude_code",
+                    agents=_agents_config(
+                        replay_model="anthropic/claude-replay",
+                        replay_runtime="claude_code",
+                    ),
+                ),
+            ), patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=Runtime()):
+                service = WorkspaceAgentChatService(
+                    workspace_dir=workflow_dir,
+                    mode="replay_execution",
+                    session_lister=lambda _dir: [],
+                    message_loader=lambda _sid, _dir: [],
+                )
+                service.chat(message="rerun")
+
+        self.assertEqual(captured["request"].mode, "replay_execution")
+        self.assertEqual(captured["request"].model, "claude-replay")
+
+    def test_skill_build_uses_skill_build_model(self) -> None:
+        from ai_mime.agent_runner.skill_build_chat import WorkflowSkillBuildService
+
+        captured: dict[str, AgentRunRequest] = {}
+
+        class Runtime:
+            id = "codex_cli"
+
+            def stream_chat(self, request: AgentRunRequest, prompt: str, **_kwargs):  # type: ignore[no-untyped-def]
+                async def events():
+                    captured["request"] = request
+                    yield {"event": "done", "status": "success", "session_id": "skill-session", "summary": "ok"}
+
+                return events()
+
+        async def collect(service: WorkflowSkillBuildService) -> list[dict[str, object]]:
+            return [event async for event in service.chat_stream(message="build")]
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
+            with patch(
+                "ai_mime.agent_runner.skill_build_chat.load_user_config",
+                return_value=SimpleNamespace(
+                    provider="openai",
+                    agent_runtime="codex_cli",
+                    agents=_agents_config(
+                        skill_build_model="openai/gpt-skill",
+                        skill_build_runtime="codex_cli",
+                    ),
+                ),
+            ), patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=Runtime()):
+                service = WorkflowSkillBuildService(
+                    workflow_dir=workflow_dir,
+                    session_lister=lambda _dir: [],
+                    message_loader=lambda _sid, _dir: [],
+                )
+                asyncio.run(collect(service))
+
+        self.assertEqual(captured["request"].mode, "build_skill_chat")
+        self.assertEqual(captured["request"].model, "gpt-skill")
+
+    def test_codex_config_includes_restricted_features_and_mcp(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        runtime = CodexCliRuntime(codex_path="/bin/codex")
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            request = AgentRunRequest(
+                provider="codex_cli",
+                mode="general",
+                model="gpt-test",
+                workflow_dir=workspace,
+                workspace_dir=workspace,
+                mcp_servers={"cua": {"type": "http", "url": "http://127.0.0.1:58840/mcp/"}},
+            )
+
+            config = runtime._config_for(request)
+            overrides = tuple(config.config_overrides)
+
+        for feature in (
+            "computer_use",
+            "apps",
+            "plugins",
+            "tool_search",
+            "multi_agent",
+            "browser_use",
+            "browser_use_external",
+        ):
+            self.assertIn(f"features.{feature}=false", overrides)
+        self.assertIn("sandbox_workspace_write.network_access=true", overrides)
+        self.assertIn('mcp_servers.cua.url="http://127.0.0.1:58840/mcp/"', overrides)
+        self.assertIn("mcp_servers.cua.required=false", overrides)
+        self.assertIn('mcp_servers.cua.default_tools_approval_mode="approve"', overrides)
+
+    def test_codex_config_includes_stdio_mcp_config(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        runtime = CodexCliRuntime(codex_path="/bin/codex")
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            request = AgentRunRequest(
+                provider="codex_cli",
+                mode="general",
+                workflow_dir=workspace,
+                workspace_dir=workspace,
+                mcp_servers={"hello": {"type": "stdio", "command": "echo", "args": ["one", "two"]}},
+            )
+
+            overrides = tuple(runtime._config_for(request).config_overrides)
+
+        self.assertIn('mcp_servers.hello.command="echo"', overrides)
+        self.assertIn('mcp_servers.hello.args=["one", "two"]', overrides)
+        self.assertIn("mcp_servers.hello.required=false", overrides)
+
+    def test_codex_cli_rejects_unsupported_mcp_config(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        runtime = CodexCliRuntime(codex_path="/bin/codex")
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            request = AgentRunRequest(
+                provider="codex_cli",
+                mode="general",
+                workflow_dir=workspace,
+                workspace_dir=workspace,
+                mcp_servers={"bad": {"type": "sse", "url": "http://example.com"}},
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "Unsupported Codex MCP server"):
+                runtime._config_for(request)
+
+    def test_codex_notifications_map_to_agent_events(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import _notification_to_agent_events
+
+        text_events = _notification_to_agent_events(
+            {"method": "item/agentMessage/delta", "payload": {"delta": "hello"}}
+        )
+        tool_events = _notification_to_agent_events(
+            {
+                "method": "item/started",
+                "payload": {
+                    "item": {
+                        "id": "mcp1",
+                        "type": "mcp_tool_call",
+                        "server": "cua",
+                        "tool": "computer_get_window_state",
+                        "arguments": {},
+                    }
+                },
+            }
+        )
+        command_events = _notification_to_agent_events(
+            {
+                "method": "item/started",
+                "payload": {
+                    "item": {
+                        "id": "cmd1",
+                        "type": "commandExecution",
+                        "command": "printf ok",
+                        "commandActions": [],
+                        "cwd": "/tmp",
+                        "status": "inProgress",
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(text_events, [{"event": "text", "text": "hello"}])
+        self.assertEqual(tool_events[0]["event"], "tool_use")
+        self.assertEqual(tool_events[0]["name"], "computer_get_window_state")
+        self.assertEqual(tool_events[0]["input"], {"server": "cua"})
+        self.assertEqual(command_events[0]["event"], "tool_use")
+        self.assertEqual(command_events[0]["name"], "Bash")
+        self.assertEqual(command_events[0]["input"], {"command": "printf ok", "cwd": "/tmp"})
+
+    def test_codex_notifications_map_tool_results(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import _notification_to_agent_events
+
+        command_delta = _notification_to_agent_events(
+            {
+                "method": "item/commandExecution/outputDelta",
+                "payload": {"itemId": "cmd1", "delta": "ok\n"},
+            }
+        )
+        command_completed = _notification_to_agent_events(
+            {
+                "method": "item/completed",
+                "payload": {
+                    "item": {
+                        "id": "cmd1",
+                        "type": "commandExecution",
+                        "command": "printf ok",
+                        "status": "completed",
+                        "aggregatedOutput": "ok\n",
+                        "exitCode": 0,
+                    }
+                },
+            }
+        )
+        mcp_completed = _notification_to_agent_events(
+            {
+                "method": "item/completed",
+                "payload": {
+                    "item": {
+                        "id": "mcp1",
+                        "type": "mcpToolCall",
+                        "server": "cua",
+                        "tool": "computer_get_window_state",
+                        "arguments": {},
+                        "status": "completed",
+                        "result": {"content": [{"type": "text", "text": "window ready"}]},
+                    }
+                },
+            }
+        )
+        mcp_failed = _notification_to_agent_events(
+            {
+                "method": "item/completed",
+                "payload": {
+                    "item": {
+                        "id": "mcp2",
+                        "type": "mcpToolCall",
+                        "server": "cua",
+                        "tool": "computer_get_window_state",
+                        "arguments": {},
+                        "status": "failed",
+                        "error": {"message": "window missing"},
+                    }
+                },
+            }
+        )
+        command_declined = _notification_to_agent_events(
+            {
+                "method": "item/completed",
+                "payload": {
+                    "item": {
+                        "id": "cmd2",
+                        "type": "commandExecution",
+                        "command": "rm -rf /tmp/example",
+                        "status": "declined",
+                        "commandActions": [],
+                        "cwd": "/tmp",
+                        "exitCode": None,
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(command_delta[0]["event"], "tool_result")
+        self.assertEqual(command_delta[0]["tool_use_id"], "cmd1")
+        self.assertEqual(command_delta[0]["content"], "ok\n")
+        self.assertTrue(command_delta[0]["append"])
+        self.assertEqual(command_completed[0]["content"], "ok\n")
+        self.assertFalse(command_completed[0]["is_error"])
+        self.assertEqual(mcp_completed[0]["tool_use_id"], "mcp1")
+        self.assertEqual(mcp_completed[0]["content"], [{"type": "text", "text": "window ready"}])
+        self.assertFalse(mcp_completed[0]["is_error"])
+        self.assertEqual(mcp_failed[0]["content"], "window missing")
+        self.assertTrue(mcp_failed[0]["is_error"])
+        self.assertEqual(command_declined[0]["tool_use_id"], "cmd2")
+        self.assertEqual(command_declined[0]["content"], "Command blocked: rm -rf /tmp/example")
+        self.assertTrue(command_declined[0]["is_error"])
+
+    def test_codex_notification_text_extraction_skips_non_text_dicts(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import _notification_to_agent_events
+
+        events = _notification_to_agent_events(
+            {
+                "method": "item/completed",
+                "payload": {
+                    "item": {
+                        "type": "agent_message",
+                        "content": [
+                            {"type": "metadata", "annotations": []},
+                            {"type": "output_text", "text": "done"},
+                        ],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(events, [{"event": "text", "text": "done"}])
+
+    def test_codex_turn_input_attaches_browser_harness_skill_by_default(self) -> None:
+        from openai_codex import SkillInput, TextInput
+
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "browser-harness"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text("---\nname: browser\n---\n", encoding="utf-8")
+            with (
+                patch(
+                    "ai_mime.agent_runner.adapters.codex_cli.resolved_browser_skill_name",
+                    return_value="browser",
+                ),
+                patch(
+                    "ai_mime.agent_runner.adapters.codex_cli.resolved_browser_skill_path",
+                    return_value=skill_dir,
+                ),
+            ):
+                turn_input = CodexCliRuntime(codex_path="/bin/codex")._turn_input("hello")
+
+        self.assertIsInstance(turn_input, list)
+        self.assertIsInstance(turn_input[0], SkillInput)
+        self.assertIsInstance(turn_input[1], TextInput)
+        self.assertEqual(turn_input[0].name, "browser")
+        self.assertEqual(turn_input[0].path, str(skill_dir))
+        self.assertEqual(turn_input[1].text, "hello")
+
+    def test_codex_turn_input_respects_empty_skills_and_missing_skill_file(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        runtime = CodexCliRuntime(codex_path="/bin/codex")
+        self.assertEqual(runtime._turn_input("hello", skills=[]), "hello")
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "browser-harness"
+            skill_dir.mkdir()
+            with patch(
+                "ai_mime.agent_runner.adapters.codex_cli.resolved_browser_skill_path",
+                return_value=skill_dir,
+            ):
+                self.assertEqual(runtime._turn_input("hello"), "hello")
+
+    def test_codex_runtime_does_not_require_openai_api_key(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        class FakeSandbox:
+            full_access = "full-access"
+            workspace_write = "workspace-write"
+
+        class FakeTurnHandle:
+            def run(self):  # type: ignore[no-untyped-def]
+                return SimpleNamespace(
+                    status="completed",
+                    id="turn-1",
+                    final_response="ok",
+                    usage={"input_tokens": 1},
+                )
+
+        class FakeThread:
+            id = "codex-session"
+
+            def turn(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeTurnHandle()
+
+        class FakeCodex:
+            def __init__(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            def thread_start(self, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeThread()
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            request = AgentRunRequest(
+                provider="codex_cli",
+                mode="general",
+                workflow_dir=workspace,
+                workspace_dir=workspace,
+            )
+            runtime = CodexCliRuntime(codex_path="/bin/codex")
+            from openai_codex import CodexConfig
+
+            with patch.dict(os.environ, {}, clear=True), patch(
+                "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+                return_value=(FakeCodex, object, CodexConfig, FakeSandbox),
+            ):
+                result = runtime.run(request, "hello")
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.session_id, "codex-session")
+
+    def test_codex_runtime_env_keeps_node_reachable_in_packaged_path(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            request = AgentRunRequest(
+                provider="codex_cli",
+                mode="general",
+                workflow_dir=workspace,
+                workspace_dir=workspace,
+            )
+            runtime = CodexCliRuntime(codex_path="/opt/homebrew/bin/codex")
+            with (
+                patch.dict(
+                    os.environ,
+                    {"HOME": td, "PATH": "/Applications/AI Mime.app/Contents/Resources/bin:/usr/bin:/bin"},
+                    clear=True,
+                ),
+                patch(
+                    "ai_mime.agent_runner.adapters.codex_cli.workflow_runtime_env",
+                    return_value={"PATH": "/app/bin:/usr/bin:/bin"},
+                ),
+            ):
+                env = runtime._env_for(request)
+
+        path = env["PATH"].split(os.pathsep)
+        self.assertLess(path.index("/app/bin"), path.index("/usr/local/bin"))
+        self.assertIn("/opt/homebrew/bin", path)
+        self.assertIn("/usr/local/bin", path)
+
+    def test_codex_stream_chat_accepts_claude_style_kwargs_and_suppresses_skill(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+        from openai_codex import CodexConfig
+
+        captured: dict[str, object] = {}
+
+        class FakeSandbox:
+            full_access = "full-access"
+            workspace_write = "workspace-write"
+
+        class FakeTurnHandle:
+            async def stream(self):  # type: ignore[no-untyped-def]
+                if False:
+                    yield None
+
+        class FakeThread:
+            id = "codex-thread"
+
+            async def turn(self, input_data, **kwargs):  # type: ignore[no-untyped-def]
+                captured["turn_input"] = input_data
+                captured["turn_kwargs"] = kwargs
+                return FakeTurnHandle()
+
+        class FakeAsyncCodex:
+            def __init__(self, *, config):  # type: ignore[no-untyped-def]
+                captured["config"] = config
+
+            async def __aenter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            async def __aexit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            async def thread_start(self, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeThread()
+
+        async def collect() -> list[dict]:
+            with tempfile.TemporaryDirectory() as td:
+                workspace = Path(td)
+                request = AgentRunRequest(
+                    provider="codex_cli",
+                    mode="general",
+                    workflow_dir=workspace,
+                    workspace_dir=workspace,
+                    mcp_servers=cua_mcp_servers(),
+                )
+                runtime = CodexCliRuntime(codex_path="/bin/codex")
+                out = []
+                async for event in runtime.stream_chat(
+                    request,
+                    "hello",
+                    allowed_tools=[],
+                    skills=[],
+                    setting_sources=[],
+                    can_use_tool=lambda *_args: None,
+                    auto_allow_tools=[],
+                ):
+                    out.append(event)
+                return out
+
+        with patch(
+            "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+            return_value=(object, FakeAsyncCodex, CodexConfig, FakeSandbox),
+        ):
+            events = asyncio.run(collect())
+
+        self.assertEqual(captured["turn_input"], "hello")
+        overrides = tuple(captured["config"].config_overrides)  # type: ignore[union-attr]
+        self.assertIn("features.computer_use=false", overrides)
+        self.assertIn('mcp_servers.cua.url="http://127.0.0.1:58840/mcp/"', overrides)
+        self.assertEqual(events[0], {"event": "session_started", "session_id": "codex-thread"})
+        self.assertEqual(events[-1]["event"], "done")
+
+    def test_codex_stream_chat_accumulates_command_output_deltas(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+        from openai_codex import CodexConfig
+
+        class FakeSandbox:
+            full_access = "full-access"
+            workspace_write = "workspace-write"
+
+        class FakeTurnHandle:
+            async def stream(self):  # type: ignore[no-untyped-def]
+                yield {
+                    "method": "item/agentMessage/delta",
+                    "payload": {"itemId": "msg1", "delta": "Running command."},
+                }
+                yield {
+                    "method": "item/completed",
+                    "payload": {
+                        "item": {
+                            "id": "msg1",
+                            "type": "agent_message",
+                            "content": [{"type": "output_text", "text": "Running command."}],
+                        }
+                    },
+                }
+                yield {
+                    "method": "item/started",
+                    "payload": {
+                        "item": {
+                            "id": "cmd1",
+                            "type": "commandExecution",
+                            "command": "printf 'one two'",
+                            "commandActions": [],
+                            "cwd": "/tmp",
+                            "status": "inProgress",
+                        }
+                    },
+                }
+                yield {
+                    "method": "item/commandExecution/outputDelta",
+                    "payload": {"itemId": "cmd1", "delta": "one"},
+                }
+                yield {
+                    "method": "item/commandExecution/outputDelta",
+                    "payload": {"itemId": "cmd1", "delta": " two"},
+                }
+                yield {
+                    "method": "item/completed",
+                    "payload": {
+                        "item": {
+                            "id": "cmd1",
+                            "type": "commandExecution",
+                            "command": "printf 'one two'",
+                            "commandActions": [],
+                            "cwd": "/tmp",
+                            "status": "completed",
+                            "aggregatedOutput": "one two",
+                            "exitCode": 0,
+                        }
+                    },
+                }
+
+        class FakeThread:
+            id = "codex-thread"
+
+            async def turn(self, _input_data, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeTurnHandle()
+
+        class FakeAsyncCodex:
+            def __init__(self, *, config):  # type: ignore[no-untyped-def]
+                self.config = config
+
+            async def __aenter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            async def __aexit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            async def thread_start(self, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeThread()
+
+        async def collect() -> list[dict]:
+            with tempfile.TemporaryDirectory() as td:
+                workspace = Path(td)
+                request = AgentRunRequest(
+                    provider="codex_cli",
+                    mode="general",
+                    workflow_dir=workspace,
+                    workspace_dir=workspace,
+                )
+                runtime = CodexCliRuntime(codex_path="/bin/codex")
+                out = []
+                async for event in runtime.stream_chat(request, "hello", skills=[]):
+                    out.append(event)
+                return out
+
+        with patch(
+            "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+            return_value=(object, FakeAsyncCodex, CodexConfig, FakeSandbox),
+        ):
+            events = asyncio.run(collect())
+
+        result_events = [event for event in events if event.get("event") == "tool_result"]
+        self.assertEqual([event["content"] for event in result_events], ["one", "one two", "one two"])
+        self.assertFalse(any("append" in event for event in result_events))
+
+    def test_codex_runtime_interrupts_active_turn(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        class FakeTurn:
+            def __init__(self) -> None:
+                self.interrupted = False
+
+            def interrupt(self) -> None:
+                self.interrupted = True
+
+        runtime = CodexCliRuntime(codex_path="/bin/codex")
+        turn = FakeTurn()
+        runtime._active_turn = turn
+
+        self.assertFalse(CodexCliRuntime(codex_path="/bin/codex").interrupt())
+        self.assertTrue(runtime.interrupt())
+        self.assertTrue(turn.interrupted)
+
+    def test_codex_runtime_lists_sessions_from_sdk(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+        from openai_codex import CodexConfig
+
+        class FakeCodex:
+            def __init__(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            def thread_list(self, **_kwargs):  # type: ignore[no-untyped-def]
+                return {
+                    "threads": [
+                        {"id": "old-session", "thread_name": "Old", "updated_at": "2026-06-01T01:00:00Z"},
+                        {"id": "new-session", "thread_name": "New", "updated_at": "2026-06-01T02:00:00Z"},
+                    ]
+                }
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td) / "workspace"
+            workspace.mkdir()
+            with patch(
+                "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+                return_value=(FakeCodex, object, CodexConfig, object),
+            ):
+                sessions = CodexCliRuntime(codex_path="/bin/codex").list_sessions(workspace)
+
+        self.assertEqual([item["session_id"] for item in sessions], ["new-session", "old-session"])
+        self.assertEqual(sessions[0]["summary"], "New")
+        self.assertEqual(sessions[0]["source"], "codex")
+        self.assertEqual(sessions[0]["last_modified"], "2026-06-01T02:00:00Z")
+
+    def test_codex_runtime_loads_visible_messages_from_sdk(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+        from openai_codex import CodexConfig
+
+        class FakeThread:
+            def read(self, **_kwargs):  # type: ignore[no-untyped-def]
+                return {
+                    "items": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "id": "u1",
+                            "content": [{"type": "input_text", "text": "hello"}],
+                        },
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "id": "a1",
+                            "content": [{"type": "output_text", "text": "hi there"}],
+                        },
+                    ]
+                }
+
+        class FakeCodex:
+            def __init__(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            def thread_resume(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeThread()
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td) / "workspace"
+            workspace.mkdir()
+            with patch(
+                "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+                return_value=(FakeCodex, object, CodexConfig, SimpleNamespace(full_access="full-access", workspace_write="workspace-write")),
+            ):
+                messages = CodexCliRuntime(codex_path="/bin/codex").load_messages("test-session", workspace)
+
+        self.assertEqual(
+            messages,
+            [
+                {"type": "user", "role": "user", "uuid": "u1", "session_id": "test-session", "message": "hello"},
+                {"type": "assistant", "role": "assistant", "uuid": "a1", "session_id": "test-session", "message": "hi there"},
+            ],
+        )
+
+    def test_codex_runtime_sdk_errors_return_empty_lists(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+        from openai_codex import CodexConfig
+
+        class FakeCodex:
+            def __init__(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            def thread_list(self, **_kwargs):  # type: ignore[no-untyped-def]
+                raise RuntimeError("missing")
+
+            def thread_resume(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                raise RuntimeError("missing")
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td) / "workspace"
+            workspace.mkdir()
+            with patch(
+                "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+                return_value=(FakeCodex, object, CodexConfig, SimpleNamespace(full_access="full-access", workspace_write="workspace-write")),
+            ):
+                runtime = CodexCliRuntime(codex_path="/bin/codex")
+                self.assertEqual(runtime.list_sessions(workspace), [])
+                self.assertEqual(runtime.load_messages("missing-session", workspace), [])
+
+    def test_codex_runtime_reports_missing_binary(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            request = AgentRunRequest(
+                provider="codex_cli",
+                mode="general",
+                workflow_dir=workspace,
+                workspace_dir=workspace,
+            )
+            runtime = CodexCliRuntime()
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=True), patch(
+                "ai_mime.codex_support.shutil.which",
+                return_value=None,
+            ):
+                result = runtime.run(request, "hello")
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("Codex CLI not found", result.error or "")
+
+    def test_computer_use_uses_configured_claude_model(self) -> None:
+        from ai_mime.agent_runner.computer_use import run_computer_use_task
+
+        captured: dict[str, object] = {}
+
+        async def fake_runtime(task: str, *, runtime_id: str, model: str, response_schema=None):  # type: ignore[no-untyped-def]
+            captured.update({
+                "task": task,
+                "runtime_id": runtime_id,
+                "model": model,
+                "response_schema": response_schema,
+            })
+            return AgentRunResult(status="success", session_id="cua-session", summary="done")
+
+        cfg = SimpleNamespace(
+            provider="anthropic",
+            agents=_agents_config(computer_use_model="anthropic/claude-opus-4-8", computer_use_runtime="claude_code"),
+        )
+        with patch("ai_mime.agent_runner.computer_use.load_user_config", return_value=cfg), patch(
+            "ai_mime.agent_runner.computer_use._run_agent_runtime_computer_use_task_async",
+            side_effect=fake_runtime,
+        ):
+            result = run_computer_use_task("open Safari")
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(captured["task"], "open Safari")
+        self.assertEqual(captured["runtime_id"], "claude_code")
+        self.assertEqual(captured["model"], "anthropic/claude-opus-4-8")
+
+    def test_computer_use_openai_config_routes_to_codex(self) -> None:
+        from ai_mime.agent_runner.computer_use import run_computer_use_task
+
+        captured: dict[str, object] = {}
+
+        async def fake_runtime(task: str, *, runtime_id: str, model: str, response_schema=None):  # type: ignore[no-untyped-def]
+            captured.update({
+                "task": task,
+                "runtime_id": runtime_id,
+                "model": model,
+                "response_schema": response_schema,
+            })
+            return AgentRunResult(status="success", session_id="codex-cua-session", summary='{"ok": true}')
+
+        cfg = SimpleNamespace(
+            provider="openai",
+            agents=_agents_config(computer_use_model="openai/gpt-5.5", computer_use_runtime="codex_cli"),
+        )
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+        with patch("ai_mime.agent_runner.computer_use.load_user_config", return_value=cfg), patch(
+            "ai_mime.agent_runner.computer_use._run_agent_runtime_computer_use_task_async",
+            side_effect=fake_runtime,
+        ):
+            result = run_computer_use_task("inspect", response_schema=schema)
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(captured["runtime_id"], "codex_cli")
+        self.assertEqual(captured["model"], "openai/gpt-5.5")
+        self.assertEqual(captured["response_schema"], schema)
+
+    def test_computer_use_runtime_request_strips_provider_prefix_and_attaches_mcp(self) -> None:
+        from ai_mime.agent_runner.computer_use import _run_agent_runtime_computer_use_task_async
+
+        captured: dict[str, object] = {}
+
+        class FakeRuntime:
+            async def stream_chat(self, request: AgentRunRequest, prompt: str, **kwargs):  # type: ignore[no-untyped-def]
+                captured["request"] = request
+                captured["prompt"] = prompt
+                captured["kwargs"] = kwargs
+                yield {"event": "text", "text": '{"ok": true}'}
+                yield {"event": "tool_use", "id": "tool-1", "name": "computer_get_window_state", "input": {}}
+                yield {"event": "tool_result", "tool_use_id": "tool-1", "content": "ok", "is_error": False}
+                yield {"event": "done", "session_id": "codex-cua-session", "status": "success", "summary": '{"ok": true}'}
+
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+        with patch("ai_mime.agent_runner.computer_use.get_agent_runtime", return_value=FakeRuntime()):
+            result = asyncio.run(
+                _run_agent_runtime_computer_use_task_async(
+                    "inspect",
+                    runtime_id="codex_cli",
+                    model="openai/gpt-5.5",
+                    response_schema=schema,
+                )
+            )
+
+        request = captured["request"]
+        self.assertIsInstance(request, AgentRunRequest)
+        assert isinstance(request, AgentRunRequest)
+        self.assertEqual(request.provider, "codex_cli")
+        self.assertEqual(request.model, "gpt-5.5")
+        self.assertEqual(request.mcp_servers, cua_mcp_servers())
+        self.assertIn("You drive this macOS computer", str(captured["prompt"]))
+        self.assertIn("can_use_tool", captured["kwargs"])
+        self.assertTrue(any("tool_use: computer_get_window_state" in line for line in result.logs))
+        self.assertFalse(any("tool_result:" in line for line in result.logs))
+        self.assertEqual(result.result_json, {"ok": True})
+
+    def test_computer_use_runtime_streams_event_logs_to_stderr(self) -> None:
+        from ai_mime.agent_runner.computer_use import _run_agent_runtime_computer_use_task_async
+
+        class FakeRuntime:
+            async def stream_chat(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                yield {"event": "text", "text": "looking"}
+                yield {"event": "tool_use", "id": "tool-1", "name": "computer_get_window_state", "input": {"app": "Safari"}}
+                yield {"event": "done", "session_id": "cua-session", "status": "success", "summary": "done"}
+
+        stderr = io.StringIO()
+        with patch("ai_mime.agent_runner.computer_use.get_agent_runtime", return_value=FakeRuntime()), patch(
+            "ai_mime.agent_runner.computer_use.sys.stderr",
+            stderr,
+        ):
+            result = asyncio.run(
+                _run_agent_runtime_computer_use_task_async(
+                    "inspect",
+                    runtime_id="claude_code",
+                    model="anthropic/claude-opus-4-8",
+                )
+            )
+
+        streamed = stderr.getvalue()
+        self.assertEqual(result.status, "success")
+        self.assertIn("assistant: looking", streamed)
+        self.assertIn("tool_use: computer_get_window_state input={'app': 'Safari'}", streamed)
+        self.assertIn("assistant: looking", "\n".join(result.logs))
+
+    def test_computer_use_runtime_coalesces_codex_text_deltas_in_logs(self) -> None:
+        from ai_mime.agent_runner.computer_use import _run_agent_runtime_computer_use_task_async
+
+        class FakeRuntime:
+            async def stream_chat(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                yield {"event": "text", "text": "I"}
+                yield {"event": "text", "text": " will"}
+                yield {"event": "text", "text": " inspect"}
+                yield {"event": "text", "text": " now."}
+                yield {"event": "tool_use", "id": "tool-1", "name": "computer_screenshot", "input": {"server": "cua"}}
+                yield {"event": "done", "session_id": "cua-session", "status": "success", "summary": "I will inspect now."}
+
+        stderr = io.StringIO()
+        with patch("ai_mime.agent_runner.computer_use.get_agent_runtime", return_value=FakeRuntime()), patch(
+            "ai_mime.agent_runner.computer_use.sys.stderr",
+            stderr,
+        ):
+            result = asyncio.run(
+                _run_agent_runtime_computer_use_task_async(
+                    "inspect",
+                    runtime_id="codex_cli",
+                    model="openai/gpt-5.5",
+                )
+            )
+
+        assistant_lines = [line for line in result.logs if "assistant:" in line]
+        self.assertEqual(result.status, "success")
+        self.assertEqual(len(assistant_lines), 1)
+        self.assertIn("assistant: I will inspect now.", assistant_lines[0])
+        self.assertIn("tool_use: computer_screenshot input={'server': 'cua'}", stderr.getvalue())
 
 
 if __name__ == "__main__":

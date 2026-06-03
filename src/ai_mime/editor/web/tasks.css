@@ -416,6 +416,14 @@ h1 {
   margin-top: 20px;
 }
 
+.modal-actions.row {
+  flex-direction: row;
+}
+
+.modal-actions.row .modal-btn {
+  flex: 1;
+}
+
 .modal-btn {
   width: 100%;
   min-height: 44px;
@@ -450,6 +458,68 @@ h1 {
 
 .modal-btn.secondary:hover {
   color: var(--text);
+}
+
+.provider-card {
+  width: min(540px, 92vw);
+}
+
+.provider-option {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 10px;
+  background: rgba(255, 255, 255, 0.018);
+  cursor: pointer;
+}
+
+.provider-option input {
+  margin-top: 3px;
+}
+
+.provider-option strong {
+  display: block;
+  line-height: 1.2;
+}
+
+.provider-option small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.provider-key {
+  display: block;
+  margin-top: 14px;
+}
+
+.provider-key span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.provider-key input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0c121b;
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+.provider-message {
+  min-height: 18px;
+  margin-top: 10px;
+  color: #ffc2c2;
+  font-size: 12px;
 }
 
 @keyframes fadeIn {
