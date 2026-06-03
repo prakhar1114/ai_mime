@@ -95,6 +95,9 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
 def _resolved_skill_context() -> str:
     return (
         f"Browser skill: `{resolved_browser_skill_name()}` at {resolved_browser_skill_path()}\n"
+        "Browser-harness is the AI Mime browser automation route. If your runtime exposes the "
+        "browser skill directly, read it for API guidance; always run browser automation through "
+        "`$AI_MIME_BROWSER_HARNESS_BIN` in shell commands or generated scripts.\n"
         "Computer-use: the cua MCP server is attached to this session — call the `mcp__cua__*` "
         "tools directly (`computer_screenshot`, `computer_find_element`, `computer_click`, "
         "`computer_type`, `computer_hotkey`, `computer_launch_app`, …) to drive native macOS "
@@ -366,6 +369,8 @@ Current environment and tools state:
 - uv: `{uv_path}`
 - browser-harness: `{browser_harness_bin}`
 - Browser skill is `{resolved_browser_skill_name()}` at `{resolved_browser_skill_path()}`
+- If you need browser automation, read the attached browser-harness skill for API details and invoke `{browser_harness_bin}` (or `$AI_MIME_BROWSER_HARNESS_BIN`).
+- Codex native/plugin Computer Use is unavailable by design. For native GUI exploration use the attached `mcp__cua__*` tools; in generated skill code delegate native GUI work through `$AI_MIME_UI_AGENT_CMD`.
 
 Existing skill files:
 {json.dumps(existing_skill_files, indent=2)}
@@ -404,6 +409,8 @@ Your detailed instructions are located in the instructions folder:
 
 Shared UI-agent guide, read only for UI-only recovery:
 {INSTRUCTIONS_ROOT / "ui_agent" / "00_ui_agent.md"}
+
+Browser-harness is available through the AI Mime browser skill path `{resolved_browser_skill_path()}` and the app-managed command `$AI_MIME_BROWSER_HARNESS_BIN`. Use that route for browser automation Native GUI fallback must use attached `mcp__cua__*` tools in chat and `$AI_MIME_UI_AGENT_CMD` in helper scripts.
 
 You MUST execute the task following these instructions step-by-step:
 1. First, read and follow `00_rules.md` in the instructions directory.

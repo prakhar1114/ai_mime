@@ -5,7 +5,6 @@ import io
 import json
 import os
 import stat
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,11 +21,11 @@ from ai_mime.agent_runner import (
     validate_skill_package,
 )
 from ai_mime.agent_runner.mcp import cua_mcp_servers
-from ai_mime.app_data import get_bundled_resource
+from ai_mime.agent_runner.models import resolved_browser_skill_path
 
 
 def _default_browser_skill_root() -> Path:
-    return get_bundled_resource("harness/browser-harness")
+    return resolved_browser_skill_path()
 
 
 def _schema() -> dict:
@@ -1282,7 +1281,7 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertEqual(captured["request"].mode, "build_skill_chat")
         self.assertEqual(captured["request"].model, "gpt-skill")
 
-    def test_codex_cli_builds_new_and_resume_commands(self) -> None:
+    def test_codex_config_includes_restricted_features_and_mcp(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
 
         runtime = CodexCliRuntime(codex_path="/bin/codex")
@@ -1296,44 +1295,25 @@ class AgentRunnerTests(unittest.TestCase):
                 workspace_dir=workspace,
                 mcp_servers={"cua": {"type": "http", "url": "http://127.0.0.1:58840/mcp/"}},
             )
-            schema_path = workspace / "schema.json"
-            output_path = workspace / "last.txt"
 
-            cmd = runtime.build_command(
-                request,
-                "hello",
-                output_schema_path=schema_path,
-                output_last_message_path=output_path,
-            )
+            config = runtime._config_for(request)
+            overrides = tuple(config.config_overrides)
 
-            self.assertEqual(cmd[:2], ["/bin/codex", "exec"])
-            self.assertIn("--json", cmd)
-            self.assertIn("--cd", cmd)
-            self.assertIn(str(workspace), cmd)
-            self.assertIn("--sandbox", cmd)
-            self.assertIn("workspace-write", cmd)
-            self.assertIn("--skip-git-repo-check", cmd)
-            self.assertIn("-c", cmd)
-            self.assertIn('mcp_servers.cua.url="http://127.0.0.1:58840/mcp/"', cmd)
-            self.assertIn("mcp_servers.cua.required=true", cmd)
-            self.assertIn('mcp_servers.cua.default_tools_approval_mode="approve"', cmd)
-            self.assertIn("-m", cmd)
-            self.assertIn("gpt-test", cmd)
-            self.assertIn("--output-schema", cmd)
-            self.assertIn(str(schema_path), cmd)
-            self.assertIn("-o", cmd)
-            self.assertIn(str(output_path), cmd)
-            self.assertEqual(cmd[-1], "-")
+        for feature in (
+            "computer_use",
+            "apps",
+            "plugins",
+            "tool_search",
+            "multi_agent",
+            "browser_use",
+            "browser_use_external",
+        ):
+            self.assertIn(f"features.{feature}=false", overrides)
+        self.assertIn('mcp_servers.cua.url="http://127.0.0.1:58840/mcp/"', overrides)
+        self.assertIn("mcp_servers.cua.required=false", overrides)
+        self.assertIn('mcp_servers.cua.default_tools_approval_mode="approve"', overrides)
 
-            resume_request = request.model_copy(update={"session_id": "codex-session"})
-            resume_cmd = runtime.build_command(resume_request, "continue")
-            self.assertEqual(resume_cmd[:4], ["/bin/codex", "exec", "resume", "codex-session"])
-            self.assertIn("--json", resume_cmd)
-            self.assertIn("--skip-git-repo-check", resume_cmd)
-            self.assertIn("-m", resume_cmd)
-            self.assertEqual(resume_cmd[-1], "-")
-
-    def test_codex_cli_builds_stdio_mcp_config(self) -> None:
+    def test_codex_config_includes_stdio_mcp_config(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
 
         runtime = CodexCliRuntime(codex_path="/bin/codex")
@@ -1347,11 +1327,11 @@ class AgentRunnerTests(unittest.TestCase):
                 mcp_servers={"hello": {"type": "stdio", "command": "echo", "args": ["one", "two"]}},
             )
 
-            cmd = runtime.build_command(request, "hello")
+            overrides = tuple(runtime._config_for(request).config_overrides)
 
-        self.assertIn('mcp_servers.hello.command="echo"', cmd)
-        self.assertIn('mcp_servers.hello.args=["one", "two"]', cmd)
-        self.assertIn("mcp_servers.hello.required=true", cmd)
+        self.assertIn('mcp_servers.hello.command="echo"', overrides)
+        self.assertIn('mcp_servers.hello.args=["one", "two"]', overrides)
+        self.assertIn("mcp_servers.hello.required=false", overrides)
 
     def test_codex_cli_rejects_unsupported_mcp_config(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
@@ -1368,63 +1348,129 @@ class AgentRunnerTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(RuntimeError, "Unsupported Codex MCP server"):
-                runtime.build_command(request, "hello")
+                runtime._config_for(request)
 
-    def test_codex_jsonl_maps_to_agent_events(self) -> None:
-        from ai_mime.agent_runner.adapters.codex_cli import parse_codex_jsonl
+    def test_codex_notifications_map_to_agent_events(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import _notification_to_agent_events
 
-        events = parse_codex_jsonl(
-            [
-                json.dumps({"type": "thread.started", "thread_id": "codex-thread"}),
-                json.dumps({"type": "turn.started"}),
-                json.dumps({"type": "item.completed", "item": {"id": "a1", "type": "agent_message", "text": "OK"}}),
-                json.dumps(
-                    {
-                        "type": "item.started",
-                        "item": {
-                            "id": "mcp1",
-                            "type": "mcp_tool_call",
-                            "server": "cua",
-                            "tool": "computer_get_window_state",
-                            "arguments": {},
-                        },
+        text_events = _notification_to_agent_events(
+            {"method": "item/agentMessage/delta", "payload": {"delta": "hello"}}
+        )
+        tool_events = _notification_to_agent_events(
+            {
+                "method": "item/started",
+                "payload": {
+                    "item": {
+                        "id": "mcp1",
+                        "type": "mcp_tool_call",
+                        "server": "cua",
+                        "tool": "computer_get_window_state",
+                        "arguments": {},
                     }
-                ),
-                json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}}),
-                json.dumps({"msg": {"type": "text", "content": "hello"}}),
-                json.dumps({"msg": {"type": "tool_use", "id": "t1", "name": "shell", "input": {"command": "ls"}}}),
-                json.dumps({"msg": {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}}),
-                json.dumps({"msg": {"type": "done", "session_id": "s1", "summary": "finished"}}),
-                "not-json",
-            ]
+                },
+            }
         )
 
-        self.assertEqual(events[0], {"event": "session_started", "session_id": "codex-thread"})
-        self.assertEqual(events[1], {"event": "text", "text": "OK"})
-        self.assertEqual(events[2]["event"], "tool_use")
-        self.assertEqual(events[2]["name"], "computer_get_window_state")
-        self.assertEqual(events[2]["input"], {"server": "cua"})
-        self.assertEqual(events[3], {"event": "text", "text": "hello"})
-        self.assertEqual(events[4]["event"], "tool_use")
-        self.assertEqual(events[4]["name"], "shell")
-        self.assertEqual(events[5]["event"], "tool_result")
-        self.assertEqual(events[6]["event"], "done")
-        self.assertEqual(events[6]["session_id"], "s1")
+        self.assertEqual(text_events, [{"event": "text", "text": "hello"}])
+        self.assertEqual(tool_events[0]["event"], "tool_use")
+        self.assertEqual(tool_events[0]["name"], "computer_get_window_state")
+        self.assertEqual(tool_events[0]["input"], {"server": "cua"})
+
+    def test_codex_notification_text_extraction_skips_non_text_dicts(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import _notification_to_agent_events
+
+        events = _notification_to_agent_events(
+            {
+                "method": "item/completed",
+                "payload": {
+                    "item": {
+                        "type": "agent_message",
+                        "content": [
+                            {"type": "metadata", "annotations": []},
+                            {"type": "output_text", "text": "done"},
+                        ],
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(events, [{"event": "text", "text": "done"}])
+
+    def test_codex_turn_input_attaches_browser_harness_skill_by_default(self) -> None:
+        from openai_codex import SkillInput, TextInput
+
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "browser-harness"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text("---\nname: browser\n---\n", encoding="utf-8")
+            with (
+                patch(
+                    "ai_mime.agent_runner.adapters.codex_cli.resolved_browser_skill_name",
+                    return_value="browser",
+                ),
+                patch(
+                    "ai_mime.agent_runner.adapters.codex_cli.resolved_browser_skill_path",
+                    return_value=skill_dir,
+                ),
+            ):
+                turn_input = CodexCliRuntime(codex_path="/bin/codex")._turn_input("hello")
+
+        self.assertIsInstance(turn_input, list)
+        self.assertIsInstance(turn_input[0], SkillInput)
+        self.assertIsInstance(turn_input[1], TextInput)
+        self.assertEqual(turn_input[0].name, "browser")
+        self.assertEqual(turn_input[0].path, str(skill_dir))
+        self.assertEqual(turn_input[1].text, "hello")
+
+    def test_codex_turn_input_respects_empty_skills_and_missing_skill_file(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+
+        runtime = CodexCliRuntime(codex_path="/bin/codex")
+        self.assertEqual(runtime._turn_input("hello", skills=[]), "hello")
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "browser-harness"
+            skill_dir.mkdir()
+            with patch(
+                "ai_mime.agent_runner.adapters.codex_cli.resolved_browser_skill_path",
+                return_value=skill_dir,
+            ):
+                self.assertEqual(runtime._turn_input("hello"), "hello")
 
     def test_codex_runtime_does_not_require_openai_api_key(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
 
-        class FakePopen:
-            returncode = 0
+        class FakeSandbox:
+            workspace_write = "workspace-write"
 
-            def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-                self.args = args
-                self.kwargs = kwargs
-                self.received_input = None
+        class FakeTurnHandle:
+            def run(self):  # type: ignore[no-untyped-def]
+                return SimpleNamespace(
+                    status="completed",
+                    id="turn-1",
+                    final_response="ok",
+                    usage={"input_tokens": 1},
+                )
 
-            def communicate(self, input=None):  # type: ignore[no-untyped-def]
-                self.received_input = input
-                return ('{"msg":{"type":"done","session_id":"codex-session","summary":"ok"}}\n', "")
+        class FakeThread:
+            id = "codex-session"
+
+            def turn(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeTurnHandle()
+
+        class FakeCodex:
+            def __init__(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            def thread_start(self, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeThread()
 
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
@@ -1435,30 +1481,19 @@ class AgentRunnerTests(unittest.TestCase):
                 workspace_dir=workspace,
             )
             runtime = CodexCliRuntime(codex_path="/bin/codex")
+            from openai_codex import CodexConfig
+
             with patch.dict(os.environ, {}, clear=True), patch(
-                "ai_mime.agent_runner.adapters.codex_cli.subprocess.Popen",
-                side_effect=FakePopen,
-            ) as popen:
+                "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+                return_value=(FakeCodex, object, CodexConfig, FakeSandbox),
+            ):
                 result = runtime.run(request, "hello")
 
         self.assertEqual(result.status, "success")
         self.assertEqual(result.session_id, "codex-session")
-        popen.assert_called_once()
-        self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.PIPE)
-        self.assertEqual(popen.call_args.args[0][-1], "-")
 
     def test_codex_runtime_env_keeps_node_reachable_in_packaged_path(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
-
-        class FakePopen:
-            returncode = 0
-
-            def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-                self.args = args
-                self.kwargs = kwargs
-
-            def communicate(self, input=None):  # type: ignore[no-untyped-def]
-                return ('{"msg":{"type":"done","session_id":"codex-session","summary":"ok"}}\n', "")
 
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
@@ -1479,74 +1514,133 @@ class AgentRunnerTests(unittest.TestCase):
                     "ai_mime.agent_runner.adapters.codex_cli.workflow_runtime_env",
                     return_value={"PATH": "/app/bin:/usr/bin:/bin"},
                 ),
-                patch(
-                    "ai_mime.agent_runner.adapters.codex_cli.subprocess.Popen",
-                    side_effect=FakePopen,
-                ) as popen,
             ):
-                result = runtime.run(request, "hello")
+                env = runtime._env_for(request)
 
-        self.assertEqual(result.status, "success")
-        env = popen.call_args.kwargs["env"]
         path = env["PATH"].split(os.pathsep)
         self.assertLess(path.index("/app/bin"), path.index("/usr/local/bin"))
         self.assertIn("/opt/homebrew/bin", path)
         self.assertIn("/usr/local/bin", path)
 
-    def test_codex_runtime_interrupts_active_process(self) -> None:
+    def test_codex_stream_chat_accepts_claude_style_kwargs_and_suppresses_skill(self) -> None:
+        from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+        from openai_codex import CodexConfig
+
+        captured: dict[str, object] = {}
+
+        class FakeSandbox:
+            workspace_write = "workspace-write"
+
+        class FakeTurnHandle:
+            async def stream(self):  # type: ignore[no-untyped-def]
+                if False:
+                    yield None
+
+        class FakeThread:
+            id = "codex-thread"
+
+            async def turn(self, input_data, **kwargs):  # type: ignore[no-untyped-def]
+                captured["turn_input"] = input_data
+                captured["turn_kwargs"] = kwargs
+                return FakeTurnHandle()
+
+        class FakeAsyncCodex:
+            def __init__(self, *, config):  # type: ignore[no-untyped-def]
+                captured["config"] = config
+
+            async def __aenter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            async def __aexit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            async def thread_start(self, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeThread()
+
+        async def collect() -> list[dict]:
+            with tempfile.TemporaryDirectory() as td:
+                workspace = Path(td)
+                request = AgentRunRequest(
+                    provider="codex_cli",
+                    mode="general",
+                    workflow_dir=workspace,
+                    workspace_dir=workspace,
+                    mcp_servers=cua_mcp_servers(),
+                )
+                runtime = CodexCliRuntime(codex_path="/bin/codex")
+                out = []
+                async for event in runtime.stream_chat(
+                    request,
+                    "hello",
+                    allowed_tools=[],
+                    skills=[],
+                    setting_sources=[],
+                    can_use_tool=lambda *_args: None,
+                    auto_allow_tools=[],
+                ):
+                    out.append(event)
+                return out
+
+        with patch(
+            "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+            return_value=(object, FakeAsyncCodex, CodexConfig, FakeSandbox),
+        ):
+            events = asyncio.run(collect())
+
+        self.assertEqual(captured["turn_input"], "hello")
+        overrides = tuple(captured["config"].config_overrides)  # type: ignore[union-attr]
+        self.assertIn("features.computer_use=false", overrides)
+        self.assertIn('mcp_servers.cua.url="http://127.0.0.1:58840/mcp/"', overrides)
+        self.assertEqual(events[0], {"event": "session_started", "session_id": "codex-thread"})
+        self.assertEqual(events[-1]["event"], "done")
+
+    def test_codex_runtime_interrupts_active_turn(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
 
-        class FakeProcess:
-            returncode = None
-
+        class FakeTurn:
             def __init__(self) -> None:
-                self.signals: list[int] = []
+                self.interrupted = False
 
-            def send_signal(self, sig: int) -> None:
-                self.signals.append(sig)
+            def interrupt(self) -> None:
+                self.interrupted = True
 
         runtime = CodexCliRuntime(codex_path="/bin/codex")
-        process = FakeProcess()
-        runtime._active_process = process  # type: ignore[assignment]
+        turn = FakeTurn()
+        runtime._active_turn = turn
 
         self.assertFalse(CodexCliRuntime(codex_path="/bin/codex").interrupt())
         self.assertTrue(runtime.interrupt())
-        self.assertEqual(process.signals, [2])
+        self.assertTrue(turn.interrupted)
 
-    def test_codex_runtime_lists_sessions_from_codex_home(self) -> None:
+    def test_codex_runtime_lists_sessions_from_sdk(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+        from openai_codex import CodexConfig
+
+        class FakeCodex:
+            def __init__(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            def thread_list(self, **_kwargs):  # type: ignore[no-untyped-def]
+                return {
+                    "threads": [
+                        {"id": "old-session", "thread_name": "Old", "updated_at": "2026-06-01T01:00:00Z"},
+                        {"id": "new-session", "thread_name": "New", "updated_at": "2026-06-01T02:00:00Z"},
+                    ]
+                }
 
         with tempfile.TemporaryDirectory() as td:
-            codex_home = Path(td) / "codex-home"
             workspace = Path(td) / "workspace"
-            other_workspace = Path(td) / "other"
-            sessions_dir = codex_home / "sessions" / "2026" / "06" / "01"
-            sessions_dir.mkdir(parents=True)
             workspace.mkdir()
-            other_workspace.mkdir()
-            (codex_home / "session_index.jsonl").write_text(
-                "\n".join([
-                    json.dumps({"id": "old-session", "thread_name": "Old", "updated_at": "2026-06-01T01:00:00Z"}),
-                    "not-json",
-                    json.dumps({"id": "new-session", "thread_name": "New", "updated_at": "2026-06-01T02:00:00Z"}),
-                    json.dumps({"id": "other-session", "thread_name": "Other", "updated_at": "2026-06-01T03:00:00Z"}),
-                ]),
-                encoding="utf-8",
-            )
-            (sessions_dir / "rollout-new-session.jsonl").write_text(
-                json.dumps({"type": "session_meta", "payload": {"id": "new-session", "cwd": str(workspace)}}) + "\n",
-                encoding="utf-8",
-            )
-            (sessions_dir / "rollout-old-session.jsonl").write_text(
-                json.dumps({"type": "session_meta", "payload": {"id": "old-session", "cwd": str(workspace)}}) + "\n",
-                encoding="utf-8",
-            )
-            (sessions_dir / "rollout-other-session.jsonl").write_text(
-                json.dumps({"type": "session_meta", "payload": {"id": "other-session", "cwd": str(other_workspace)}}) + "\n",
-                encoding="utf-8",
-            )
-
-            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
+            with patch(
+                "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+                return_value=(FakeCodex, object, CodexConfig, object),
+            ):
                 sessions = CodexCliRuntime(codex_path="/bin/codex").list_sessions(workspace)
 
         self.assertEqual([item["session_id"] for item in sessions], ["new-session", "old-session"])
@@ -1554,46 +1648,49 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertEqual(sessions[0]["source"], "codex")
         self.assertEqual(sessions[0]["last_modified"], "2026-06-01T02:00:00Z")
 
-    def test_codex_runtime_loads_visible_messages_from_transcript(self) -> None:
+    def test_codex_runtime_loads_visible_messages_from_sdk(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+        from openai_codex import CodexConfig
 
-        with tempfile.TemporaryDirectory() as td:
-            codex_home = Path(td) / "codex-home"
-            workspace = Path(td) / "workspace"
-            session_file = codex_home / "sessions" / "2026" / "06" / "01" / "rollout-test-session.jsonl"
-            session_file.parent.mkdir(parents=True)
-            workspace.mkdir()
-            session_file.write_text(
-                "\n".join([
-                    json.dumps({"type": "session_meta", "payload": {"id": "test-session", "cwd": str(workspace)}}),
-                    json.dumps({"type": "turn_context", "payload": {"cwd": str(workspace)}}),
-                    json.dumps({"type": "response_item", "payload": {"type": "message", "role": "developer", "content": "hidden"}}),
-                    json.dumps({
-                        "type": "response_item",
-                        "payload": {
+        class FakeThread:
+            def read(self, **_kwargs):  # type: ignore[no-untyped-def]
+                return {
+                    "items": [
+                        {
                             "type": "message",
                             "role": "user",
                             "id": "u1",
                             "content": [{"type": "input_text", "text": "hello"}],
                         },
-                    }),
-                    json.dumps({"type": "response_item", "payload": {"type": "reasoning", "summary": []}}),
-                    json.dumps({
-                        "type": "response_item",
-                        "payload": {
+                        {
                             "type": "message",
                             "role": "assistant",
                             "id": "a1",
                             "content": [{"type": "output_text", "text": "hi there"}],
                         },
-                    }),
-                    json.dumps({"type": "event_msg", "payload": {"msg": {"type": "tool_call"}}}),
-                    "not-json",
-                ]),
-                encoding="utf-8",
-            )
+                    ]
+                }
 
-            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
+        class FakeCodex:
+            def __init__(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            def thread_resume(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                return FakeThread()
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td) / "workspace"
+            workspace.mkdir()
+            with patch(
+                "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+                return_value=(FakeCodex, object, CodexConfig, SimpleNamespace(workspace_write="workspace-write")),
+            ):
                 messages = CodexCliRuntime(codex_path="/bin/codex").load_messages("test-session", workspace)
 
         self.assertEqual(
@@ -1604,14 +1701,33 @@ class AgentRunnerTests(unittest.TestCase):
             ],
         )
 
-    def test_codex_runtime_missing_session_files_return_empty_lists(self) -> None:
+    def test_codex_runtime_sdk_errors_return_empty_lists(self) -> None:
         from ai_mime.agent_runner.adapters.codex_cli import CodexCliRuntime
+        from openai_codex import CodexConfig
+
+        class FakeCodex:
+            def __init__(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                pass
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+                return False
+
+            def thread_list(self, **_kwargs):  # type: ignore[no-untyped-def]
+                raise RuntimeError("missing")
+
+            def thread_resume(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+                raise RuntimeError("missing")
 
         with tempfile.TemporaryDirectory() as td:
-            codex_home = Path(td) / "missing-codex-home"
             workspace = Path(td) / "workspace"
             workspace.mkdir()
-            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
+            with patch(
+                "ai_mime.agent_runner.adapters.codex_cli._load_codex_sdk",
+                return_value=(FakeCodex, object, CodexConfig, SimpleNamespace(workspace_write="workspace-write")),
+            ):
                 runtime = CodexCliRuntime(codex_path="/bin/codex")
                 self.assertEqual(runtime.list_sessions(workspace), [])
                 self.assertEqual(runtime.load_messages("missing-session", workspace), [])

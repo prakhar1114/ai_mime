@@ -9,13 +9,28 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Iterable
 
 from ai_mime.agent_runner.adapters.base import AgentRuntime, AgentRuntimeCapabilities, AgentStreamEvent
-from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
+from ai_mime.agent_runner.models import (
+    AgentRunRequest,
+    AgentRunResult,
+    resolved_browser_skill_name,
+    resolved_browser_skill_path,
+)
 from ai_mime.app_data import workflow_runtime_env
 from ai_mime.codex_support import codex_subprocess_env, find_codex_executable
 from ai_mime.debug_log import log as debug_log
 
 
 logger = logging.getLogger(__name__)
+_CODEX_RESTRICTED_AGENT_MODES = {"general", "build_skill_chat", "replay_execution"}
+_CODEX_RESTRICTED_FEATURES = (
+    "computer_use",
+    "apps",
+    "plugins",
+    "tool_search",
+    "multi_agent",
+    "browser_use",
+    "browser_use_external",
+)
 
 
 def _log(message: str, *, exc_info: bool = False) -> None:
@@ -48,33 +63,37 @@ class _AsyncCodexInterruptClient:
             await result
 
 
-def _extract_text(value: Any) -> str:
+def _extract_text(value: Any, _seen: set[int] | None = None) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
         return value
+    if _seen is None:
+        _seen = set()
+    value_id = id(value)
+    if value_id in _seen:
+        return ""
+    _seen.add(value_id)
     root = getattr(value, "root", None)
     if root is not None and root is not value:
-        return _extract_text(root)
-    if isinstance(value, list):
-        return "\n".join(part for part in (_extract_text(item) for item in value) if part)
+        return _extract_text(root, _seen)
+    if isinstance(value, (list, tuple)):
+        return "\n".join(part for part in (_extract_text(item, _seen) for item in value) if part)
     if isinstance(value, dict):
         for key in ("text", "content", "message", "input_text", "output_text", "delta"):
-            text = value.get(key)
-            if isinstance(text, str):
-                return text
-            if isinstance(text, list):
-                return _extract_text(text)
+            if key in value:
+                text = _extract_text(value.get(key), _seen)
+                if text:
+                    return text
+        return ""
     for key in ("text", "content", "message", "input_text", "output_text", "delta"):
         if hasattr(value, key):
-            text = getattr(value, key)
-            if isinstance(text, str):
+            text = _extract_text(getattr(value, key), _seen)
+            if text:
                 return text
-            if isinstance(text, list):
-                return _extract_text(text)
     data = _as_dict(value)
-    if data:
-        return _extract_text(data)
+    if data and data is not value:
+        return _extract_text(data, _seen)
     return str(value)
 
 
@@ -165,7 +184,8 @@ def _summary_from_items(items: Iterable[Any]) -> str:
         item = _root(item)
         item_type = str(_field(item, "type") or "").lower()
         role = str(_field(item, "role") or "").lower()
-        if item_type and "agentmessage" not in item_type.lower() and role != "assistant":
+        normalized_item_type = item_type.replace("_", "")
+        if item_type and "agentmessage" not in normalized_item_type and role != "assistant":
             continue
         text = _extract_text(_field(item, "text", "content", "message"))
         if text:
@@ -235,6 +255,52 @@ def _codex_mcp_config_overrides(mcp_servers: dict[str, dict[str, Any]] | None) -
     return overrides
 
 
+def _codex_capability_config_overrides(request: AgentRunRequest | None) -> list[str]:
+    if request is None or request.mode not in _CODEX_RESTRICTED_AGENT_MODES:
+        return []
+    return [f"features.{name}=false" for name in _CODEX_RESTRICTED_FEATURES]
+
+
+def _codex_config_overrides(request: AgentRunRequest | None) -> list[str]:
+    return [
+        *_codex_capability_config_overrides(request),
+        *_codex_mcp_config_overrides(request.mcp_servers if request is not None else None),
+    ]
+
+
+def _should_attach_browser_skill(skills: Any) -> bool:
+    if skills is None:
+        return True
+    if skills == "all":
+        return True
+    if isinstance(skills, (list, tuple, set, frozenset)):
+        if not skills:
+            return False
+        names = {str(item) for item in skills}
+        return bool(names & {"browser", "browser-harness"})
+    return True
+
+
+def _browser_skill_input() -> Any | None:
+    path = resolved_browser_skill_path()
+    if not path.is_dir() or not (path / "SKILL.md").is_file():
+        return None
+    from openai_codex import SkillInput  # type: ignore[import-not-found]
+
+    return SkillInput(name=resolved_browser_skill_name(), path=str(path))
+
+
+def _codex_turn_input(prompt: str, *, skills: Any = None) -> Any:
+    if not _should_attach_browser_skill(skills):
+        return prompt
+    skill_input = _browser_skill_input()
+    if skill_input is None:
+        return prompt
+    from openai_codex import TextInput  # type: ignore[import-not-found]
+
+    return [skill_input, TextInput(prompt)]
+
+
 def _notification_to_agent_events(notification: Any) -> list[AgentStreamEvent]:
     method = str(_field(notification, "method") or "")
     payload = _field(notification, "payload") or notification
@@ -248,7 +314,7 @@ def _notification_to_agent_events(notification: Any) -> list[AgentStreamEvent]:
         item = _root(_field(payload, "item") or data.get("item"))
         item_type = str(_field(item, "type") or "").lower()
         text = _extract_text(_field(item, "text", "content", "message"))
-        if text and ("agentmessage" in item_type or _field(item, "role") == "assistant"):
+        if text and ("agentmessage" in item_type.replace("_", "") or _field(item, "role") == "assistant"):
             return [{"event": "text", "text": text}]
         return []
 
@@ -399,8 +465,11 @@ class CodexCliRuntime(AgentRuntime):
             codex_bin=self._codex_executable(),
             cwd=str(cwd or (request.workspace_dir if request is not None else Path.cwd())),
             env=self._env_for(request),
-            config_overrides=tuple(_codex_mcp_config_overrides(request.mcp_servers if request is not None else None)),
+            config_overrides=tuple(_codex_config_overrides(request)),
         )
+
+    def _turn_input(self, prompt: str, *, skills: Any = None) -> Any:
+        return _codex_turn_input(prompt, skills=skills)
 
     def _sandbox_value(self) -> Any:
         _Codex, _AsyncCodex, _CodexConfig, Sandbox = _load_codex_sdk()
@@ -487,7 +556,7 @@ class CodexCliRuntime(AgentRuntime):
                     f"turn start thread_id={_field(thread, 'id') or '<unknown>'} resumed={resumed} "
                     f"schema={'yes' if output_schema is not None else 'no'} prompt_chars={len(prompt)}"
                 )
-                turn = thread.turn(prompt, **turn_kwargs)
+                turn = thread.turn(self._turn_input(prompt), **turn_kwargs)
                 self._active_turn = turn
                 self._interrupted = False
                 result = turn.run()
@@ -548,6 +617,7 @@ class CodexCliRuntime(AgentRuntime):
         **kwargs: Any,
     ) -> AsyncIterator[AgentStreamEvent]:
         on_client = kwargs.get("on_client")
+        skills = kwargs.get("skills")
         _Codex, AsyncCodex, _CodexConfig, _Sandbox = _load_codex_sdk()
         text_parts: list[str] = []
         final_session_id = request.session_id or ""
@@ -567,7 +637,7 @@ class CodexCliRuntime(AgentRuntime):
                     f"stream turn start thread_id={final_session_id or '<unknown>'} resumed={resumed} "
                     f"schema={'yes' if output_schema is not None else 'no'} prompt_chars={len(prompt)}"
                 )
-                turn = await thread.turn(prompt, **turn_kwargs)
+                turn = await thread.turn(self._turn_input(prompt, skills=skills), **turn_kwargs)
                 self._active_turn = turn
                 self._active_loop = asyncio.get_running_loop()
                 self._interrupted = False
