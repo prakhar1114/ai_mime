@@ -1,2 +1,2 @@
 config_version: 1
-provider: openai
+provider: anthropic

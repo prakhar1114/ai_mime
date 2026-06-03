@@ -241,6 +241,20 @@
     return rawTitle;
   }
 
+  function runtimeLabel(runtimeId) {
+    if (runtimeId === "claude_code" || runtimeId === "claude") return "Claude Code";
+    if (runtimeId === "codex_cli") return "Codex CLI";
+    return runtimeId || "";
+  }
+
+  function sessionMeta(session) {
+    const parts = [];
+    const runtime = runtimeLabel(session.runtime_id);
+    if (runtime) parts.push(runtime);
+    if (session.model) parts.push(session.model);
+    return parts.join(" · ");
+  }
+
   function renderSessions() {
     if (!sessions.length) {
       el.sessionsList.innerHTML = `<div class="empty">No previous sessions.</div>`;
@@ -249,9 +263,11 @@
     el.sessionsList.innerHTML = sessions.map((session) => {
       const sid = session.session_id || "";
       const active = sid && sid === currentSessionId;
+      const meta = sessionMeta(session);
       return `
         <button class="session-item ${active ? "active" : ""}" data-session-id="${escapeHtml(sid)}">
           <div class="session-title">${escapeHtml(sessionTitle(session))}</div>
+          ${meta ? `<div class="session-meta">${escapeHtml(meta)}</div>` : ""}
         </button>
       `;
     }).join("");
@@ -392,7 +408,7 @@
       el.sendBtn.disabled = true;
       el.input.disabled = true;
       el.modelSelect.disabled = true;
-      setError(`This conversation uses ${sessionRuntime}. Switch your agent runtime to continue it.`);
+      setError(`This conversation uses ${runtimeLabel(sessionRuntime)} (${sessionRuntime}). Switch your agent runtime to ${sessionRuntime} to continue here. Active runtime: ${runtimeLabel(activeRuntime)} (${activeRuntime}).`);
     } else {
       el.sendBtn.disabled = false;
       el.input.disabled = false;

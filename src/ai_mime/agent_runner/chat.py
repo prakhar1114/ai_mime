@@ -41,6 +41,26 @@ def _flow_for_mode(mode: str) -> str:
     return "replay" if mode == "replay_execution" else "workspace_chat"
 
 
+def _runtime_id_from_session_meta(meta: dict[str, Any]) -> str | None:
+    runtime_id = meta.get("runtime_id")
+    if isinstance(runtime_id, str) and runtime_id:
+        return runtime_id
+    model = str(meta.get("model") or "").strip().lower()
+    if not model:
+        return None
+    if model.startswith("openai/") or model.startswith("gpt-") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4"):
+        return "codex_cli"
+    if (
+        model.startswith("anthropic/")
+        or model.startswith("claude-")
+        or model in {"opus", "sonnet", "haiku"}
+        or model.startswith("claude_opus")
+        or model.startswith("claude_sonnet")
+    ):
+        return "claude_code"
+    return None
+
+
 def agent_config_for_flow(config: Any, flow: str) -> Any:
     agents = getattr(config, "agents", None)
     if agents is None:
@@ -120,9 +140,7 @@ class WorkspaceAgentChatService:
             return None
         meta = self._read_index().get(session_id)
         if isinstance(meta, dict):
-            runtime_id = meta.get("runtime_id")
-            if isinstance(runtime_id, str) and runtime_id:
-                return runtime_id
+            return _runtime_id_from_session_meta(meta)
         return None
 
     def _runtime_mismatch_error(self, runtime_id: str) -> str:
@@ -142,6 +160,7 @@ class WorkspaceAgentChatService:
         for sid, meta in index.items():
             if not isinstance(sid, str) or not isinstance(meta, dict):
                 continue
+            runtime_id = _runtime_id_from_session_meta(meta)
             out_by_id[sid] = {
                 "session_id": sid,
                 "summary": meta.get("summary") or sid,
@@ -149,8 +168,8 @@ class WorkspaceAgentChatService:
                 "updated_at": meta.get("updated_at"),
                 "mode": meta.get("mode") or "general",
                 "model": meta.get("model"),
-                "runtime_id": meta.get("runtime_id"),
-                "source": meta.get("runtime_id") or "ai_mime",
+                "runtime_id": runtime_id,
+                "source": runtime_id or "ai_mime",
             }
 
         try:

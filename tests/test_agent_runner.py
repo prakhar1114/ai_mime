@@ -1264,6 +1264,37 @@ class AgentRunnerTests(unittest.TestCase):
 
             self.assertEqual(service.load_messages("old-session")[0]["message"], "current")
 
+    def test_workspace_chat_service_infers_runtime_id_from_legacy_openai_model(self) -> None:
+        class OtherRuntime:
+            id = "codex_cli"
+
+            def load_messages(self, session_id: str, _directory: Path) -> list[dict[str, object]]:
+                return [{"type": "user", "session_id": session_id, "message": "from codex"}]
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace_dir = Path(td)
+            agent_dir = workspace_dir / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"legacy-codex": {"summary": "Legacy Codex", "model": "gpt-5.5"}}),
+                encoding="utf-8",
+            )
+            service = WorkspaceAgentChatService(
+                workspace_dir=workspace_dir,
+                adapter=FakeAdapter(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: self.fail("current message_loader should not be used"),
+            )
+
+            sessions = service.list_sessions()
+            with patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=OtherRuntime()):
+                messages = service.load_messages("legacy-codex")
+
+            self.assertEqual(sessions[0]["runtime_id"], "codex_cli")
+            self.assertEqual(messages[0]["message"], "from codex")
+            with self.assertRaisesRegex(ValueError, "Cannot resume a codex_cli session"):
+                service.chat(message="continue", session_id="legacy-codex")
+
     def test_workspace_chat_service_accepts_sequential_recovery_turns(self) -> None:
         session_ids: list[str | None] = []
 

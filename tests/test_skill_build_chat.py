@@ -485,6 +485,42 @@ class WorkflowSkillBuildServiceTests(unittest.TestCase):
 
             self.assertEqual(service.load_messages("old-build")[0]["message"], "current")
 
+    def test_infers_runtime_id_from_legacy_openai_model(self) -> None:
+        class OtherRuntime:
+            id = "codex_cli"
+
+            def load_messages(self, session_id: str, _directory: Path) -> list[dict[str, object]]:
+                return [{"type": "user", "session_id": session_id, "message": "from codex"}]
+
+        async def collect_events(service: WorkflowSkillBuildService) -> list[dict]:
+            return [event async for event in service.chat_stream(message="continue build", session_id="legacy-codex")]
+
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            _write_workflow(workflow_dir, _schema(), _optimized_plan())
+            agent_dir = workflow_dir / "agent"
+            agent_dir.mkdir(exist_ok=True)
+            (agent_dir / "agent_sessions.json").write_text(
+                json.dumps({"legacy-codex": {"summary": "Legacy Codex", "model": "gpt-5.5"}}),
+                encoding="utf-8",
+            )
+            service = WorkflowSkillBuildService(
+                workflow_dir=workflow_dir,
+                adapter=type("Adapter", (), {"id": "claude_code"})(),
+                session_lister=lambda _dir: [],
+                message_loader=lambda _sid, _dir: self.fail("current message_loader should not be used"),
+            )
+
+            sessions = service.list_sessions()
+            with patch("ai_mime.agent_runner.skill_build_chat.get_agent_runtime", return_value=OtherRuntime()):
+                messages = service.load_messages("legacy-codex")
+            events = asyncio.run(collect_events(service))
+
+            self.assertEqual(sessions[0]["runtime_id"], "codex_cli")
+            self.assertEqual(messages[0]["message"], "from codex")
+            self.assertEqual(events[0]["status"], "failed")
+            self.assertIn("Cannot resume a codex_cli session", events[0]["error"])
+
 
 class AuthorizeToolTests(unittest.TestCase):
     def _request(self, workflow_dir: Path, mcp_servers: dict | None = None):

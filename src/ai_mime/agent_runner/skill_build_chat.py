@@ -14,7 +14,13 @@ from ai_mime.agent_runner.adapters.claude_sdk import (
     to_permission_result,
 )
 from ai_mime.agent_runner.adapters.registry import get_agent_runtime
-from ai_mime.agent_runner.chat import AgentBusyError, agent_config_for_flow, configured_agent_runtime, model_options_from_config
+from ai_mime.agent_runner.chat import (
+    AgentBusyError,
+    _runtime_id_from_session_meta,
+    agent_config_for_flow,
+    configured_agent_runtime,
+    model_options_from_config,
+)
 from ai_mime.agent_runner.models import AgentRunRequest
 from ai_mime.agent_runner.runner import (
     BUILD_SIGNAL_FILENAME,
@@ -111,9 +117,7 @@ class WorkflowSkillBuildService:
             return None
         meta = self._read_index().get(session_id)
         if isinstance(meta, dict):
-            runtime_id = meta.get("runtime_id")
-            if isinstance(runtime_id, str) and runtime_id:
-                return runtime_id
+            return _runtime_id_from_session_meta(meta)
         return None
 
     def _runtime_mismatch_error(self, runtime_id: str) -> str:
@@ -133,6 +137,7 @@ class WorkflowSkillBuildService:
         for sid, meta in index.items():
             if not isinstance(sid, str) or not isinstance(meta, dict):
                 continue
+            runtime_id = _runtime_id_from_session_meta(meta)
             out_by_id[sid] = {
                 "session_id": sid,
                 "summary": meta.get("summary") or sid,
@@ -140,8 +145,8 @@ class WorkflowSkillBuildService:
                 "updated_at": meta.get("updated_at"),
                 "mode": meta.get("mode") or "build_skill_chat",
                 "model": meta.get("model"),
-                "runtime_id": meta.get("runtime_id"),
-                "source": meta.get("runtime_id") or "ai_mime",
+                "runtime_id": runtime_id,
+                "source": runtime_id or "ai_mime",
             }
 
         try:

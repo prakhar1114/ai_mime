@@ -121,6 +121,16 @@ h1 {
   line-height: 1.35;
 }
 
+.session-meta {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.25;
+}
+
 .chat {
   min-width: 0;
   height: 100vh;
@@ -427,6 +437,11 @@ textarea::placeholder {
   color: var(--muted-soft);
 }
 
+textarea:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+}
+
 .send {
   min-height: 38px;
   border: 0;
@@ -503,7 +518,8 @@ textarea::placeholder {
 }
 
 .model-select {
-  max-width: 132px;
+  min-width: 230px;
+  max-width: 320px;
   min-height: 38px;
   border: 0;
   border-radius: 999px;
@@ -516,6 +532,11 @@ textarea::placeholder {
 
 .model-select:hover {
   background: var(--hover);
+}
+
+.model-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .message.assistant .bubble p {
@@ -654,5 +675,12 @@ textarea::placeholder {
   form {
     grid-template-columns: 1fr;
     border-radius: 16px;
+  }
+  .composer-actions {
+    flex-wrap: wrap;
+  }
+  .model-select {
+    min-width: min(100%, 230px);
+    max-width: 100%;
   }
 }
