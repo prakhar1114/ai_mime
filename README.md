@@ -8,10 +8,7 @@ Show a task once. ai_mime learns it, stores it as a **Claude Skill** (comprising
 
 [Install](#installation) · [Configuration](#configuration) · [Usage](#usage) · [Desktop App](#desktop-app) · [How it works](#how-it-works) · [Community](#community)
 
-**Download the Desktop App:** [AI.Mime.dmg (v1.0.0)](https://github.com/prakhar1114/ai_mime/releases/download/v1.0.0/AI.Mime.dmg)
-
-[![License: AGPLv3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python Version](https://img.shields.io/badge/python-3.12-blue.svg)](https://python.org)
+**Download the Desktop App:** [AI.Mime.dmg](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg)
 
 💬 [Join the Discord](https://discord.gg/ghAWAJsB)
 
@@ -69,7 +66,7 @@ See [How it works](#how-it-works) for the full model, and [What it can & can't d
 ## Desktop App
 A packaged desktop app (no build step required) is available for macOS.
 
-**Download**: [AI Mime v1.0.0.dmg](https://github.com/prakhar1114/ai_mime/releases/download/v1.0.0/AI.Mime.dmg)
+**Download**: [AI.Mime.dmg](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg)
 **Platforms**: macOS
 
 *After downloading, drag the app to your Applications folder and grant the requested accessibility and screen recording permissions on launch.*
