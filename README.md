@@ -1,25 +1,28 @@
 <div align="center">
-  <img src="docs/logo/icon128.png" alt="ai_mime logo" width="72" />
+  <img src="docs/logo/icon128.png" alt="AI Mime logo" width="72" />
 
-# ai_mime
-Automate anything you can demonstrate.
+# AI Mime
+**Record a task once. Run it forever.**
 
-Record a workflow once. ai_mime turns the captured screenshots and actions into
-semantic workflow artifacts, optimizes the execution path, packages the result
-as a Claude Skill-compatible portable skill, and runs it with new inputs. When a
-run breaks, an agent can finish the job and patch the skill instead of leaving a
-failed replay behind.
+Screen record yourself doing any repetitive task. An agent watches, learns to do
+it end-to-end, then compiles it into a **fast, deterministic script** — plain code
+for the repeatable parts, an LLM only at the genuine decision points, and
+computer-use only for surfaces that can't be automated any other way. The task
+context is captured into a portable Claude Skill so every future run is fast,
+cheap, and repeatable.
+
+AI Mime also runs your skills. Provide new inputs and run. When the environment
+shifts and a run breaks, the agent **self-heals** the script to the new
+environment instead of leaving you with a failed rerun.
 
 [Install](#installation) · [Quick Demo Flow](#quick-demo-flow) · [How it works](#how-it-works) · [Developer guide](docs/developer-guide.md) · [Community](#community)
 
-**Download the Desktop App:** [AI.Mime.dmg](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg)
-
-💬 [Join the Discord](https://discord.gg/ghAWAJsB)
+[![Download for macOS](https://img.shields.io/badge/DOWNLOAD%20FOR%20MACOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg) [![Discord](https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ghAWAJsB)
 
 </div>
 
 ## Getting Started
-The fast path for cloning, configuring, and running ai_mime locally.
+The fast path for cloning, configuring, and running AI Mime locally.
 
 ### Requirements
 - **OS**: macOS 13+ (Windows support not yet available)
@@ -62,9 +65,9 @@ start_app
 
 Then use the menu bar app or dashboard:
 1. **Record**: click **Start Recording** and perform a repetitive task once.
-2. **Reflect**: ai_mime compiles the captured trace into a reusable semantic workflow.
+2. **Reflect**: AI Mime compiles the captured trace into a reusable semantic workflow.
 3. **Build Skill**: the build agent confirms inputs and outputs, optimizes the execution plan, and creates a portable skill under `workflows/<id>/skills/<slug>/`.
-4. **Run**: open **Replay**, provide new inputs, and run the skill.
+4. **Run**: open the skill, provide new inputs, and run it.
 5. **Inspect**: read the generated artifacts and run history from the `workflows/` directory.
 
 ### Artifacts You Can Inspect
@@ -79,13 +82,13 @@ Then use the menu bar app or dashboard:
 ## Desktop App
 A packaged desktop app with no source build step is available for macOS.
 
-**Download**: [AI.Mime.dmg](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg)  
+[![Download for macOS](https://img.shields.io/badge/DOWNLOAD%20FOR%20MACOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg)
 **Platforms**: macOS
 
 After downloading, drag the app to Applications and grant the requested permissions on launch.
 
-## When To Use ai_mime
-ai_mime is for work that is easier to show than to describe:
+## When To Use AI Mime
+AI Mime is for work that is easier to show than to describe:
 - Data entry across internal tools, spreadsheets, and web portals.
 - Pulling reports from systems with weak or missing APIs.
 - Browser + native macOS workflows that normal automation tools cannot cover cleanly.
@@ -94,10 +97,10 @@ ai_mime is for work that is easier to show than to describe:
 It is not the right fit yet for open-ended research, creative generation, fully autonomous decisions, or scheduled cron-style jobs.
 
 ## What Is Novel Here?
-- **Semantic trace compilation**: a demonstrated UI trace becomes coordinate-free task steps, not brittle x/y replay.
-- **Intent optimization**: the system can replace manual UI paths with APIs, CLI calls, file parsing, browser CDP automation, or native UI automation depending on what is most reliable.
-- **Portable executable skills**: every finished automation is readable code plus a JSON input contract and fallback context.
-- **Agentic healing**: failed runs can be triaged, completed, and patched so the next run is deterministic again.
+- **Learn by demonstration**: an agent watches your recording and learns the task end-to-end — no triggers, selectors, or field maps to wire up.
+- **Deterministic-first compilation**: the repeatable spine becomes plain runnable code; an LLM is invoked only at genuine decision points; computer-use is reserved for surfaces nothing else can reach.
+- **Portable Claude Skills**: every finished task is a self-contained skill — readable code, a JSON input contract, and captured context — that runs fast and cheap on every rerun.
+- **Self-healing reruns**: when the environment shifts and a run breaks, the agent finishes the job and patches the script to the new environment instead of failing.
 
 ## How It Works
 ```mermaid
@@ -112,7 +115,7 @@ graph LR
 - **Reflect** converts the trace into a reusable `schema.json` with task parameters, subtasks, and coordinate-free steps.
 - **Optimize** writes `optimized_plan.json`, preferring deterministic `script` steps, then `browser_harness`, then `ui_agent` for true GUI-only work.
 - **Build Skill** creates a portable skill package with `run.sh`, `scripts/run.py`, input templates, and `references/fallback_plan.md`.
-- **Run / Heal** executes the skill with new inputs. If it fails, the replay agent can inspect logs, complete the run, and repair the skill.
+- **Run / Heal** executes the skill with new inputs. If it breaks on a changed environment, the agent inspects logs, completes the run, and self-heals the script so the next run is deterministic again.
 
 Because the generated package is executable and readable, you can also expose the skill directory to Claude Code or Codex and let terminal agents call the automation directly.
 
@@ -124,7 +127,7 @@ Every repetitive task you do on a screen is programming you are doing by hand. E
 - **RPA** often depends on brittle selectors and specialized implementation effort.
 - **Computer-use agents** can reach more surfaces, but they re-solve the task every run.
 
-ai_mime uses a deterministic-first, agent-on-fallback hybrid: scripts for the repeatable spine, LLM calls for bounded judgment, browser harnesses for web automation, and native computer-use only where the task genuinely needs it.
+AI Mime uses a deterministic-first, agent-on-fallback hybrid: scripts for the repeatable spine, LLM calls for bounded judgment, browser harnesses for web automation, and native computer-use only where the task genuinely needs it.
 
 ## What It Can And Cannot Do Today
 **Great at**
@@ -141,19 +144,13 @@ ai_mime uses a deterministic-first, agent-on-fallback hybrid: scripts for the re
 
 Rule of thumb: redundant in, creative out. If you would do it the same way every time, it belongs here. Judgment stays with you.
 
-## Why Open Source
-This product records what you do and runs scripts on your machine, touching sensitive software. "Trust us" is not enough.
-
-- **Self-hosted and inspectable**: see what is captured and what runs.
-- **Skills are yours**: automations are readable portable packages, not hostage data.
-- **AGPLv3**: the open-source core and skill format stay shareable.
 
 ## Developer Docs
 - [Developer guide](docs/developer-guide.md): setup, package layout, commands, runtime environment, and manual skill execution.
 - [Architecture](docs/architecture.md): current Record -> Reflect -> Optimize -> Build Skill -> Run/Heal pipeline.
 
 ## Roadmap
-ai_mime is the single-operator core of a larger executable playbook layer for teams.
+AI Mime is the single-operator core of a larger executable playbook layer for teams.
 
 - [ ] Visual flowchart view of each skill
 - [ ] Shared team library + forking
@@ -162,6 +159,6 @@ ai_mime is the single-operator core of a larger executable playbook layer for te
 - [ ] Human-in-the-loop gates for irreversible actions
 
 ## Community
-- 💬 **Discord**: [Join the ai_mime Community](https://discord.gg/ghAWAJsB)
+- [![Discord](https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ghAWAJsB)
 - 🐛 **Issues**: open one on GitHub with broken runs, logs, or reproduction details
 - ⭐ **Star the repo** if you want to follow along
