@@ -434,6 +434,21 @@
     checkComposerState();
   }
 
+  function applyBashToggleSupport(supported) {
+    if (!el.bashApprovalToggle) return;
+    // `supported` is false for runtimes that ignore the gate (e.g. Codex, which
+    // relies on its own sandbox). Default to supported when the field is absent.
+    const isSupported = supported !== false;
+    const label = el.bashApprovalToggle.closest(".bash-toggle");
+    el.bashApprovalToggle.disabled = !isSupported;
+    if (label) {
+      label.classList.toggle("bash-toggle--disabled", !isSupported);
+      label.title = isSupported
+        ? ""
+        : "Bash approval applies to Claude only. Codex has full access to create automations.";
+    }
+  }
+
   async function loadSessions() {
     try {
       const data = await request(`${apiPrefix}/sessions`);
@@ -444,6 +459,7 @@
       if (el.bashApprovalToggle && typeof data.bash_requires_approval === "boolean") {
         el.bashApprovalToggle.checked = data.bash_requires_approval;
       }
+      applyBashToggleSupport(data.bash_requires_approval_supported);
       if (data.active_runtime) activeRuntime = data.active_runtime;
       renderSessions();
       renderHeader();
@@ -706,11 +722,15 @@
   if (el.bashApprovalToggle) {
     el.bashApprovalToggle.addEventListener("change", async () => {
       try {
-        await request(`${apiPrefix}/settings/bash_requires_approval`, {
+        const data = await request(`${apiPrefix}/settings/bash_requires_approval`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ value: el.bashApprovalToggle.checked }),
         });
+        if (data && typeof data.bash_requires_approval === "boolean") {
+          el.bashApprovalToggle.checked = data.bash_requires_approval;
+        }
+        if (data) applyBashToggleSupport(data.bash_requires_approval_supported);
       } catch (e) {
         setError(e.message || String(e));
         el.bashApprovalToggle.checked = !el.bashApprovalToggle.checked;

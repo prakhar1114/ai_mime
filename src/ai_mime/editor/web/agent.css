@@ -256,6 +256,15 @@ h1 {
   cursor: pointer;
 }
 
+.bash-toggle--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bash-toggle--disabled input {
+  cursor: not-allowed;
+}
+
 .permission-prompt {
   max-width: 820px;
   margin: 0 auto 16px;

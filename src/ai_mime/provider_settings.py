@@ -29,20 +29,53 @@ _CLAUDE_FALLBACK_DIRS = (
 )
 
 
-def _read_provider(config_path: Path | None = None) -> str:
+def _read_user_config(config_path: Path | None = None) -> dict[str, Any]:
     path = config_path or get_user_config_path()
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception:
-        return "anthropic"
-    provider = raw.get("provider") if isinstance(raw, dict) else None
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_user_config(data: dict[str, Any], config_path: Path | None = None) -> None:
+    path = config_path or get_user_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data.setdefault("config_version", 1)
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def _read_provider(config_path: Path | None = None) -> str:
+    provider = _read_user_config(config_path).get("provider")
     return provider if isinstance(provider, str) and provider else "anthropic"
 
 
 def _write_provider(provider: Provider, config_path: Path | None = None) -> None:
-    path = config_path or get_user_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump({"config_version": 1, "provider": provider}, sort_keys=False), encoding="utf-8")
+    # Merge into the existing config so other keys (e.g. bash_requires_approval)
+    # are preserved instead of being clobbered.
+    data = _read_user_config(config_path)
+    data["provider"] = provider
+    _write_user_config(data, config_path)
+
+
+def read_bash_requires_approval(config_path: Path | None = None) -> bool:
+    """Whether Bash commands require user approval (persisted in user_config.yml).
+
+    Defaults to True (require approval); only an explicit off-value disables it.
+    """
+    value = _read_user_config(config_path).get("bash_requires_approval")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "off")
+    return True
+
+
+def write_bash_requires_approval(value: bool, config_path: Path | None = None) -> bool:
+    data = _read_user_config(config_path)
+    data["bash_requires_approval"] = bool(value)
+    _write_user_config(data, config_path)
+    return bool(value)
 
 
 def _read_dotenv_value(key: str, env_path: Path | None = None) -> str | None:

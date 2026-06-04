@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import tempfile
 import time
 import uuid
@@ -18,6 +17,7 @@ from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.agent_runner.runner import build_agent_run_request, _build_prompt, _read_json, _write_json
 from ai_mime.app_data import get_workflows_dir
 from ai_mime.debug_log import log as debug_log
+from ai_mime.provider_settings import read_bash_requires_approval, write_bash_requires_approval
 from ai_mime.user_config import load_user_config
 from llm_resolver import runtime_model_name
 
@@ -107,9 +107,7 @@ class WorkspaceAgentChatService:
         self.session_lister = session_lister or self.adapter.list_sessions
         self.message_loader = message_loader or self.adapter.load_messages
         if bash_requires_approval is None:
-            env_val = (os.getenv("AI_MIME_BASH_REQUIRES_APPROVAL") or "").strip().lower()
-            # Default to requiring approval; only an explicit off-value disables it.
-            bash_requires_approval = env_val not in ("0", "false", "no", "off")
+            bash_requires_approval = read_bash_requires_approval()
         self.bash_requires_approval = bash_requires_approval
         self._active_client: Any | None = None
         self._active_loop: asyncio.AbstractEventLoop | None = None
@@ -125,6 +123,23 @@ class WorkspaceAgentChatService:
             "sessions": self.list_sessions(),
             "models": self.model_options,
             "bash_requires_approval": self.bash_requires_approval,
+            "bash_requires_approval_supported": self._bash_approval_supported(),
+            "active_runtime": self.runtime_id,
+        }
+
+    def _bash_approval_supported(self) -> bool:
+        """Whether the active runtime honours the Bash-approval gate.
+
+        Only runtimes exposing the `permissions` capability (Claude) route Bash
+        through the approval flow; Codex relies on its own sandbox, so the toggle
+        has no effect there.
+        """
+        return bool(getattr(self.adapter.capabilities, "permissions", False))
+
+    def bash_approval_setting(self) -> dict[str, Any]:
+        return {
+            "bash_requires_approval": self.bash_requires_approval,
+            "bash_requires_approval_supported": self._bash_approval_supported(),
             "active_runtime": self.runtime_id,
         }
 
@@ -132,6 +147,7 @@ class WorkspaceAgentChatService:
         self.bash_requires_approval = bool(value)
         if self.bash_requires_approval:
             self._session_bash_allow_all = False
+        write_bash_requires_approval(self.bash_requires_approval)
         return self.bash_requires_approval
 
     def list_models(self) -> dict[str, Any]:
