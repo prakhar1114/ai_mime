@@ -396,6 +396,76 @@ h3 {
   background: #08080a;
 }
 
+.video-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.video-card {
+  display: block;
+  border: 1px solid rgba(244, 241, 232, 0.16);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.28);
+}
+
+.video-card:hover {
+  text-decoration: none;
+}
+
+.video-thumb {
+  position: relative;
+  display: block;
+}
+
+.video-thumb img {
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: cover;
+  background: #071016;
+}
+
+.video-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 58px;
+  height: 58px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: rgba(255, 0, 0, 0.92);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.video-play::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 54%;
+  transform: translate(-50%, -50%);
+  border-style: solid;
+  border-width: 11px 0 11px 18px;
+  border-color: transparent transparent transparent #fff;
+}
+
+.video-caption {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border-top: 1px solid rgba(244, 241, 232, 0.12);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.video-caption strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
 .final {
   padding: 72px 0;
 }
@@ -463,13 +533,15 @@ h3 {
   .hero-shot,
   .mini-shot,
   .shot-card,
+  .video-card,
   .btn {
     transition: transform 180ms ease, border-color 180ms ease;
   }
 
   .hero-shot:hover,
   .mini-shot:hover,
-  .shot-card:hover {
+  .shot-card:hover,
+  .video-card:hover {
     transform: translateY(-3px);
     text-decoration: none;
     border-color: rgba(168, 255, 96, 0.46);
@@ -525,7 +597,8 @@ h3 {
   }
 
   .proof-list,
-  .shot-grid {
+  .shot-grid,
+  .video-grid {
     grid-template-columns: 1fr;
   }
 

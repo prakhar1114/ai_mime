@@ -15,11 +15,18 @@ AI Mime also runs your skills. Provide new inputs and run. When the environment
 shifts and a run breaks, the agent **self-heals** the script to the new
 environment instead of leaving you with a failed rerun.
 
-[Install](#installation) · [Quick Demo Flow](#quick-demo-flow) · [How it works](#how-it-works) · [Developer guide](docs/developer-guide.md) · [Community](#community)
+[See it in action](#see-it-in-action) · [Install](#installation) · [Quick Demo Flow](#quick-demo-flow) · [How it works](#how-it-works) · [Developer guide](docs/developer-guide.md) · [Community](#community)
 
 [![Download for macOS](https://img.shields.io/badge/DOWNLOAD%20FOR%20MACOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg) [![Discord](https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ghAWAJsB)
 
 </div>
+
+## See It In Action
+
+| 1. Record | 2. Build | 3. Run |
+| :---: | :---: | :---: |
+| [![Watch Record](https://img.shields.io/badge/Watch-Record-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/CkB_shfl27s) | [![Watch Build](https://img.shields.io/badge/Watch-Build-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/HGpjw45AapI) | [![Watch Run](https://img.shields.io/badge/Watch-Run-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/FTWU60H0pDk) |
+| Do the task once — clicks, typing, and screens are captured automatically. | An agent compiles it into a fast, deterministic skill — code for the spine, an LLM only at decision points. | Replay with new inputs. If the environment changed, it self-heals instead of failing. |
 
 ## Getting Started
 The fast path for cloning, configuring, and running AI Mime locally.
