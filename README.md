@@ -1,321 +1,174 @@
 <div align="center">
+  <img src="docs/logo/icon128.png" alt="ai_mime logo" width="72" />
 
-<img src="docs/logo/icon128.png" alt="AI Mime logo" width="72" />
+# ai_mime
+Automate anything you can demonstrate.
 
-# AI Mime
+Show a task once. ai_mime learns it, stores it as a **Claude Skill** (comprising a fast deterministic script, learned task context, and domain gotchas), and runs it forever. Next time just change the inputs and watch AI do the work at script speed. When something breaks, an agent finishes the job and heals the skill instead of failing.
 
-</div>
+[Install](#installation) · [Configuration](#configuration) · [Usage](#usage) · [Desktop App](#desktop-app) · [How it works](#how-it-works) · [Community](#community)
 
-**Record, Refine and Replay on macOS.**
-AI Mime is a native macOS RPA tool designed to empower computer use agents with the context they need to succeed. It moves beyond simple text prompts by capturing the rich ground truth required for reliable automation.
+**Download the Desktop App:** [AI.Mime.dmg (v1.0.0)](https://github.com/prakhar1114/ai_mime/releases/download/v1.0.0/AI.Mime.dmg)
 
-- Record: Capture every nuance of a workflow—mouse movements, keystrokes, and window states—providing the detailed ground truth that standard LLMs often lack.
+[![License: AGPLv3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Python Version](https://img.shields.io/badge/python-3.12-blue.svg)](https://python.org)
 
-- Refine: Leverage LLMs to transform raw recording data into parameterized agent instructions. This process converts static recordings into dynamic, manageable subtasks, allowing you to define inputs and dependencies that keep the agent operating within strict, observable boundaries.
-
-- Replay: Dispatch computer use agents to execute complex, multi-step processes across native apps and the web on demand, ensuring high fidelity and repeatability.
-
-<div align="center">
-
-[![Download AI Mime](https://img.shields.io/badge/Download-AI%20Mime%20v1.0.0-blue?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/prakhar1114/ai_mime/releases/download/v1.0.0/AI.Mime.dmg)
+💬 [Join the Discord](https://discord.gg/ghAWAJsB)
 
 </div>
 
-## Demo
+## Getting started
+The fast path for cloning, configuring, and running ai_mime locally. If you'd rather understand what it is and why first, jump to [How it works](#how-it-works).
 
-<table>
-  <tr>
-    <td align="center">
-      <a href="https://www.youtube.com/watch?v=ppB4tbPc77U">
-        <img
-          src="https://img.youtube.com/vi/ppB4tbPc77U/hqdefault.jpg"
-          alt="AI Mime demo — send a message on whatsapp"
-          width="280"
-        />
-      </a>
-      <br />
-      <sub>End-to-end walkthrough (record → edit → replay)</sub>
-    </td>
-    <td align="center">
-      <a href="https://youtu.be/gkqMfT_jE7U?si=KSuWr9zyhzPL1CMN">
-        <img
-          src="https://img.youtube.com/vi/gkqMfT_jE7U/hqdefault.jpg"
-          alt="AI Mime demo — automate expense sheet filing"
-          width="280"
-        />
-      </a>
-      <br />
-      <sub>Automate expense sheet filing</sub>
-    </td>
-  </tr>
-</table>
+### Requirements
+- **OS**: macOS 13+ (Windows support not yet available)
+- **Runtime**: Python `>= 3.12, < 3.13`
+- **System Permissions**: Accessibility, Screen Recording, and Input Monitoring
+- **AI Provider**: An API key for your preferred agent/healing layer (e.g., Anthropic, OpenAI, Gemini, DashScope). Alternatively, since skills are portable scripts, you can seamlessly trigger them using your own local `claude code` or `codex` CLI tools.
 
-## Part 1: The Teaching Flow (Record & Refine)
-How to Record a task
-```mermaid
-graph LR
-    %% CAPTURE PHASE
-    subgraph Capture [" 🔴 Phase 1: RECORD"]
-        direction TB
-        User["👤 User Action / Task"]
-
-        subgraph Inputs ["Data Captured"]
-            Mouse["🖱️ Coordinates (x,y)<br/>+ Click Events"]
-            Keys["⌨️ Keystrokes<br/>(Text Input)"]
-            Video["📷 Screenshot<br/>(Visual Context)"]
-        end
-
-        User --> Mouse & Keys
-        User --> Video
-    end
-
-    %% TRANSFORMATION
-    subgraph Refine [" 🟡 Phase 2: REFINE (Generalize) "]
-        direction TB
-        RawData[("📼 Raw Log")]
-        LLM["🧠 AI Refiner<br/>(VLM)"]
-        Schema[("📜 Parameterized<br/>Workflow JSON")]
-
-        Mouse & Keys & Video --> RawData
-        RawData -->|"1. Analyze Intent"| LLM
-        LLM -->|"- Subtasks <br/>  - Task Parameters <br> - Task Dependencies"| Schema
-    end
-
-    %% STYLING
-    style Inputs fill:#e3f2fd,stroke:#1565c0,stroke-dasharray: 5 5
-    style Schema fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
-```
-
-## Detailed Replay Flowchart (The Agentic Loop)
-
-```mermaid
-graph TD
-    %% SETUP
-    Start([🚀 Start Replay]) --> LoadJSON["📂 Load workflow.json"]
-    LoadJSON --> InitMem["🧠 Initialize Context"]
-
-    %% OUTER LOOP: ORCHESTRATOR
-    subgraph FlowControl [" 📋 Workflow Orchestrator "]
-        InitMem --> GetSubtask["📍 Get Next Subtask<br/>(e.g., 'Clear Search Field')"]
-    end
-
-    %% INNER LOOP: AGENTIC EXECUTION
-    subgraph AgentLoop [" 🔁 The Agentic Action Loop "]
-        direction TB
-
-        %% 1. OBSERVE
-        GetSubtask --> Capture["👁️ Capture Screenshot"]
-
-        %% LOOP BACK (Left Side)
-        Execute -.-> Capture
-
-        %% 2. REASONING
-        Capture -- "Input:<br/>- Screenshot<br/>- Subtask<br/>- Memory" --> VLM{"🧠 VLM Brain<br/>(Compare: Current vs Expected)<br/>Predict: Action or Done?"}
-
-        %% PATH A: ACTION NEEDED (Main Vertical Flow)
-        VLM -- "No Match -> Next Action" --> UpdateMem["💾 Update Memory<br/>(Store Observation & Planned Action)"]
-        UpdateMem --> Execute["🦾 Execute Action<br/>(Click / Type / Scroll)"]
-
-
-        %% PATH B: SUBTASK COMPLETE (Exit Right)
-        VLM -- "Match -> ✅ Subtask Done" --> CheckFlow{"🏁 More Subtasks?"}
-    end
-
-    %% FLOW CONTROL
-    CheckFlow -- Yes --> GetSubtask
-    CheckFlow -- No --> Finish([✅ Workflow Complete])
-
-    %% STYLING
-    classDef brain fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
-    classDef sensor fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
-    classDef memory fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
-    classDef control fill:#eceff1,stroke:#455a64,stroke-width:1px,stroke-dasharray: 5 5;
-
-    class VLM brain;
-    class Capture,Execute sensor;
-    class UpdateMem,LoadJSON,InitMem memory;
-    class CheckFlow control;
-```
-
-## Why AI Mime?
-
-### The Adoption Gap in Computer Use Models
-While the latest computer-use models have demonstrated significant improvements in general-purpose reliability and accuracy, they have yet to see widespread adoption in the Robotic Process Automation (RPA) industry. The primary bottleneck is not the model's intelligence, but the interface of current products.
-
-The Context Problem Existing tools typically rely on users to describe tasks using simple natural language. However, standard text prompts are often too brief to capture the nuance of complex workflows.
-
-- Example: A user might type "Download the monthly invoice," but fail to specify edge cases—such as what to do if the download button is disabled, or which date range to select if the default is incorrect.
-
-When an agent operates with this "low-context" instruction over a long horizon, the probability of error compounds. Without strict boundaries, models may attempt to be "creative" in their problem-solving, leading to unpredictable behaviors that are unacceptable in enterprise automation.
-
-### The AI Mime Solution - Rich Context & Repeatability
-AI Mime bridges this gap by shifting from vague natural language to rich, demonstrated context. Instead of relying on a single long-horizon prompt, AI Mime allows you to:
-
-- Capture Detailed Workflows: "Show" the agent exactly how to perform a task, capturing the precise steps and decision paths.
-
-- Enforce Observability: Break down complex workflows into manageable subtasks, each grounded in high-quality examples.
-
-- Eliminate Unwanted Creativity: By providing a strict chain of steps and rich context, the agent is constrained to operate exactly as instructed, ensuring it executes the workflow rather than "interpreting" it.
-
-In short, AI Mime transforms abstract instructions into repeatable, observable, and error-resistant workflows, making computer-use agents viable for production RPA.
-
-## Record
-Start capturing a workflow by clicking AI Mime → Start Recording in the macOS menu bar. When you’re done, click AI Mime → Stop Recording to save it.
-
-![Start Recording](docs/images/start_recording.png)  ![Stop Recording](docs/images/stop_recording.png)
-
-## Replay
-
-To run a saved workflow, open AI Mime → Replay, choose a workflow from the dropdown, enter the new parameters, and click Run. The workflow will execute automatically—no manual intervention needed.
-
-![Replay Task](docs/images/replay.png)
-
-## Download
-
-**Get the latest version for macOS:**
-
-📦 [Download AI Mime.dmg (v1.0.0)](https://github.com/prakhar1114/ai_mime/releases/download/v1.0.0/AI.Mime.dmg)
-
-Or view all releases: [GitHub Releases](https://github.com/prakhar1114/ai_mime/releases/tag/v1.0.0)
-
-After downloading:
-1. Open the DMG file
-2. Drag AI Mime.app to your Applications folder
-3. Launch AI Mime from Applications
-4. Grant required permissions when prompted (Accessibility, Screen Recording, Input Monitoring)
-
-## Installation (Development)
-
-1.  Clone the repository.
-2.  Create and activate a virtual environment:
-    ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate
-    ```
-3.  Install dependencies:
-    ```bash
-    pip install -e .
-    ```
-
-## Permissions (Critical)
-
-To function correctly, `ai-mime` requires macOS permissions. Because you are likely running this from a Python virtual environment, you must grant permissions to the **Python binary** inside your `.venv`.
-
-1.  **Run `start_app` once**: The app will attempt to check permissions and may trigger a system prompt.
-2.  **Open System Settings**: Go to **Privacy & Security**.
-3.  **Grant Permissions**:
-    *   **Accessibility**: Required to monitor global mouse/keyboard inputs. Add your Terminal app (e.g., iTerm, Terminal) AND the python binary from your venv if prompted.
-    *   **Screen Recording**: Required to capture screenshots. Add your Terminal app / Python binary.
-    *  **Input Monitoring**
-
-Use Cmd+Shift+G when trying to add the python binary in settings.
-
-*Note: If you see "Terminal" in the list but it still doesn't work, try removing it and re-adding it, or run the script from a dedicated terminal window.*
-
-## Configuration
-
-### Model/provider config (`user_config.yml`)
-
-Create `user_config.yml` in the repo root. This is the **single place** to choose:
-- provider/model (via LiteLLM `model` string + optional `api_base`)
-- per-provider `extra_kwargs` (e.g. reasoning controls)
-
-Example: see [`user_config.yml`](user_config.yml) in this repo.
-
-### Secrets (`.env`)
-
-Create a `.env` file (or export env vars) with only your API keys:
-
+### Installation
 ```bash
-OPENAI_API_KEY=
-LMNR_PROJECT_API_KEY=
+git clone --recurse-submodules https://github.com/prakhar1114/ai_mime
+cd ai_mime
+
+# Create a virtual environment and activate it
+uv venv .venv
+source .venv/bin/activate
+
+# Install the app and its dependencies
+uv pip install -e .
+
+# Install the browser-harness tool (required for web automation)
+uv tool install --python .venv/bin/python --with-editable packages/llm-resolver harness/browser-harness
 ```
+Prefer not to build from source? Grab the prebuilt [Desktop App](#desktop-app).
 
-and add it in the repo root
-- `OPENAI_API_KEY`: used when `user_config.yml` points to `api_key_env: OPENAI_API_KEY`.
-- `DASHSCOPE_API_KEY`: used when `user_config.yml` points to `api_key_env: DASHSCOPE_API_KEY`. Get it from here [alibaba cloud](https://modelstudio.console.alibabacloud.com/)
-- `GEMINI_API_KEY`: used when `user_config.yml` points to `api_key_env: GEMINI_API_KEY`. Docs: [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)
-- `LMNR_PROJECT_API_KEY`: used for Laminar tracing/telemetry (if enabled in your environment) (Optional) [Link](https://laminar.sh/).
+### Configuration
+You do **not** need to manually create or edit `.env` or `user_config.yml` files.
 
-## Usage
+When you launch the app for the first time, the native macOS **Onboarding Wizard** will automatically guide you through:
+1. Granting necessary macOS Accessibility and Screen Recording permissions.
+2. Selecting your AI Provider and securely saving your API keys.
 
-### Start app (record + replay UI)
+You can update these preferences at any time directly through the **Settings** tab in the Web Dashboard (accessible via the Menu Bar).
 
-Start the menubar app:
-
+### Usage
+Start the app:
 ```bash
 source .venv/bin/activate
 start_app
 ```
+Then, from your macOS Menu Bar:
 
-PS: The app creates a lot of processes in the background. These might persist on quitting the app. The following command to force kills all these processes:
-```
-pkill -9 -f "ai_mime\.cli:start_app|ai_mime\.app|start_app|AI Mime"
-```
+1. **Record** — Click **Start Recording** and perform your task once.
+2. **Confirm** — The AI reads back its understanding in an interactive chat. It asks clarifying questions to verify the inputs, outputs, and approach before generating the code. It then saves the task as a Claude Skill.
+3. **Run** — Re-run with new inputs from the **Replay** menu item. Watch the AI execute it at script speed while the Automation Overlay keeps you informed.
 
-#### Start recording
-- In the menubar app, click **Start Recording**.
+See [How it works](#how-it-works) for the full model, and [What it can & can't do](#what-it-can--and-cant--do-today) before you pick a first task.
 
-#### During recording
-- **Captured inputs**: clicks, scrolls, typing bursts, and special keys (`Enter`, `Tab`, `Esc`, `Cmd+Space`).
+## Desktop App
+A packaged desktop app (no build step required) is available for macOS.
 
-#### Stop recording
-- Click **Stop Recording**.
-- The recorder stops immediately.
-- **Reflect runs in the background**: it converts the raw recording into a workflow under `workflows/<session_id>/` and compiles `schema.json` (so you can replay). Do not terminate the process as Reflect runs in the background and takes some time to execute.
+**Download**: [AI Mime v1.0.0.dmg](https://github.com/prakhar1114/ai_mime/releases/download/v1.0.0/AI.Mime.dmg)
+**Platforms**: macOS
 
-#### Replay a specific recording
-- Open the menubar app → **Replay** → choose the workflow you want to run (workflows are discovered by scanning `workflows/` for folders that contain `schema.json`).
+*After downloading, drag the app to your Applications folder and grant the requested accessibility and screen recording permissions on launch.*
 
-#### Edit a workflow (browser editor)
-- Open the menubar app → **Edit Workflow** → choose a workflow.
-- Your default browser will open a local editor page (served from `127.0.0.1`).
-- You can edit:
-  - task name + detailed task description
-  - parameters (add/delete; deleted params can be “baked in” using their example value on save)
-  - subtasks (add/insert anywhere/delete)
-  - steps (edit intent/action_type/action_value; delete steps)
-  - dependencies (pick upstream `extract_*` variables)
-  - advanced step details via **Details** (expected state, target, post_action, extract fields)
-- Click **Save** to validate + write back to `workflows/<session_id>/schema.json`. If invalid, the editor shows the error and does not save.
+---
 
-### Output
+## Background
 
-#### Record output
-Recordings are saved in `recordings/<session_id>/`:
--   `manifest.jsonl`: Event log (Action + Screenshot + Voice).
--   `metadata.json`: Session info.
--   `screenshots/`: Image files (0.png, 1.png...).
--   `audio/`: Voice clips (0.wav, 1.wav...).
+### The problem
+Every repetitive task you do on a screen is programming you're doing by hand, every day. The tools meant to fix this all make you translate your work into their grammar:
 
-#### Reflect output
-Workflows are saved in `workflows/<session_id>/`:
-- `manifest.jsonl`: Cleaned manifest for replay/compilation.
-- `metadata.json`: Copied session metadata.
-- `screenshots/`: Screenshots copied into the workflow.
-- `schema.json`: The final, replayable plan schema.
+- **Zapier / Make** want triggers and field maps — and only work where there's an API.
+- **n8n / Node-based builders** are harder to understand and get started with. ai_mime gives you deterministic scripts without the cost of learning a complex node interface, and is fully agentic with high coverage across your entire system's context.
+- **RPA** (UiPath etc.) wants brittle selectors and an RPA developer — and shatters the moment a button moves.
+- **Computer-use agents** (Operator, etc.) re-figure-out the whole task from scratch on every run — slow, expensive, and never quite reliable.
 
-### CLI: Reflect
+ai_mime is the only interface where the skill needed to use it is the skill you already have to do the job. You don't describe the task. You do it, once.
 
-If you want to run reflect manually on an existing recording:
+### Why this is different
+Record-and-replay has been promised for 30 years (Sikuli, iMacros, early RPA) and always broke. Two things changed in the last year that make it actually work now:
 
-```bash
-reflect --session <session_id>
+1. Models can read a screen the way a human does — semantically, not by brittle selectors.
+2. When the script breaks, an agent recovers it — closing the reliability gap that killed every previous attempt.
+
+Computer-use agents reach surfaces nothing could automate before — so coverage extends past anything with an API or a stable DOM, right down to legacy desktop apps. The work runs native to your own system, not in someone else's cloud.
+
+The split that makes it work: deterministic code for the repeatable spine, an LLM for the small judgment calls, and a computer-use agent for the parts that genuinely can't be scripted. Most tools pick exactly one of those and break on the other two.
+
+So ai_mime runs a deterministic-first, agent-on-fallback hybrid: a fast, cheap, repeatable skill for the common path; an agent that steps in only when something breaks, finishes the run, and heals the skill so the next run is fast again.
+
+Try this: record a task, then run it with different inputs. The first run you do by hand; every run after is the AI doing it in seconds. Now change the website mid-run and watch the agent recover and re-learn the broken step live. That moment is the whole product.
+
+## How it works
+```mermaid
+graph LR
+    A[1. Record<br>hotkey → do task] --> B[2. Process<br>inputs, outputs, approach]
+    B --> C[3. Run<br>change inputs → AI runs superfast]
+    C --> D[4. Heal<br>agent finds the job, heals skill]
 ```
 
+- **Record** — hit a global hotkey and just do the task. ai_mime captures clicks, keystrokes, and screen state.
+- **Process** — Processes the recording, understands the context of the task end-to-end, confirms the inputs, outputs, and approach, then learns how to do the task end-to-end in the optimized way, preferring `bash` > `browser_harness` > `cua_agent` in that order. The result is stored as a Claude Skill.
+- **Run** — next time, just change the inputs. The skill replays the work at script speed — this is where you see the magic of AI doing in seconds what took you minutes. Trigger it manually or in natural language.
+- **Heal** — if a run fails, it falls back to an agent that finishes the task anyway, then heals the underlying skill so the next run is fast and deterministic again.
 
+You define intent once. After that, the system owns the work.
 
-## Glossary
+### The Anatomy of a Claude Skill
+Recordings aren't trapped in a proprietary format — each one is packaged as a standard, portable **Claude Skill**. A skill directory includes:
+- **`run.sh` / `scripts/run.py`**: The fast, deterministic executable code.
+- **`inputs.json`**: The standard JSON contract for runtime arguments.
+- **`references/`**: Rich contextual notes, domain gotchas, and a visual `fallback_plan.md`.
 
-- **Record**: capture a live session into `recordings/<session_id>/` (events + screenshots + audio).
-- **Reflect**: transform a recording into a reusable workflow under `workflows/<session_id>/` and compile `schema.json`.
-- **Replay**: execute `schema.json.plan.steps` on macOS; the model predicts the concrete GUI actions each step using the current screenshot.
+Because every skill is just a UNIX executable with a standard contract, you can expose your `skills/` folder directly to **Claude Code** or **Codex**. This gives those text-based terminal agents the superpower to drive your native macOS GUI or navigate complex web portals simply by calling the script!
 
-## Replay (Run a workflow)
+### Agentic Healing & Editing
+ai_mime doesn't just run rigid scripts. During a replay, if the `run.sh` script breaks (e.g., a website's UI changed completely), the orchestration engine triggers **Agentic Healing**:
+1. A triage agent takes over and reads the execution logs alongside the `fallback_plan.md`.
+2. It spins up the UI Agent to finish the job visually via the native macOS interface.
+3. It permanently patches the underlying Python script to heal the skill for all future runs.
 
-To run an existing workflow:
+Editing is entirely conversational: rather than dragging nodes in a visual builder, you just talk to the agent to adjust inputs, handle new task variants, or fix edge cases.
 
-1. In the menubar app, open **AI Mime → Replay**.
-2. Select a workflow from the dropdown.
-3. If the workflow defines parameters, fill them in.
-4. Click **Run** to start replaying the workflow.
+## What it can — and can't — do today
+We'd rather you trust this README than be disappointed by the product. Honest scope:
+
+**Great at**
+- Repetitive, demonstrable tasks: data entry, moving things between systems, pulling reports, filling forms, multi-app workflows across web + legacy desktop apps.
+- Tasks that are easier to show than to describe.
+- Re-running the same task reliably, fast, many times.
+- Decomposing a big task into automatable pieces with a human in the loop — the agent pauses at output checkpoints for you to review, and you trigger the next workflow when you're ready.
+
+**Not for (yet)**
+- Answering questions or generating reports/images from scratch.
+- Open-ended judgment or decision-making by conversation.
+- Anything you can't demonstrate the same way twice.
+- Scheduling / cron jobs — runs are triggered manually or in natural language for now.
+
+The rule of thumb: redundant in, creative out. If you'd do it identically every time, it belongs here. Judgment stays with you.
+
+## Why open source
+This product records what you do and runs scripts on your machine, touching your most sensitive software. "Trust us" isn't good enough. So:
+
+- **Self-hosted and inspectable** — you can see exactly what's captured and what leaves your machine (nothing has to).
+- **Skills are yours** — every task is stored as a portable Claude Skill you own and can read, edit, and share. Not hostage data in a proprietary format.
+- **Licensed under AGPLv3** (the skill format stays open, so your automations are freely shareable).
+
+## Roadmap
+ai_mime is the single-operator core of a bigger idea: the executable playbook layer for a whole team — where a senior records a task once, the team forks and runs it, and the work becomes org property that outlives whoever wrote it.
+
+- [ ] Visual flowchart view of each skill — see and approve the steps as an SOP, not code
+- [ ] Shared team library + forking
+- [ ] Skill marketplace (community-contributed automations)
+- [ ] Scheduling, webhooks, natural-language triggers
+- [ ] Human-in-the-loop gates for irreversible actions
+
+Today the open-source core gives one person the power to capture and run their work. That part is free, forever.
+
+## Community
+- 💬 **Discord**: [Join the ai_mime Community](https://discord.gg/ghAWAJsB) — get help, share skills, tell us where a run broke.
+- 🐛 **Issues**: open one on GitHub — broken runs are the single most useful thing you can send us right now.
+- ⭐ **Star the repo** if you want to follow along.
