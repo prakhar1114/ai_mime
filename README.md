@@ -67,12 +67,6 @@ Then use the menu bar app or dashboard:
 4. **Run**: open **Replay**, provide new inputs, and run the skill.
 5. **Inspect**: read the generated artifacts and run history from the `workflows/` directory.
 
-Media slots to add later:
-- Screenshot: dashboard task list after one recording.
-- Screenshot: reflection or build-skill chat.
-- Screenshot or GIF: replay running with progress logs.
-- Video: 2-3 minute record-to-replay demo.
-
 ### Artifacts You Can Inspect
 | Path | What it contains |
 | --- | --- |
