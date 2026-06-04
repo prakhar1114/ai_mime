@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 from ai_mime.agent_runner.adapters.claude_sdk import (
+    bash_command_requires_approval,
     to_permission_result,
 )
 from ai_mime.agent_runner.adapters.registry import get_agent_runtime
@@ -77,7 +78,8 @@ class WorkflowSkillBuildService:
         self.message_loader = message_loader or self.adapter.load_messages
         if bash_requires_approval is None:
             env_val = (os.getenv("AI_MIME_BASH_REQUIRES_APPROVAL") or "").strip().lower()
-            bash_requires_approval = env_val in ("1", "true", "yes", "on")
+            # Default to requiring approval; only an explicit off-value disables it.
+            bash_requires_approval = env_val not in ("0", "false", "no", "off")
         self.bash_requires_approval = bash_requires_approval
         self._active_client: Any | None = None
         self._active_loop: asyncio.AbstractEventLoop | None = None
@@ -507,28 +509,9 @@ class WorkflowSkillBuildService:
     def _authorize_tool(
         self, request: AgentRunRequest, tool_name: str, input_data: dict[str, Any]
     ) -> dict[str, Any]:
-        read_only = {"Read", "Glob", "Grep"}
-        write_tools = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
-        if tool_name in read_only:
-            paths = self._extract_paths(input_data)
-            denied = [p for p in paths if not self._within_roots(p, request.readable_roots)]
-            if denied:
-                return {
-                    "behavior": "deny",
-                    "message": f"{tool_name} blocked: path(s) outside readable scope: {denied}",
-                    "interrupt": False,
-                }
-            return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}
-        if tool_name in write_tools:
-            paths = self._extract_paths(input_data)
-            denied = [p for p in paths if not self._within_roots(p, request.writable_roots)]
-            if denied:
-                return {
-                    "behavior": "deny",
-                    "message": f"{tool_name} blocked: path(s) outside writable scope: {denied}",
-                    "interrupt": False,
-                }
-            return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}
+        # Read/Glob/Grep and Write/Edit/MultiEdit are auto-allowed at the SDK
+        # level, so they never reach this callback; their filesystem scope is
+        # enforced by the PreToolUse sandbox hook in claude_sdk.py instead.
         if tool_name == "Skill":
             return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}
         if tool_name in {"WebFetch", "WebSearch"}:
@@ -547,6 +530,9 @@ class WorkflowSkillBuildService:
         if tool_name == "Bash":
             if not self.bash_requires_approval or self._session_bash_allow_all:
                 return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}
+            command = input_data.get("command")
+            if isinstance(command, str) and not bash_command_requires_approval(command):
+                return {"behavior": "allow", "updated_input": input_data, "updated_permissions": None}
             return {
                 "behavior": "ask",
                 "reason": "Bash command requires your approval.",
@@ -556,33 +542,6 @@ class WorkflowSkillBuildService:
             "message": f"{tool_name} is not enabled for the skill builder.",
             "interrupt": False,
         }
-
-    @staticmethod
-    def _extract_paths(input_data: dict[str, Any]) -> list[str]:
-        candidates: list[str] = []
-        for key in ("file_path", "path", "notebook_path"):
-            value = input_data.get(key)
-            if isinstance(value, str) and value:
-                candidates.append(value)
-        return candidates
-
-    @staticmethod
-    def _within_roots(target: str, roots: list[Path]) -> bool:
-        try:
-            target_path = Path(target).expanduser().resolve()
-        except Exception:
-            return False
-        for root in roots:
-            try:
-                root_resolved = Path(root).expanduser().resolve()
-            except Exception:
-                continue
-            try:
-                target_path.relative_to(root_resolved)
-                return True
-            except ValueError:
-                continue
-        return False
 
     def _build_request(self, *, session_id: str | None, model: str | None, runtime_id: str | None = None) -> AgentRunRequest:
         rt_id = runtime_id or self.runtime_id
