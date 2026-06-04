@@ -256,13 +256,17 @@ h1 {
   cursor: pointer;
 }
 
-.bash-toggle--disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.bash-toggle--full-access {
+  cursor: help;
+  color: #b45309;
+  font-weight: 600;
 }
 
-.bash-toggle--disabled input {
-  cursor: not-allowed;
+.bash-toggle--full-access span {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.45);
 }
 
 .permission-prompt {

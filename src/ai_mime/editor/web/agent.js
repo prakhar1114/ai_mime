@@ -437,15 +437,22 @@
   function applyBashToggleSupport(supported) {
     if (!el.bashApprovalToggle) return;
     // `supported` is false for runtimes that ignore the gate (e.g. Codex, which
-    // relies on its own sandbox). Default to supported when the field is absent.
+    // runs with full access and no per-command approval). Default to supported
+    // when the field is absent. For unsupported runtimes we replace the toggle
+    // with a "Full Access!" badge instead of a dimmed, inert checkbox.
     const isSupported = supported !== false;
     const label = el.bashApprovalToggle.closest(".bash-toggle");
+    const span = label ? label.querySelector("span") : null;
     el.bashApprovalToggle.disabled = !isSupported;
+    el.bashApprovalToggle.style.display = isSupported ? "" : "none";
     if (label) {
-      label.classList.toggle("bash-toggle--disabled", !isSupported);
+      label.classList.toggle("bash-toggle--full-access", !isSupported);
       label.title = isSupported
         ? ""
-        : "Bash approval applies to Claude only. Codex has full access to create automations.";
+        : "Codex runs with full access — commands are not gated. For per-command approval, switch the agent to Claude.";
+    }
+    if (span) {
+      span.textContent = isSupported ? "Require approval for Bash" : "Full Access!";
     }
   }
 
