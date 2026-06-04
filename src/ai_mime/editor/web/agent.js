@@ -434,6 +434,28 @@
     checkComposerState();
   }
 
+  function applyBashToggleSupport(supported) {
+    if (!el.bashApprovalToggle) return;
+    // `supported` is false for runtimes that ignore the gate (e.g. Codex, which
+    // runs with full access and no per-command approval). Default to supported
+    // when the field is absent. For unsupported runtimes we replace the toggle
+    // with a "Full Access!" badge instead of a dimmed, inert checkbox.
+    const isSupported = supported !== false;
+    const label = el.bashApprovalToggle.closest(".bash-toggle");
+    const span = label ? label.querySelector("span") : null;
+    el.bashApprovalToggle.disabled = !isSupported;
+    el.bashApprovalToggle.style.display = isSupported ? "" : "none";
+    if (label) {
+      label.classList.toggle("bash-toggle--full-access", !isSupported);
+      label.title = isSupported
+        ? ""
+        : "Codex runs with full access — commands are not gated. For per-command approval, switch the agent to Claude.";
+    }
+    if (span) {
+      span.textContent = isSupported ? "Require approval for Bash" : "Full Access!";
+    }
+  }
+
   async function loadSessions() {
     try {
       const data = await request(`${apiPrefix}/sessions`);
@@ -444,6 +466,7 @@
       if (el.bashApprovalToggle && typeof data.bash_requires_approval === "boolean") {
         el.bashApprovalToggle.checked = data.bash_requires_approval;
       }
+      applyBashToggleSupport(data.bash_requires_approval_supported);
       if (data.active_runtime) activeRuntime = data.active_runtime;
       renderSessions();
       renderHeader();
@@ -706,11 +729,15 @@
   if (el.bashApprovalToggle) {
     el.bashApprovalToggle.addEventListener("change", async () => {
       try {
-        await request(`${apiPrefix}/settings/bash_requires_approval`, {
+        const data = await request(`${apiPrefix}/settings/bash_requires_approval`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ value: el.bashApprovalToggle.checked }),
         });
+        if (data && typeof data.bash_requires_approval === "boolean") {
+          el.bashApprovalToggle.checked = data.bash_requires_approval;
+        }
+        if (data) applyBashToggleSupport(data.bash_requires_approval_supported);
       } catch (e) {
         setError(e.message || String(e));
         el.bashApprovalToggle.checked = !el.bashApprovalToggle.checked;

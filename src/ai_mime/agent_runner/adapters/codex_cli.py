@@ -168,15 +168,25 @@ def _codex_model(model: str | None) -> str | None:
 
 
 def _codex_sdk_approval_handler(method: str, params: dict[str, Any] | None) -> dict[str, Any]:
-    """Approve app-server requests that are already scoped by AI Mime.
+    """Auto-accept Codex app-server approval requests (full-access runtime).
 
-    The Python SDK's default handler accepts command/file approvals, but returns
-    an empty response for MCP elicitation requests. The CUA server uses MCP
-    elicitation to confirm Computer Use access, and an empty response is treated
-    as a denial before AI Mime's own tool authorization flow can help.
+    Codex runs with the `danger-full-access` sandbox and the UI advertises it as
+    "Full Access!" — commands are intentionally not gated per-command (users who
+    want per-command approval are pointed at the Claude runtime instead). Codex's
+    own approval policy still escalates some actions (e.g. login-shell `zsh -lc`
+    wrappers) to this handler; because Codex has no interactive approval UI here,
+    declining would surface as "Command blocked" for otherwise-benign commands.
+    So we accept command executions and file changes outright, matching the
+    full-access contract.
+
+    MCP elicitation is also accepted: the CUA server uses it to confirm Computer
+    Use access, and an empty response is treated as a denial before AI Mime's own
+    tool authorization flow can help.
     """
     _log(f"approval request method={method} params={params or {}}")
-    if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+    if method == "item/commandExecution/requestApproval":
+        return {"decision": "accept"}
+    if method == "item/fileChange/requestApproval":
         return {"decision": "accept"}
     if method == "mcpServer/elicitation/request":
         return {"action": "accept", "content": {}, "_meta": None}
@@ -285,9 +295,41 @@ def _codex_capability_config_overrides(request: AgentRunRequest | None) -> list[
     return [f"features.{name}=false" for name in _CODEX_RESTRICTED_FEATURES]
 
 
+def _codex_writable_roots_overrides(request: AgentRunRequest | None) -> list[str]:
+    """Map the request's writable roots into Codex's workspace_write sandbox.
+
+    Under the workspace_write sandbox Codex permits writes to the cwd and the
+    system temp dir by default; everything else is read-only. We widen that to
+    the roots AI Mime has granted (agent dir, outputs, user-approved paths) so
+    legitimate writes succeed without an escalation prompt, while writes anywhere
+    else still trip the file-change approval (which we decline).
+    """
+    if request is None:
+        return []
+    roots: list[str] = []
+    seen: set[str] = set()
+    for root in request.writable_roots or []:
+        try:
+            resolved = Path(root).expanduser().resolve()
+        except Exception:
+            continue
+        # writable_roots may include specific files (e.g. schema.json); grant the
+        # containing directory so the sandbox can create/replace the file.
+        if resolved.suffix and not resolved.is_dir():
+            resolved = resolved.parent
+        value = str(resolved)
+        if value not in seen:
+            seen.add(value)
+            roots.append(value)
+    if not roots:
+        return []
+    return [f"sandbox_workspace_write.writable_roots={_toml_literal(roots)}"]
+
+
 def _codex_config_overrides(request: AgentRunRequest | None) -> list[str]:
     return [
         "sandbox_workspace_write.network_access=true",
+        *_codex_writable_roots_overrides(request),
         *_codex_capability_config_overrides(request),
         *_codex_mcp_config_overrides(request.mcp_servers if request is not None else None),
     ]

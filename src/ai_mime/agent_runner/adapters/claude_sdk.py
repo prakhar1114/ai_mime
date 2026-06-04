@@ -29,6 +29,12 @@ from claude_agent_sdk import (
 )
 
 from ai_mime.agent_runner.adapters.base import AgentRuntime, AgentRuntimeCapabilities
+from ai_mime.agent_runner.bash_safety import (
+    _ENV_ASSIGNMENT_RE,
+    _SHELL_COMMAND_PREFIXES,
+    _SHELL_SEPARATORS,
+    bash_command_requires_approval,  # re-exported for chat services
+)
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.app_data import is_frozen, workflow_runtime_env
 from ai_mime.debug_log import log as debug_log
@@ -81,9 +87,6 @@ _PACKAGED_FORBIDDEN_BARE_COMMANDS = {
     "uvx": "$AI_MIME_UV_PATH",
     "npx": "app-managed Python or a documented bundled tool",
 }
-_SHELL_SEPARATORS = {"&&", "||", ";", "|", "&"}
-_SHELL_COMMAND_PREFIXES = {"command", "exec", "env", "time", "nohup"}
-_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 
 
 def _log_claude_sdk_stderr(data: str) -> None:

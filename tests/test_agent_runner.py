@@ -1036,12 +1036,12 @@ class AgentRunnerTests(unittest.TestCase):
                 return AgentRunResult(status="success", session_id="configured-session", summary="ok")
 
         with tempfile.TemporaryDirectory() as td, patch(
-            "ai_mime.agent_runner.chat.load_user_config",
+            "ai_mime.agent_runner.base_chat.load_user_config",
             return_value=SimpleNamespace(
                 agent_runtime="claude_code",
                 agents=_agents_config(workspace_chat_model="anthropic/claude-sonnet-4-6"),
             ),
-        ), patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=ChatAdapter()):
+        ), patch("ai_mime.agent_runner.base_chat.get_agent_runtime", return_value=ChatAdapter()):
             service = WorkspaceAgentChatService(
                 workspace_dir=Path(td),
                 session_lister=lambda _dir: [],
@@ -1246,7 +1246,7 @@ class AgentRunnerTests(unittest.TestCase):
                 message_loader=lambda _sid, _dir: self.fail("current message_loader should not be used"),
             )
 
-            with patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=OtherRuntime()) as get_runtime:
+            with patch("ai_mime.agent_runner.base_chat.get_agent_runtime", return_value=OtherRuntime()) as get_runtime:
                 messages = service.load_messages("codex-session")
 
             get_runtime.assert_called_once_with("codex_cli")
@@ -1312,7 +1312,7 @@ class AgentRunnerTests(unittest.TestCase):
             )
 
             sessions = service.list_sessions()
-            with patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=OtherRuntime()):
+            with patch("ai_mime.agent_runner.base_chat.get_agent_runtime", return_value=OtherRuntime()):
                 messages = service.load_messages("legacy-codex")
 
             self.assertEqual(sessions[0]["runtime_id"], "codex_cli")
@@ -1435,7 +1435,7 @@ class AgentRunnerTests(unittest.TestCase):
 
     def test_workspace_chat_service_defaults_to_configured_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as td, patch(
-            "ai_mime.agent_runner.chat.load_user_config",
+            "ai_mime.agent_runner.base_chat.load_user_config",
             return_value=SimpleNamespace(
                 agent_runtime="codex_cli",
                 agents=_agents_config(
@@ -1463,7 +1463,7 @@ class AgentRunnerTests(unittest.TestCase):
                 return AgentRunResult(status="success", session_id="workspace-session", summary="ok")
 
         with tempfile.TemporaryDirectory() as td, patch(
-            "ai_mime.agent_runner.chat.load_user_config",
+            "ai_mime.agent_runner.base_chat.load_user_config",
             return_value=SimpleNamespace(
                 provider="openai",
                 agent_runtime="codex_cli",
@@ -1472,7 +1472,7 @@ class AgentRunnerTests(unittest.TestCase):
                     workspace_chat_runtime="codex_cli",
                 ),
             ),
-        ), patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=Runtime()):
+        ), patch("ai_mime.agent_runner.base_chat.get_agent_runtime", return_value=Runtime()):
             service = WorkspaceAgentChatService(
                 workspace_dir=Path(td),
                 session_lister=lambda _dir: [],
@@ -1498,7 +1498,7 @@ class AgentRunnerTests(unittest.TestCase):
             (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
             (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
             with patch(
-                "ai_mime.agent_runner.chat.load_user_config",
+                "ai_mime.agent_runner.base_chat.load_user_config",
                 return_value=SimpleNamespace(
                     provider="anthropic",
                     agent_runtime="claude_code",
@@ -1507,7 +1507,7 @@ class AgentRunnerTests(unittest.TestCase):
                         replay_runtime="claude_code",
                     ),
                 ),
-            ), patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=Runtime()):
+            ), patch("ai_mime.agent_runner.base_chat.get_agent_runtime", return_value=Runtime()):
                 service = WorkspaceAgentChatService(
                     workspace_dir=workflow_dir,
                     mode="replay_execution",
@@ -1542,7 +1542,7 @@ class AgentRunnerTests(unittest.TestCase):
             (workflow_dir / "schema.json").write_text(json.dumps(_schema()), encoding="utf-8")
             (workflow_dir / "optimized_plan.json").write_text(json.dumps(_optimized_plan()), encoding="utf-8")
             with patch(
-                "ai_mime.agent_runner.skill_build_chat.load_user_config",
+                "ai_mime.agent_runner.base_chat.load_user_config",
                 return_value=SimpleNamespace(
                     provider="openai",
                     agent_runtime="codex_cli",
@@ -1551,7 +1551,7 @@ class AgentRunnerTests(unittest.TestCase):
                         skill_build_runtime="codex_cli",
                     ),
                 ),
-            ), patch("ai_mime.agent_runner.chat.get_agent_runtime", return_value=Runtime()):
+            ), patch("ai_mime.agent_runner.base_chat.get_agent_runtime", return_value=Runtime()):
                 service = WorkflowSkillBuildService(
                     workflow_dir=workflow_dir,
                     session_lister=lambda _dir: [],

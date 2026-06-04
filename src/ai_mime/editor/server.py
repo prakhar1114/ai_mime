@@ -872,12 +872,17 @@ def create_app(
             raise HTTPException(status_code=400, detail="decision must be allow, allow_always, or deny")
         return {"resolved": agent_service.resolve_permission(request_id, decision)}
 
+    @app.get("/api/agent/settings/bash_requires_approval")
+    def api_agent_get_bash_requires_approval():
+        return agent_service.bash_approval_setting()
+
     @app.post("/api/agent/settings/bash_requires_approval")
     def api_agent_set_bash_requires_approval(payload: dict[str, Any] = Body(...)):
         value = payload.get("value")
         if not isinstance(value, bool):
             raise HTTPException(status_code=400, detail="value must be boolean")
-        return {"bash_requires_approval": agent_service.set_bash_requires_approval(value)}
+        agent_service.set_bash_requires_approval(value)
+        return agent_service.bash_approval_setting()
 
     @app.post("/api/agent/chat")
     def api_agent_chat(payload: dict[str, Any] = Body(...)):
@@ -1042,12 +1047,18 @@ def create_app(
             raise HTTPException(status_code=400, detail="decision must be allow, allow_always, or deny")
         return {"resolved": _task_agent_service(task_id).resolve_permission(request_id, decision)}
 
+    @app.get("/api/tasks/{task_id}/agent/settings/bash_requires_approval")
+    def api_task_agent_get_bash_requires_approval(task_id: str):
+        return _task_agent_service(task_id).bash_approval_setting()
+
     @app.post("/api/tasks/{task_id}/agent/settings/bash_requires_approval")
     def api_task_agent_set_bash_requires_approval(task_id: str, payload: dict[str, Any] = Body(...)):
         value = payload.get("value")
         if not isinstance(value, bool):
             raise HTTPException(status_code=400, detail="value must be boolean")
-        return {"bash_requires_approval": _task_agent_service(task_id).set_bash_requires_approval(value)}
+        service = _task_agent_service(task_id)
+        service.set_bash_requires_approval(value)
+        return service.bash_approval_setting()
 
     @app.post("/api/tasks/{task_id}/agent/chat")
     def api_task_agent_chat(task_id: str, payload: dict[str, Any] = Body(...)):
@@ -1091,12 +1102,18 @@ def create_app(
             raise HTTPException(status_code=400, detail="decision must be allow, allow_always, or deny")
         return {"resolved": _replay_agent_service(task_id).resolve_permission(request_id, decision)}
 
+    @app.get("/api/tasks/{task_id}/replay-agent/settings/bash_requires_approval")
+    def api_replay_agent_get_bash_requires_approval(task_id: str):
+        return _replay_agent_service(task_id).bash_approval_setting()
+
     @app.post("/api/tasks/{task_id}/replay-agent/settings/bash_requires_approval")
     def api_replay_agent_set_bash_requires_approval(task_id: str, payload: dict[str, Any] = Body(...)):
         value = payload.get("value")
         if not isinstance(value, bool):
             raise HTTPException(status_code=400, detail="value must be boolean")
-        return {"bash_requires_approval": _replay_agent_service(task_id).set_bash_requires_approval(value)}
+        service = _replay_agent_service(task_id)
+        service.set_bash_requires_approval(value)
+        return service.bash_approval_setting()
 
     def _skill_build_service(task_id: str) -> WorkflowSkillBuildService:
         row = task_runner.get_status(task_id)
@@ -1527,12 +1544,18 @@ def create_app(
             raise HTTPException(status_code=400, detail="decision must be allow, allow_always, or deny")
         return {"resolved": _skill_build_service(task_id).resolve_permission(request_id, decision)}
 
+    @app.get("/api/tasks/{task_id}/skill-build/settings/bash_requires_approval")
+    def api_skill_build_get_bash_approval(task_id: str):
+        return _skill_build_service(task_id).bash_approval_setting()
+
     @app.post("/api/tasks/{task_id}/skill-build/settings/bash_requires_approval")
     def api_skill_build_bash_approval(task_id: str, payload: dict[str, Any] = Body(...)):
         value = payload.get("value")
         if not isinstance(value, bool):
             raise HTTPException(status_code=400, detail="value must be boolean")
-        return {"bash_requires_approval": _skill_build_service(task_id).set_bash_requires_approval(value)}
+        service = _skill_build_service(task_id)
+        service.set_bash_requires_approval(value)
+        return service.bash_approval_setting()
 
     @app.post("/api/tasks/{task_id}/skill-build/reset")
     def api_skill_build_reset(task_id: str):

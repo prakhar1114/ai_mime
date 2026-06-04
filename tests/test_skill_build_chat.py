@@ -439,7 +439,7 @@ class WorkflowSkillBuildServiceTests(unittest.TestCase):
                 message_loader=lambda _sid, _dir: self.fail("current message_loader should not be used"),
             )
 
-            with patch("ai_mime.agent_runner.skill_build_chat.get_agent_runtime", return_value=OtherRuntime()) as get_runtime:
+            with patch("ai_mime.agent_runner.base_chat.get_agent_runtime", return_value=OtherRuntime()) as get_runtime:
                 messages = service.load_messages("codex-build")
 
             get_runtime.assert_called_once_with("codex_cli")
@@ -512,7 +512,7 @@ class WorkflowSkillBuildServiceTests(unittest.TestCase):
             )
 
             sessions = service.list_sessions()
-            with patch("ai_mime.agent_runner.skill_build_chat.get_agent_runtime", return_value=OtherRuntime()):
+            with patch("ai_mime.agent_runner.base_chat.get_agent_runtime", return_value=OtherRuntime()):
                 messages = service.load_messages("legacy-codex")
             events = asyncio.run(collect_events(service))
 
