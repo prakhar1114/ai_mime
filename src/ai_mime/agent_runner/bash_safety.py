@@ -27,6 +27,10 @@ _BASH_READONLY_COMMANDS = {
     "column", "nl", "tac", "cut", "tr", "uniq", "comm", "xxd", "hexdump",
     "shasum", "sha256sum", "md5", "md5sum", "type", "ps",
 }
+# Commands that mutate the filesystem but only by *creating* paths, never
+# overwriting or deleting existing data. Low-risk enough to auto-allow even
+# though they are not strictly read-only.
+_BASH_SAFE_WRITE_COMMANDS = {"mkdir"}
 # Package managers explicitly accepted as safe (they run code, but are routine
 # enough to auto-allow).
 _BASH_ALLOWED_PACKAGE_MANAGERS = {"pip", "pip3", "npm", "uv"}
@@ -78,6 +82,8 @@ def _segment_command_is_safe(base: str, args: list[str]) -> bool:
     if base == "sudo":
         return False
     if base in _BASH_ALLOWED_PACKAGE_MANAGERS:
+        return True
+    if base in _BASH_SAFE_WRITE_COMMANDS:
         return True
     if base == "git":
         return _git_subcommand(args) in _GIT_READONLY_SUBCOMMANDS
