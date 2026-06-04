@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Iterable
 
 from ai_mime.agent_runner.adapters.base import AgentRuntime, AgentRuntimeCapabilities, AgentStreamEvent
-from ai_mime.agent_runner.bash_safety import bash_command_requires_approval
 from ai_mime.agent_runner.models import (
     AgentRunRequest,
     AgentRunResult,
@@ -169,32 +168,26 @@ def _codex_model(model: str | None) -> str | None:
 
 
 def _codex_sdk_approval_handler(method: str, params: dict[str, Any] | None) -> dict[str, Any]:
-    """Gate app-server approval requests with AI Mime's own safety policy.
+    """Auto-accept Codex app-server approval requests (full-access runtime).
 
-    Codex only escalates to an approval request when an action falls OUTSIDE the
-    configured sandbox (e.g. a command the sandbox would block, or a write past
-    the workspace's writable roots). We therefore must NOT blanket-accept:
+    Codex runs with the `danger-full-access` sandbox and the UI advertises it as
+    "Full Access!" — commands are intentionally not gated per-command (users who
+    want per-command approval are pointed at the Claude runtime instead). Codex's
+    own approval policy still escalates some actions (e.g. login-shell `zsh -lc`
+    wrappers) to this handler; because Codex has no interactive approval UI here,
+    declining would surface as "Command blocked" for otherwise-benign commands.
+    So we accept command executions and file changes outright, matching the
+    full-access contract.
 
-    - Command execution is run through the shared Bash classifier; only provably
-      read-only commands (plus the accepted package managers) auto-accept, every-
-      thing else is declined so the agent has to find a safe alternative.
-    - File changes that need access beyond the sandbox roots are declined; in-
-      scope writes never reach here under workspace_write.
-
-    MCP elicitation is still accepted: the CUA server uses it to confirm Computer
+    MCP elicitation is also accepted: the CUA server uses it to confirm Computer
     Use access, and an empty response is treated as a denial before AI Mime's own
     tool authorization flow can help.
     """
     _log(f"approval request method={method} params={params or {}}")
     if method == "item/commandExecution/requestApproval":
-        command = (params or {}).get("command")
-        if isinstance(command, str) and not bash_command_requires_approval(command):
-            return {"decision": "accept"}
-        _log(f"declining command approval (requires approval) command={command!r}")
-        return {"decision": "decline"}
+        return {"decision": "accept"}
     if method == "item/fileChange/requestApproval":
-        _log("declining file-change approval (write outside sandbox roots)")
-        return {"decision": "decline"}
+        return {"decision": "accept"}
     if method == "mcpServer/elicitation/request":
         return {"action": "accept", "content": {}, "_meta": None}
     return {}
