@@ -4,9 +4,13 @@
 # ai_mime
 Automate anything you can demonstrate.
 
-Show a task once. ai_mime learns it, stores it as a **Claude Skill** (comprising a fast deterministic script, learned task context, and domain gotchas), and runs it forever. Next time just change the inputs and watch AI do the work at script speed. When something breaks, an agent finishes the job and heals the skill instead of failing.
+Record a workflow once. ai_mime turns the captured screenshots and actions into
+semantic workflow artifacts, optimizes the execution path, packages the result
+as a Claude Skill-compatible portable skill, and runs it with new inputs. When a
+run breaks, an agent can finish the job and patch the skill instead of leaving a
+failed replay behind.
 
-[Install](#installation) · [Configuration](#configuration) · [Usage](#usage) · [Desktop App](#desktop-app) · [How it works](#how-it-works) · [Community](#community)
+[Install](#installation) · [Quick Demo Flow](#quick-demo-flow) · [How it works](#how-it-works) · [Developer guide](docs/developer-guide.md) · [Community](#community)
 
 **Download the Desktop App:** [AI.Mime.dmg](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg)
 
@@ -14,158 +18,156 @@ Show a task once. ai_mime learns it, stores it as a **Claude Skill** (comprising
 
 </div>
 
-## Getting started
-The fast path for cloning, configuring, and running ai_mime locally. If you'd rather understand what it is and why first, jump to [How it works](#how-it-works).
+## Getting Started
+The fast path for cloning, configuring, and running ai_mime locally.
 
 ### Requirements
 - **OS**: macOS 13+ (Windows support not yet available)
 - **Runtime**: Python `>= 3.12, < 3.13`
-- **System Permissions**: Accessibility, Screen Recording, and Input Monitoring
-- **AI Provider**: An API key for your preferred agent/healing layer (e.g., Anthropic, OpenAI, Gemini, DashScope). Alternatively, since skills are portable scripts, you can seamlessly trigger them using your own local `claude code` or `codex` CLI tools.
+- **System permissions**: Accessibility, Screen Recording, and Input Monitoring
+- **Agent runtime**: Anthropic / Claude Code or OpenAI / Codex through the onboarding wizard. Custom providers can be configured through `user_config.yml`.
 
 ### Installation
 ```bash
 git clone --recurse-submodules https://github.com/prakhar1114/ai_mime
 cd ai_mime
 
-# Create a virtual environment and activate it
 uv venv .venv
 source .venv/bin/activate
-
-# Install the app and its dependencies
 uv pip install -e .
 
-# Install the browser-harness tool (required for web automation)
+# Required for browser automation skills.
 uv tool install --python .venv/bin/python --with-editable packages/llm-resolver harness/browser-harness
 ```
+
 Prefer not to build from source? Grab the prebuilt [Desktop App](#desktop-app).
 
 ### Configuration
-You do **not** need to manually create or edit `.env` or `user_config.yml` files.
+You do **not** need to manually create `.env` or `user_config.yml` for the normal setup path.
 
-When you launch the app for the first time, the native macOS **Onboarding Wizard** will automatically guide you through:
-1. Granting necessary macOS Accessibility and Screen Recording permissions.
-2. Selecting your AI Provider and securely saving your API keys.
+On first launch, the native macOS onboarding wizard guides you through:
+1. Granting Accessibility and Screen Recording permissions.
+2. Selecting Anthropic / Claude Code or OpenAI / Codex.
+3. Saving API keys or detecting a local CLI login.
+4. Installing the app-managed browser harness.
 
-You can update these preferences at any time directly through the **Settings** tab in the Web Dashboard (accessible via the Menu Bar).
+You can update provider settings later from the dashboard.
 
-### Usage
+## Quick Demo Flow
 Start the app:
 ```bash
 source .venv/bin/activate
 start_app
 ```
-Then, from your macOS Menu Bar:
 
-1. **Record** — Click **Start Recording** and perform your task once.
-2. **Confirm** — The AI reads back its understanding in an interactive chat. It asks clarifying questions to verify the inputs, outputs, and approach before generating the code. It then saves the task as a Claude Skill.
-3. **Run** — Re-run with new inputs from the **Replay** menu item. Watch the AI execute it at script speed while the Automation Overlay keeps you informed.
+Then use the menu bar app or dashboard:
+1. **Record**: click **Start Recording** and perform a repetitive task once.
+2. **Reflect**: ai_mime compiles the captured trace into a reusable semantic workflow.
+3. **Build Skill**: the build agent confirms inputs and outputs, optimizes the execution plan, and creates a portable skill under `workflows/<id>/skills/<slug>/`.
+4. **Run**: open **Replay**, provide new inputs, and run the skill.
+5. **Inspect**: read the generated artifacts and run history from the `workflows/` directory.
 
-See [How it works](#how-it-works) for the full model, and [What it can & can't do](#what-it-can--and-cant--do-today) before you pick a first task.
+Media slots to add later:
+- Screenshot: dashboard task list after one recording.
+- Screenshot: reflection or build-skill chat.
+- Screenshot or GIF: replay running with progress logs.
+- Video: 2-3 minute record-to-replay demo.
+
+### Artifacts You Can Inspect
+| Path | What it contains |
+| --- | --- |
+| `recordings/<id>/manifest.jsonl` | Raw captured event stream: screenshots, clicks, typing, hotkeys, extracts, and notes. |
+| `workflows/<id>/schema.json` | Coordinate-free semantic workflow generated from the recording. |
+| `workflows/<id>/optimized_plan.json` | Executor plan that chooses `script`, `browser_harness`, or `ui_agent` steps. |
+| `workflows/<id>/skills/<slug>/` | Claude Skill-compatible portable package with `run.sh`, `scripts/run.py`, inputs, and fallback references. |
+| `workflows/<id>/runs/` | Per-run logs, outputs, copied assets, and replay summaries. |
 
 ## Desktop App
-A packaged desktop app (no build step required) is available for macOS.
+A packaged desktop app with no source build step is available for macOS.
 
-**Download**: [AI.Mime.dmg](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg)
+**Download**: [AI.Mime.dmg](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg)  
 **Platforms**: macOS
 
-*After downloading, drag the app to your Applications folder and grant the requested accessibility and screen recording permissions on launch.*
+After downloading, drag the app to Applications and grant the requested permissions on launch.
 
----
+## When To Use ai_mime
+ai_mime is for work that is easier to show than to describe:
+- Data entry across internal tools, spreadsheets, and web portals.
+- Pulling reports from systems with weak or missing APIs.
+- Browser + native macOS workflows that normal automation tools cannot cover cleanly.
+- Repetitive tasks where a human should define the workflow once, then review outputs as needed.
 
-## Background
+It is not the right fit yet for open-ended research, creative generation, fully autonomous decisions, or scheduled cron-style jobs.
 
-### The problem
-Every repetitive task you do on a screen is programming you're doing by hand, every day. The tools meant to fix this all make you translate your work into their grammar:
+## What Is Novel Here?
+- **Semantic trace compilation**: a demonstrated UI trace becomes coordinate-free task steps, not brittle x/y replay.
+- **Intent optimization**: the system can replace manual UI paths with APIs, CLI calls, file parsing, browser CDP automation, or native UI automation depending on what is most reliable.
+- **Portable executable skills**: every finished automation is readable code plus a JSON input contract and fallback context.
+- **Agentic healing**: failed runs can be triaged, completed, and patched so the next run is deterministic again.
 
-- **Zapier / Make** want triggers and field maps — and only work where there's an API.
-- **n8n / Node-based builders** are harder to understand and get started with. ai_mime gives you deterministic scripts without the cost of learning a complex node interface, and is fully agentic with high coverage across your entire system's context.
-- **RPA** (UiPath etc.) wants brittle selectors and an RPA developer — and shatters the moment a button moves.
-- **Computer-use agents** (Operator, etc.) re-figure-out the whole task from scratch on every run — slow, expensive, and never quite reliable.
-
-ai_mime is the only interface where the skill needed to use it is the skill you already have to do the job. You don't describe the task. You do it, once.
-
-### Why this is different
-Record-and-replay has been promised for 30 years (Sikuli, iMacros, early RPA) and always broke. Two things changed in the last year that make it actually work now:
-
-1. Models can read a screen the way a human does — semantically, not by brittle selectors.
-2. When the script breaks, an agent recovers it — closing the reliability gap that killed every previous attempt.
-
-Computer-use agents reach surfaces nothing could automate before — so coverage extends past anything with an API or a stable DOM, right down to legacy desktop apps. The work runs native to your own system, not in someone else's cloud.
-
-The split that makes it work: deterministic code for the repeatable spine, an LLM for the small judgment calls, and a computer-use agent for the parts that genuinely can't be scripted. Most tools pick exactly one of those and break on the other two.
-
-So ai_mime runs a deterministic-first, agent-on-fallback hybrid: a fast, cheap, repeatable skill for the common path; an agent that steps in only when something breaks, finishes the run, and heals the skill so the next run is fast again.
-
-Try this: record a task, then run it with different inputs. The first run you do by hand; every run after is the AI doing it in seconds. Now change the website mid-run and watch the agent recover and re-learn the broken step live. That moment is the whole product.
-
-## How it works
+## How It Works
 ```mermaid
 graph LR
-    A[1. Record<br>hotkey → do task] --> B[2. Process<br>inputs, outputs, approach]
-    B --> C[3. Run<br>change inputs → AI runs superfast]
-    C --> D[4. Heal<br>agent finds the job, heals skill]
+    A["1. Record<br/>screens + actions"] --> B["2. Reflect<br/>semantic workflow"]
+    B --> C["3. Optimize<br/>executor plan"]
+    C --> D["4. Build Skill<br/>portable package"]
+    D --> E["5. Run / Heal<br/>execute, recover, patch"]
 ```
 
-- **Record** — hit a global hotkey and just do the task. ai_mime captures clicks, keystrokes, and screen state.
-- **Process** — Processes the recording, understands the context of the task end-to-end, confirms the inputs, outputs, and approach, then learns how to do the task end-to-end in the optimized way, preferring `bash` > `browser_harness` > `cua_agent` in that order. The result is stored as a Claude Skill.
-- **Run** — next time, just change the inputs. The skill replays the work at script speed — this is where you see the magic of AI doing in seconds what took you minutes. Trigger it manually or in natural language.
-- **Heal** — if a run fails, it falls back to an agent that finishes the task anyway, then heals the underlying skill so the next run is fast and deterministic again.
+- **Record** captures clicks, keystrokes, screenshots, extracts, and user notes into `recordings/<id>/`.
+- **Reflect** converts the trace into a reusable `schema.json` with task parameters, subtasks, and coordinate-free steps.
+- **Optimize** writes `optimized_plan.json`, preferring deterministic `script` steps, then `browser_harness`, then `ui_agent` for true GUI-only work.
+- **Build Skill** creates a portable skill package with `run.sh`, `scripts/run.py`, input templates, and `references/fallback_plan.md`.
+- **Run / Heal** executes the skill with new inputs. If it fails, the replay agent can inspect logs, complete the run, and repair the skill.
 
-You define intent once. After that, the system owns the work.
+Because the generated package is executable and readable, you can also expose the skill directory to Claude Code or Codex and let terminal agents call the automation directly.
 
-### The Anatomy of a Claude Skill
-Recordings aren't trapped in a proprietary format — each one is packaged as a standard, portable **Claude Skill**. A skill directory includes:
-- **`run.sh` / `scripts/run.py`**: The fast, deterministic executable code.
-- **`inputs.json`**: The standard JSON contract for runtime arguments.
-- **`references/`**: Rich contextual notes, domain gotchas, and a visual `fallback_plan.md`.
+## Background
+Every repetitive task you do on a screen is programming you are doing by hand. Existing automation tools usually force you into a different grammar:
 
-Because every skill is just a UNIX executable with a standard contract, you can expose your `skills/` folder directly to **Claude Code** or **Codex**. This gives those text-based terminal agents the superpower to drive your native macOS GUI or navigate complex web portals simply by calling the script!
+- **Zapier / Make** need triggers and field maps, and only work where APIs exist.
+- **Node-based builders** can be powerful, but the interface becomes the work.
+- **RPA** often depends on brittle selectors and specialized implementation effort.
+- **Computer-use agents** can reach more surfaces, but they re-solve the task every run.
 
-### Agentic Healing & Editing
-ai_mime doesn't just run rigid scripts. During a replay, if the `run.sh` script breaks (e.g., a website's UI changed completely), the orchestration engine triggers **Agentic Healing**:
-1. A triage agent takes over and reads the execution logs alongside the `fallback_plan.md`.
-2. It spins up the UI Agent to finish the job visually via the native macOS interface.
-3. It permanently patches the underlying Python script to heal the skill for all future runs.
+ai_mime uses a deterministic-first, agent-on-fallback hybrid: scripts for the repeatable spine, LLM calls for bounded judgment, browser harnesses for web automation, and native computer-use only where the task genuinely needs it.
 
-Editing is entirely conversational: rather than dragging nodes in a visual builder, you just talk to the agent to adjust inputs, handle new task variants, or fix edge cases.
-
-## What it can — and can't — do today
-We'd rather you trust this README than be disappointed by the product. Honest scope:
-
+## What It Can And Cannot Do Today
 **Great at**
-- Repetitive, demonstrable tasks: data entry, moving things between systems, pulling reports, filling forms, multi-app workflows across web + legacy desktop apps.
-- Tasks that are easier to show than to describe.
-- Re-running the same task reliably, fast, many times.
-- Decomposing a big task into automatable pieces with a human in the loop — the agent pauses at output checkpoints for you to review, and you trigger the next workflow when you're ready.
+- Repetitive, demonstrable tasks.
+- Tasks that touch web portals, spreadsheets, files, and legacy desktop apps.
+- Workflows where the common path should run fast but recovery matters.
+- Human-in-the-loop workflows where outputs should be reviewed before the next step.
 
-**Not for (yet)**
-- Answering questions or generating reports/images from scratch.
-- Open-ended judgment or decision-making by conversation.
-- Anything you can't demonstrate the same way twice.
-- Scheduling / cron jobs — runs are triggered manually or in natural language for now.
+**Not for yet**
+- Answering arbitrary questions or generating reports/images from scratch.
+- Open-ended judgment or high-stakes decisions.
+- Anything you cannot demonstrate roughly the same way twice.
+- Scheduling and webhooks.
 
-The rule of thumb: redundant in, creative out. If you'd do it identically every time, it belongs here. Judgment stays with you.
+Rule of thumb: redundant in, creative out. If you would do it the same way every time, it belongs here. Judgment stays with you.
 
-## Why open source
-This product records what you do and runs scripts on your machine, touching your most sensitive software. "Trust us" isn't good enough. So:
+## Why Open Source
+This product records what you do and runs scripts on your machine, touching sensitive software. "Trust us" is not enough.
 
-- **Self-hosted and inspectable** — you can see exactly what's captured and what leaves your machine (nothing has to).
-- **Skills are yours** — every task is stored as a portable Claude Skill you own and can read, edit, and share. Not hostage data in a proprietary format.
-- **Licensed under AGPLv3** (the skill format stays open, so your automations are freely shareable).
+- **Self-hosted and inspectable**: see what is captured and what runs.
+- **Skills are yours**: automations are readable portable packages, not hostage data.
+- **AGPLv3**: the open-source core and skill format stay shareable.
+
+## Developer Docs
+- [Developer guide](docs/developer-guide.md): setup, package layout, commands, runtime environment, and manual skill execution.
+- [Architecture](docs/architecture.md): current Record -> Reflect -> Optimize -> Build Skill -> Run/Heal pipeline.
 
 ## Roadmap
-ai_mime is the single-operator core of a bigger idea: the executable playbook layer for a whole team — where a senior records a task once, the team forks and runs it, and the work becomes org property that outlives whoever wrote it.
+ai_mime is the single-operator core of a larger executable playbook layer for teams.
 
-- [ ] Visual flowchart view of each skill — see and approve the steps as an SOP, not code
+- [ ] Visual flowchart view of each skill
 - [ ] Shared team library + forking
-- [ ] Skill marketplace (community-contributed automations)
+- [ ] Skill marketplace
 - [ ] Scheduling, webhooks, natural-language triggers
 - [ ] Human-in-the-loop gates for irreversible actions
 
-Today the open-source core gives one person the power to capture and run their work. That part is free, forever.
-
 ## Community
-- 💬 **Discord**: [Join the ai_mime Community](https://discord.gg/ghAWAJsB) — get help, share skills, tell us where a run broke.
-- 🐛 **Issues**: open one on GitHub — broken runs are the single most useful thing you can send us right now.
-- ⭐ **Star the repo** if you want to follow along.
+- 💬 **Discord**: [Join the ai_mime Community](https://discord.gg/ghAWAJsB)
+- 🐛 **Issues**: open one on GitHub with broken runs, logs, or reproduction details
+- ⭐ **Star the repo** if you want to follow along

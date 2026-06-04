@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AI Mime — macOS Workflow Automation</title>
+    <title>AI Mime — Demonstration-to-Skill Automation</title>
     <meta
       name="description"
-      content="AI Mime is a native macOS RPA tool that records real workflows and turns them into rich, parameterized instructions that computer-use agents can replay reliably across apps and websites."
+      content="AI Mime records demonstrated macOS workflows, reflects them into semantic artifacts, optimizes the execution path, and packages them as portable runnable skills."
     />
     <link rel="icon" type="image/png" sizes="32x32" href="./logo/icon32.png" />
     <link rel="icon" type="image/png" sizes="128x128" href="./logo/icon128.png" />
@@ -16,14 +16,16 @@
   <body>
     <header class="header">
       <div class="container">
-        <div class="brand">
+        <a class="brand" href="./" aria-label="AI Mime home">
           <img class="brand-logo" src="./logo/icon32.png" alt="AI Mime logo" />
           <span>AI Mime</span>
-        </div>
-        <nav class="nav">
-          <!-- <a href="./architecture.md">Architecture</a> -->
+        </a>
+        <nav class="nav" aria-label="Primary navigation">
+          <a href="#pipeline">Pipeline</a>
+          <a href="#screenshots">Screenshots</a>
+          <a href="./developer-guide.md">Developer guide</a>
           <a href="https://github.com/prakhar1114/ai_mime" aria-label="GitHub" target="_blank" rel="noopener noreferrer">
-            <svg height="20" width="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="vertical-align:middle;">
+            <svg height="20" width="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
               <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
                 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52
                 -.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2
@@ -40,129 +42,249 @@
 
     <main>
       <section class="hero">
-        <div class="container hero-grid">
-          <div>
-            <h1>Record, refine, and replay workflows on macOS.</h1>
+        <div class="container hero-inner">
+          <div class="hero-copy">
+            <p class="eyebrow">Demonstration-to-skill automation for macOS</p>
+            <h1>AI Mime turns one recorded workflow into a runnable skill.</h1>
             <p class="lead">
-              AI Mime is a native macOS RPA tool designed to empower computer-use agents with the context they need to
-              succeed. It moves beyond simple text prompts by capturing rich ground truth, refining it into
-              parameterized instructions, and replaying workflows on demand.
+              Record a task once. AI Mime reflects the trace into semantic workflow artifacts, optimizes the execution path, and packages it as readable code with inputs, fallback context, and repair hooks.
             </p>
-
-            <div class="pill-row">
-              <span class="pill">Record &gt; Refine &gt; Replay</span>
-              <span class="pill">Rich context, not vague prompts</span>
-              <span class="pill">Repeatable + observable</span>
-            </div>
-
             <div class="cta-row">
               <a class="btn primary" href="https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg" target="_blank" rel="noopener noreferrer">Download for macOS</a>
-              <a class="btn" href="https://github.com/prakhar1114/ai_mime/releases/latest" target="_blank" rel="noopener noreferrer">View Release</a>
+              <a class="btn" href="https://github.com/prakhar1114/ai_mime" target="_blank" rel="noopener noreferrer">View source</a>
             </div>
+          </div>
 
-            <div class="how-title">How it works</div>
-            <div class="how-sub">
-              Record a workflow, refine it into parameterized subtasks with clear boundaries, and replay it on demand.
-            </div>
-
-            <div class="hero-media" aria-label="Screenshots of AI Mime">
-              <div class="media-card">
-                <a class="media-link" href="./images/start_recording.png" target="_blank" rel="noopener noreferrer" aria-label="Open full-size Record screenshot">
-                  <img src="./images/start_recording.png" alt="Start Recording" />
-                </a>
-                <div class="caption">Record</div>
-              </div>
-              <div class="media-card">
-                <a class="media-link" href="./images/edit_workflow.png" target="_blank" rel="noopener noreferrer" aria-label="Open full-size Edit Workflow screenshot">
-                  <img src="./images/edit_workflow.png" alt="Edit Workflow" />
-                </a>
-                <div class="caption">Edit Workflow</div>
-              </div>
-              <div class="media-card">
-                <a class="media-link" href="./images/replay.png" target="_blank" rel="noopener noreferrer" aria-label="Open full-size Replay screenshot">
-                  <img src="./images/replay.png" alt="Replay" />
-                </a>
-                <div class="caption">Replay</div>
-              </div>
+          <div class="hero-visual" aria-label="AI Mime current app screenshots">
+            <picture class="hero-shot">
+              <source
+                type="image/webp"
+                srcset="./images/site/tasks-dashboard-1200.webp 1200w, ./images/site/tasks-dashboard-1800.webp 1800w"
+                sizes="(max-width: 980px) calc(100vw - 44px), 58vw"
+              />
+              <img
+                src="./images/tasks-dashboard.png"
+                alt="AI Mime tasks dashboard with ready workflows and a start recording button"
+                width="2902"
+                height="1518"
+                loading="eager"
+                fetchpriority="high"
+              />
+            </picture>
+            <div class="visual-row">
+              <figure class="mini-shot">
+                <picture>
+                  <source type="image/webp" srcset="./images/site/start-recording-440.webp" />
+                  <img src="./images/start-recording.png" alt="AI Mime menu bar record controls" width="439" height="416" loading="lazy" />
+                </picture>
+                <figcaption>Record from the menu bar</figcaption>
+              </figure>
+              <figure class="mini-shot">
+                <picture>
+                  <source type="image/webp" srcset="./images/site/skill-build-1000.webp" />
+                  <img src="./images/skill-build.png" alt="AI Mime skill build chat confirming workflow inputs and outcome" width="2064" height="1568" loading="lazy" />
+                </picture>
+                <figcaption>Confirm and build the skill</figcaption>
+              </figure>
             </div>
           </div>
         </div>
       </section>
 
-      <section class="section alt" id="demo">
+      <section class="section" id="pipeline">
         <div class="container">
-          <h2>Demos</h2>
-          <div class="video-grid" aria-label="AI Mime demo videos">
-            <div class="video-item">
-              <div class="video-caption muted">
-                <div class="video-caption-title">End-to-end walkthrough (record → edit → replay)</div>
-                <div>
-                  <a href="https://www.youtube.com/watch?v=ppB4tbPc77U" target="_blank" rel="noopener noreferrer">Open on YouTube</a>.
-                </div>
-              </div>
-              <div class="video-frame" role="group" aria-label="AI Mime end-to-end demo video">
-                <iframe
-                  width="560"
-                  height="315"
-                  src="https://www.youtube.com/embed/ppB4tbPc77U?si=LDRu64jOhKKhtgWy"
-                  title="AI Mime demo — end-to-end walkthrough"
-                  frameborder="0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                  referrerpolicy="strict-origin-when-cross-origin"
-                  allowfullscreen
-                ></iframe>
-              </div>
+          <div class="section-heading">
+            <p class="eyebrow">How it works</p>
+            <h2>Record → Reflect → Optimize → Build Skill → Run / Heal</h2>
+          </div>
+          <div class="pipeline" aria-label="AI Mime workflow pipeline">
+            <div class="pipeline-step">
+              <span class="step-index">01</span>
+              <h3>Record</h3>
+              <p>Capture screenshots, clicks, keystrokes, extracts, and user notes from the demonstrated workflow.</p>
             </div>
-
-            <div class="video-item">
-              <div class="video-caption muted">
-                <div class="video-caption-title">Automate expense sheet filing</div>
-                <div>
-                  <a href="https://youtu.be/gkqMfT_jE7U?si=KSuWr9zyhzPL1CMN" target="_blank" rel="noopener noreferrer">Open on YouTube</a>.
-                </div>
-              </div>
-              <div class="video-frame" role="group" aria-label="AI Mime expense sheet filing demo video">
-                <iframe
-                  width="560"
-                  height="315"
-                  src="https://www.youtube.com/embed/gkqMfT_jE7U?si=ibYSVzCtCAU_7Eoj"
-                  title="AI Mime demo — expense sheet filing"
-                  frameborder="0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                  referrerpolicy="strict-origin-when-cross-origin"
-                  allowfullscreen
-                ></iframe>
-              </div>
+            <div class="pipeline-step">
+              <span class="step-index">02</span>
+              <h3>Reflect</h3>
+              <p>Convert the raw trace into coordinate-free schema artifacts with task parameters and subtasks.</p>
+            </div>
+            <div class="pipeline-step">
+              <span class="step-index">03</span>
+              <h3>Optimize</h3>
+              <p>Choose the most reliable executor: deterministic script first, browser harness second, native UI agent last.</p>
+            </div>
+            <div class="pipeline-step">
+              <span class="step-index">04</span>
+              <h3>Build Skill</h3>
+              <p>Package run scripts, input templates, and fallback notes into a portable skill directory.</p>
+            </div>
+            <div class="pipeline-step">
+              <span class="step-index">05</span>
+              <h3>Run / Heal</h3>
+              <p>Run with new inputs. If execution fails, an agent can inspect logs, complete the run, and patch the skill.</p>
             </div>
           </div>
         </div>
       </section>
 
-      <section class="section" id="why">
-        <div class="container">
-          <h2>Why AI Mime?</h2>
-          <p class="muted" style="margin: 0 0 12px 0;">
-            Computer-use models are getting better, but RPA still breaks down when instructions are low-context and tasks
-            run for a long time. AI Mime makes automation reliable by grounding agents in real demonstrations.
-          </p>
+      <section class="section band" id="novel">
+        <div class="container split">
+          <div>
+            <p class="eyebrow">What is novel</p>
+            <h2>The recording is evidence, not the automation.</h2>
+          </div>
+          <div class="proof-list">
+            <div>
+              <h3>Semantic trace compilation</h3>
+              <p>A UI trace becomes task intent, targets, parameters, subtasks, and success criteria.</p>
+            </div>
+            <div>
+              <h3>Intent optimization</h3>
+              <p>Manual UI paths can be replaced with APIs, CLI calls, file parsing, browser CDP, or AppleScript.</p>
+            </div>
+            <div>
+              <h3>Portable executable skills</h3>
+              <p>Finished automations are readable packages that Claude Code or Codex can call directly.</p>
+            </div>
+            <div>
+              <h3>Agentic healing</h3>
+              <p>Broken runs can be triaged, completed, and repaired instead of being rerun from scratch.</p>
+            </div>
+          </div>
+        </div>
+      </section>
 
-          <div class="cards">
-            <div class="card">
-              <h3>Rich context, not vague prompts</h3>
-              <p>Record what actually happened—UI state, clicks, keystrokes—so the agent isn’t guessing.</p>
+      <section class="section band" id="screenshots">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">Current app surfaces</p>
+            <h2>From task library to replay and recovery.</h2>
+          </div>
+          <div class="shot-grid" aria-label="AI Mime app screenshots">
+            <figure class="shot-card wide">
+              <picture>
+                <source
+                  type="image/webp"
+                  srcset="./images/site/tasks-dashboard-1200.webp 1200w, ./images/site/tasks-dashboard-1800.webp 1800w"
+                  sizes="(max-width: 980px) calc(100vw - 44px), 720px"
+                />
+                <img src="./images/tasks-dashboard.png" alt="Tasks dashboard with workflow list, statuses, and run actions" width="2902" height="1518" loading="lazy" />
+              </picture>
+              <figcaption>
+                <strong>Tasks dashboard</strong>
+                <span>Scan available workflows, start recording, and launch ready skills.</span>
+              </figcaption>
+            </figure>
+            <figure class="shot-card small">
+              <picture>
+                <source type="image/webp" srcset="./images/site/start-recording-440.webp" />
+                <img src="./images/start-recording.png" alt="Menu bar dropdown with Start Recording and dashboard actions" width="439" height="416" loading="lazy" />
+              </picture>
+              <figcaption>
+                <strong>Record button</strong>
+                <span>Start a new demonstration from the macOS menu bar.</span>
+              </figcaption>
+            </figure>
+            <figure class="shot-card">
+              <picture>
+                <source
+                  type="image/webp"
+                  srcset="./images/site/skill-build-1000.webp 1000w, ./images/site/skill-build-1500.webp 1500w"
+                  sizes="(max-width: 980px) calc(100vw - 44px), 560px"
+                />
+                <img src="./images/skill-build.png" alt="Skill build chat explaining inputs, outcome, and irreversible side effects" width="2064" height="1568" loading="lazy" />
+              </picture>
+              <figcaption>
+                <strong>Skill build</strong>
+                <span>The agent confirms inputs, outputs, and high-level execution before packaging code.</span>
+              </figcaption>
+            </figure>
+            <figure class="shot-card">
+              <picture>
+                <source
+                  type="image/webp"
+                  srcset="./images/site/run-form-1000.webp 1000w, ./images/site/run-form-1500.webp 1500w"
+                  sizes="(max-width: 980px) calc(100vw - 44px), 560px"
+                />
+                <img src="./images/run-form.png" alt="Replay form for entering skill inputs before running a workflow" width="2236" height="1424" loading="lazy" />
+              </picture>
+              <figcaption>
+                <strong>Run input form</strong>
+                <span>Provide new inputs and run the deterministic skill package.</span>
+              </figcaption>
+            </figure>
+            <figure class="shot-card">
+              <picture>
+                <source
+                  type="image/webp"
+                  srcset="./images/site/task-recovery-1000.webp 1000w, ./images/site/task-recovery-1500.webp 1500w"
+                  sizes="(max-width: 980px) calc(100vw - 44px), 560px"
+                />
+                <img src="./images/task-recovery.png" alt="Autohealing screen showing failed run logs and agent recovery instructions" width="1986" height="1548" loading="lazy" />
+              </picture>
+              <figcaption>
+                <strong>Autohealing</strong>
+                <span>When a run fails, the agent reads logs, triages the issue, and repairs the skill when needed.</span>
+              </figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="artifacts">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">Developer inspection</p>
+            <h2>Every stage leaves files you can read.</h2>
+          </div>
+          <div class="artifact-table" role="table" aria-label="AI Mime generated artifacts">
+            <div role="row">
+              <code>recordings/&lt;id&gt;/manifest.jsonl</code>
+              <span>Raw event stream: screenshots, actions, extracts, and notes.</span>
             </div>
-            <div class="card">
-              <h3>Strict, observable boundaries</h3>
-              <p>Refine recordings into parameterized subtasks with clear inputs and dependencies.</p>
+            <div role="row">
+              <code>workflows/&lt;id&gt;/schema.json</code>
+              <span>Semantic workflow produced from the recording.</span>
             </div>
-            <div class="card">
-              <h3>Less “creativity”, more repeatability</h3>
-              <p>Replay workflows with high fidelity across native apps and the web—on demand.</p>
+            <div role="row">
+              <code>workflows/&lt;id&gt;/optimized_plan.json</code>
+              <span>Executor plan for script, browser harness, and UI-agent steps.</span>
             </div>
-            <div class="card">
-              <h3>Production-shaped workflows</h3>
-              <p>Turn a one-off trace into something reusable, inspectable, and easy to iterate on.</p>
+            <div role="row">
+              <code>workflows/&lt;id&gt;/skills/&lt;slug&gt;/</code>
+              <span>Portable skill package with runnable code and fallback references.</span>
             </div>
+            <div role="row">
+              <code>workflows/&lt;id&gt;/runs/</code>
+              <span>Run logs, copied assets, outputs, and replay summaries.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section band" id="demo">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">Demo media</p>
+            <h2>Add the short walkthrough when it is ready.</h2>
+          </div>
+          <div class="video-placeholder single" role="group" aria-label="AI Mime walkthrough video placeholder">
+            <span class="vp-title">2-3 minute video slot</span>
+            <span class="vp-sub">Record a task, build the skill, run with new inputs, then show autohealing.</span>
+          </div>
+            </div>
+      </section>
+
+      <section class="section final">
+        <div class="container final-inner">
+          <div>
+            <p class="eyebrow">Open source automation you can inspect</p>
+            <h2>Build from source or download the macOS app.</h2>
+          </div>
+          <div class="cta-row">
+            <a class="btn primary" href="https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg" target="_blank" rel="noopener noreferrer">Download app</a>
+            <a class="btn" href="./architecture.md">Read architecture</a>
+            <a class="btn" href="./developer-guide.md">Developer guide</a>
           </div>
         </div>
       </section>
@@ -171,10 +293,12 @@
     <footer class="footer">
       <div class="container">
         <div class="footer-row">
-          <div class="muted">AI Mime — Record, Refine, Replay.</div>
+          <div class="muted">AI Mime - Record, Reflect, Optimize, Build, Run.</div>
           <div class="muted">
             <a href="./architecture.md">Architecture</a>
-            <span class="sep">•</span>
+            <span class="sep">/</span>
+            <a href="./developer-guide.md">Developer guide</a>
+            <span class="sep">/</span>
             <a href="https://github.com/prakhar1114/ai_mime">GitHub</a>
           </div>
         </div>

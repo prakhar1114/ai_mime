@@ -1,102 +1,125 @@
 # Architecture
-The app comprises of 4 steps:
-- Record: when the user records a task
-- Reflect: we convert the task into a reusable parametrized schema
-- Edit Workflow: to edit the workflow schema granularly, update parameters, add subtask dependency
-- Replay: We update the parametrized schema with task parameters and rerun the task.
 
-## Record:
-- Tracks keyboard and mouse inputs (e.g., click, type “spotify”, press Enter, press Esc). We call these events.
-- Captures a screenshot at the start, and then before each event.
-- After every event, saves a step as (pre-action screenshot, action). The screenshot represents the screen state right before the action; next event's screenshot reflects the screen state after that action.
-- Stores the full task as an ordered list of these (screenshot, action) steps, which is later used for replay. The number of steps is roughly equal to the number of events.
-- During recording, **Ctrl + I** can be used to pause and add extra structured context at the right moment:
-    - **Extract**: capture the current pre-action screenshot and store an `extract` event (query + optional candidate values) to be used later during replay. This can be used to extract information from a specific page in the workflow.
-    - **Details**: attach a free-form “details” note onto the **next** event/step (useful when the intent/target is hard to infer from coordinates alone) or adding useful context to the step.
+ai_mime turns a demonstrated workflow into a portable executable skill. The
+current pipeline is:
 
-Example [manifest.jsonl](manifest.jsonl)
-
-
-## Reflect:
-- Given a list of (pre-action screenshot, action), we do multiple LLM passes to make it a parametrized schema.
-
-We made use of gpt-5-mini for both LLM Pass A and B
-
-LLM Pass A: For each: (preaction screenshot, action, post-action screenshot), we compute:
-```
-    - expected_current_state: expected screen on which action is to be taken
-    - intent: intent of the action
-    - target: description of the target element on the UI
-    - post_action: UI changes after action
-    - action_value: song name/enter key etc
+```mermaid
+graph LR
+    A["Record"] --> B["Reflect"]
+    B --> C["Optimize"]
+    C --> D["Build Skill"]
+    D --> E["Run"]
+    E --> F["Heal / Improve"]
+    F --> D
 ```
 
-LLM Pass B: all the steps are appended together from LLM Pass A to compute:
+## Record
+The recorder captures the user demonstration as a session under
+`recordings/<session_id>/`.
 
-    - detailed_task_description
-    - subtasks: list of subtasks
-    - task_params: parameters of the task
-    - steps:
-        - paraetried action value
-        - subtask
+- `manifest.jsonl` stores an ordered event stream.
+- Each event references a pre-action screenshot and action details.
+- Screenshots capture the state before actions, so later stages can infer the
+  user's intent without relying only on coordinates.
+- `Ctrl + I` can add structured context:
+  - `extract`: mark a value that should be read from the screen during replay.
+  - `details`: attach free-form guidance to the next step.
 
-    Task -> Subtask 1 -> Step 1
-                      -> Step 2
-                      -> Step 3
-         -> Subtask 2 -> Step 4
-                      -> Step 5
-                      -> Step 6
+Recordings are raw evidence. They are not the final automation.
 
-For example for a task like:
+## Reflect
+Reflection converts the raw recording into workflow artifacts under
+`workflows/<session_id>/`.
+
+- The manifest and screenshots are copied into the workflow directory.
+- Click screenshots are annotated for easier review.
+- Pass A converts each action and surrounding screenshots into a coordinate-free
+  step card: current state, intent, target, action value, and post-action result.
+- Pass B groups step cards into a semantic `schema.json` with:
+  - task description and success criteria
+  - reusable task parameters
+  - subtasks and plan steps
+  - extract dependencies where needed
+
+The result is a reusable description of what the user meant, not a literal
+pixel replay.
+
+## Optimize
+Pass C creates `optimized_plan.json`, an executor-oriented strategy for actually
+running the workflow.
+
+Executors are chosen in this order:
+
+1. `script`: deterministic Python, shell commands, APIs, file parsing,
+   AppleScript, or bounded `ask_llm` decisions.
+2. `browser_harness`: Chrome CDP automation through the bundled browser harness.
+3. `ui_agent`: native macOS computer-use fallback for work that cannot be
+   scripted or driven through the browser.
+
+Optimization can collapse many recorded UI actions into one more reliable step.
+For example, opening a PDF and copying text may become direct file parsing; a
+long browser navigation may become a direct URL or CDP script.
+
+## Build Skill
+The build-skill chat turns the reflected workflow and optimized plan into a
+Claude Skill-compatible package under:
+
+```text
+workflows/<session_id>/skills/<skill_slug>/
 ```
-task="play numb on spotify on mac"
 
-subtask1="Open Spotify using Spotlight and bring it to the foreground"
-    step1=Enter the search query "spotify" into the Spotlight search field
-    step2=Click on spotify from the available results
+Required package shape:
 
-subtask2="Search for and play the song {song_name} within Spotify"
-    step3=Clear the current text in the search field
-    step4=Enter the song name into the search field
-    step5=Start playback of the top search result song ....
+```text
+SKILL.md
+run.sh
+scripts/run.py
+inputs/inputs.example.json
+inputs/inputs.template.json
+references/fallback_plan.md
 ```
-An example final schema is present here: [spotify_example](schema.json)
 
-## Edit Workflow:
-- Reflection produces a good first draft, but workflows become more reliable when we can edit the schema granularly.
-- In this step we use the Workflow Editor to:
-    - **Update parameters** (`schema.json.task_params`): add/delete params and tune example values so templated strings like `{song_name}` are correct and reusable.
-    - **Update subtasks and steps** (`schema.json.plan.subtasks[*]`): edit subtask text (expected outcome), add/delete subtasks, and edit step intent/action fields for clarity.
-    - **Add dependencies** (`subtasks[*].dependencies`): define a dependency graph between subtasks by referencing upstream `EXTRACT` variable names. This allows later subtasks to consume results from earlier subtasks.
-    - **Review the workflow completely**: ensure subtasks are in the right order, dependencies only point to upstream extracts, and each subtask has enough step examples to ground the replay model.
+The build agent verifies the task, writes durable notes, creates the skill, and
+runs an end-to-end check before marking it ready.
 
-## Replay:
-- When the user clicks on a workflow to replay, we get the fixed set of parameters from the user
-- We then replace the parameters in the schema.json
-- We run task as sequence of subtasks. We pass subtask and expected output to the computer use model to achieve. We pass the steps as reference examples to do the task. Following is a pseudocode for running the task:
+Generated skills use the runtime contract exported by ai_mime:
+
+- `AI_MIME_PYTHON_PATH`
+- `AI_MIME_UV_PATH`
+- `AI_MIME_BROWSER_HARNESS_BIN`
+- `AI_MIME_BROWSER_SKILL_PATH`
+- `AI_MIME_UI_AGENT_CMD`
+- `AI_MIME_CONFIG_PATH`
+
+## Run
+The replay UI loads `inputs/inputs.template.json`, collects runtime values, and
+executes the skill's `run.sh`.
+
+During a run:
+
+- Progress events are emitted as JSON on stderr.
+- Outputs and changed assets are captured under `workflows/<id>/runs/<run_id>/`.
+- `workflow_done` records the final structured outputs.
+- `outputs/assets/` is used for files produced by the active workflow.
+
+Developers can also run a skill manually:
+
+```bash
+cd workflows/<session_id>/skills/<skill_slug>
+./run.sh inputs/inputs.example.json
 ```
-    for subtask in subtasks:
-        screenshot = take_screenshot()
-        action = predict_action(user_query)
-        if action== done:
-            continue
-        else:
-            execute_action()
-```
-**done** function is called by the llm when the expected subtask result is achieved. It is used to indicate the completion of the current subtask.
 
-in **predict_action**, we build a compact **user_query** prompt (plus the current screenshot) that contains:
-- Overall task name
-- Current subtask text **and expected outcome**
-- Resolved params (from `schema.json.task_params` + user overrides)
-- Current `task_memory` (cross-subtask state carried forward)
-- Recent `history` for this subtask (last few actions/observations) for this **subtask** only
-- `reference_steps` examples derived from `schema.plan.steps` for this **subtask** only
-- **Dependency-driven extracts**: if a subtask declares dependencies (from “Edit Workflow”), replay injects the upstream extract values as additional context for the current subtask. This allows results of one subtask (e.g., an extracted restaurant name/address) to be used reliably in later subtasks without re-extracting or re-searching.
+## Heal And Improve
+If direct execution fails, the replay agent can inspect:
 
-**Required output of `predict_action`** (exactly one tool call):
-- **action**: either a `computer_use` OS action (mouse/keyboard/etc.) or `done`
-- **observation**: a step-specific, current-screen observation to justify the action/done
-- **memory**: an updated `task_memory` string to carry forward to the next iteration/subtask
+- `SKILL.md`
+- `run.sh`
+- `scripts/run.py`
+- `references/fallback_plan.md`
+- run logs and outputs
+- workflow schema and optimized plan
 
-We made use of qwen-3-vl-plus model for predict_action.
+It first decides whether the failure is user state, environment, bad inputs,
+transient UI state, or an actual skill defect. If the skill is defective, the
+agent can patch the package and re-run validation so future executions return to
+the deterministic path.
