@@ -466,6 +466,71 @@ h3 {
   font-size: 15px;
 }
 
+.example-list {
+  display: grid;
+  gap: 22px;
+}
+
+.example {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 26px 24px 28px;
+}
+
+.example-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.example-head h3 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.example-tag {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--warm);
+  white-space: nowrap;
+}
+
+.example p.example-lead {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 15px;
+  max-width: 760px;
+}
+
+.example-videos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.example-skill {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.example-skill .pill {
+  display: inline-block;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--warm);
+  margin-right: 8px;
+}
+
 .final {
   padding: 72px 0;
 }

@@ -15,7 +15,7 @@ AI Mime also runs your skills. Provide new inputs and run. When the environment
 shifts and a run breaks, the agent **self-heals** the script to the new
 environment instead of leaving you with a failed rerun.
 
-[See it in action](#see-it-in-action) · [Install](#installation) · [Quick Demo Flow](#quick-demo-flow) · [How it works](#how-it-works) · [Developer guide](docs/developer-guide.md) · [Community](#community)
+[See it in action](#see-it-in-action) · [Examples](https://aimime.cc/examples.html) · [Install](#installation) · [Quick Demo Flow](#quick-demo-flow) · [How it works](#how-it-works) · [Developer guide](docs/developer-guide.md)
 
 [![Download for macOS](https://img.shields.io/badge/DOWNLOAD%20FOR%20MACOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg) [![Watch the demo](https://img.shields.io/badge/WATCH%20THE%20DEMO-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/VPoY_GSN5wo) [![Discord](https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ghAWAJsB)
 
