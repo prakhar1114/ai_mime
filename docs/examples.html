@@ -84,6 +84,36 @@
               </p>
             </article>
 
+            <!-- Swiggy food ordering -->
+            <article class="example" id="swiggy-order">
+              <div class="example-head">
+                <h3>Order food on Swiggy — and catch a bad input</h3>
+                <span class="example-tag">Record + Run · Failure handling</span>
+              </div>
+              <p class="example-lead">
+                Record a food-ordering task on Swiggy, then rerun it with an intentionally wrong dish to trigger
+                a failure. The task enters failure mode, recognizes that the input itself is invalid, and stops —
+                without healing the skill. This shows AI Mime distinguishing a genuinely bad input from a changed
+                environment: it only self-heals when the skill is at fault, not when the request is impossible.
+              </p>
+              <div class="example-videos" aria-label="Swiggy food ordering demo videos">
+                <a class="video-card" href="https://youtu.be/GoPDmP2wKFc" target="_blank" rel="noopener noreferrer">
+                  <span class="video-thumb">
+                    <img src="https://img.youtube.com/vi/GoPDmP2wKFc/hqdefault.jpg" alt="Watch: a Swiggy order entering failure mode after an invalid dish input" loading="lazy" />
+                    <span class="video-play" aria-hidden="true"></span>
+                  </span>
+                  <span class="video-caption">
+                    <strong>Record &amp; Run with failure handling</strong>
+                    <span>The task detects the invalid input, enters failure mode, and declines to heal the skill.</span>
+                  </span>
+                </a>
+              </div>
+              <p class="example-skill">
+                <span class="pill">Skill</span>
+                Compiled skill package coming soon.
+              </p>
+            </article>
+
             <!-- Google Drive upload -->
             <article class="example" id="gdrive-upload">
               <div class="example-head">
