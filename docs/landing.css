@@ -478,6 +478,13 @@ h3 {
   padding: 26px 24px 28px;
 }
 
+.example-grid {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: 40px;
+  align-items: center;
+}
+
 .example-head {
   display: flex;
   align-items: baseline;
@@ -510,6 +517,11 @@ h3 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
+}
+
+.example-videos .video-card {
+  max-width: 440px;
+  justify-self: center;
 }
 
 .example-skill {
@@ -665,6 +677,11 @@ h3 {
   .shot-grid,
   .video-grid {
     grid-template-columns: 1fr;
+  }
+
+  .example-grid {
+    grid-template-columns: 1fr;
+    gap: 24px;
   }
 
   .shot-card.wide {

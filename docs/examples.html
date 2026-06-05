@@ -57,90 +57,117 @@
           <div class="example-list">
             <!-- IRCTC ticket booking -->
             <article class="example" id="irctc-booking">
-              <div class="example-head">
-                <h3>Book a train ticket on IRCTC</h3>
-                <span class="example-tag">Record + Run</span>
+              <div class="example-grid">
+                <div class="example-info">
+                  <div class="example-head">
+                    <h3>Book a train ticket on IRCTC</h3>
+                    <span class="example-tag">Record + Run</span>
+                  </div>
+                  <p class="example-lead">
+                    Record the full IRCTC booking flow once — search, passenger details, and checkout — then rerun
+                    it with a different set of inputs. The single video captures both the recording and the
+                    rerun with new passenger and journey details.
+                  </p>
+                  <p class="example-skill">
+                    <span class="pill">Skill</span>
+                    Compiled skill package coming soon.
+                  </p>
+                </div>
+                <div class="example-videos" aria-label="IRCTC booking demo videos">
+                  <a class="video-card" href="https://youtu.be/VPoY_GSN5wo" target="_blank" rel="noopener noreferrer">
+                    <span class="video-thumb">
+                      <img src="https://img.youtube.com/vi/VPoY_GSN5wo/hqdefault.jpg" alt="Watch: recording and rerunning an IRCTC booking in AI Mime" loading="lazy" />
+                      <span class="video-play" aria-hidden="true"></span>
+                    </span>
+                  </a>
+                </div>
               </div>
-              <p class="example-lead">
-                Record the full IRCTC booking flow once — search, passenger details, and checkout — then rerun
-                it with a different set of inputs. The single video below captures both the recording and the
-                rerun with new passenger and journey details.
-              </p>
-              <div class="example-videos" aria-label="IRCTC booking demo videos">
-                <a class="video-card" href="https://youtu.be/VPoY_GSN5wo" target="_blank" rel="noopener noreferrer">
-                  <span class="video-thumb">
-                    <img src="https://img.youtube.com/vi/VPoY_GSN5wo/hqdefault.jpg" alt="Watch: recording and rerunning an IRCTC booking in AI Mime" loading="lazy" />
-                    <span class="video-play" aria-hidden="true"></span>
-                  </span>
-                  <span class="video-caption">
-                    <strong>Record &amp; Run</strong>
-                    <span>Record the booking once, then rerun it with a different set of inputs.</span>
-                  </span>
-                </a>
-              </div>
-              <p class="example-skill">
-                <span class="pill">Skill</span>
-                Compiled skill package coming soon.
-              </p>
             </article>
 
             <!-- Swiggy food ordering -->
             <article class="example" id="swiggy-order">
-              <div class="example-head">
-                <h3>Order food on Swiggy — and catch a bad input</h3>
-                <span class="example-tag">Record + Run · Failure handling</span>
+              <div class="example-grid">
+                <div class="example-info">
+                  <div class="example-head">
+                    <h3>Order food on Swiggy — and catch a bad input</h3>
+                    <span class="example-tag">Record + Run · Failure handling</span>
+                  </div>
+                  <p class="example-lead">
+                    Record a food-ordering task on Swiggy, then rerun it with an intentionally wrong dish to trigger
+                    a failure. The task enters failure mode, recognizes that the input itself is invalid, and stops —
+                    without healing the skill. This shows AI Mime distinguishing a genuinely bad input from a changed
+                    environment: it only self-heals when the skill is at fault, not when the request is impossible.
+                  </p>
+                  <p class="example-skill">
+                    <span class="pill">Skill</span>
+                    Compiled skill package coming soon.
+                  </p>
+                </div>
+                <div class="example-videos" aria-label="Swiggy food ordering demo videos">
+                  <a class="video-card" href="https://youtu.be/GoPDmP2wKFc" target="_blank" rel="noopener noreferrer">
+                    <span class="video-thumb">
+                      <img src="https://img.youtube.com/vi/GoPDmP2wKFc/hqdefault.jpg" alt="Watch: a Swiggy order entering failure mode after an invalid dish input" loading="lazy" />
+                      <span class="video-play" aria-hidden="true"></span>
+                    </span>
+                  </a>
+                </div>
               </div>
-              <p class="example-lead">
-                Record a food-ordering task on Swiggy, then rerun it with an intentionally wrong dish to trigger
-                a failure. The task enters failure mode, recognizes that the input itself is invalid, and stops —
-                without healing the skill. This shows AI Mime distinguishing a genuinely bad input from a changed
-                environment: it only self-heals when the skill is at fault, not when the request is impossible.
-              </p>
-              <div class="example-videos" aria-label="Swiggy food ordering demo videos">
-                <a class="video-card" href="https://youtu.be/GoPDmP2wKFc" target="_blank" rel="noopener noreferrer">
-                  <span class="video-thumb">
-                    <img src="https://img.youtube.com/vi/GoPDmP2wKFc/hqdefault.jpg" alt="Watch: a Swiggy order entering failure mode after an invalid dish input" loading="lazy" />
-                    <span class="video-play" aria-hidden="true"></span>
-                  </span>
-                  <span class="video-caption">
-                    <strong>Record &amp; Run with failure handling</strong>
-                    <span>The task detects the invalid input, enters failure mode, and declines to heal the skill.</span>
-                  </span>
-                </a>
-              </div>
-              <p class="example-skill">
-                <span class="pill">Skill</span>
-                Compiled skill package coming soon.
-              </p>
             </article>
 
             <!-- Google Drive upload -->
             <article class="example" id="gdrive-upload">
-              <div class="example-head">
-                <h3>Upload a file to a Google Drive folder</h3>
-                <span class="example-tag">Demo</span>
+              <div class="example-grid">
+                <div class="example-info">
+                  <div class="example-head">
+                    <h3>Upload a file to a Google Drive folder</h3>
+                    <span class="example-tag">Demo</span>
+                  </div>
+                  <p class="example-lead">
+                    Take a file from the local file system and upload it into a specific folder on Google Drive.
+                    AI Mime learns the destination folder and the upload flow, so reruns drop new files into the
+                    right place without manual navigation.
+                  </p>
+                  <p class="example-skill">
+                    <span class="pill">Skill</span>
+                    Compiled skill package coming soon.
+                  </p>
+                </div>
+                <div class="example-videos" aria-label="Google Drive upload demo videos">
+                  <a class="video-card" href="https://youtu.be/G2bJSVx3F8A" target="_blank" rel="noopener noreferrer">
+                    <span class="video-thumb">
+                      <img src="https://img.youtube.com/vi/G2bJSVx3F8A/hqdefault.jpg" alt="Watch: uploading a local file to a Google Drive folder with AI Mime" loading="lazy" />
+                      <span class="video-play" aria-hidden="true"></span>
+                    </span>
+                  </a>
+                </div>
               </div>
-              <p class="example-lead">
-                Take a file from the local file system and upload it into a specific folder on Google Drive.
-                AI Mime learns the destination folder and the upload flow, so reruns drop new files into the
-                right place without manual navigation.
-              </p>
-              <div class="example-videos" aria-label="Google Drive upload demo videos">
-                <a class="video-card" href="https://youtu.be/G2bJSVx3F8A" target="_blank" rel="noopener noreferrer">
-                  <span class="video-thumb">
-                    <img src="https://img.youtube.com/vi/G2bJSVx3F8A/hqdefault.jpg" alt="Watch: uploading a local file to a Google Drive folder with AI Mime" loading="lazy" />
-                    <span class="video-play" aria-hidden="true"></span>
-                  </span>
-                  <span class="video-caption">
-                    <strong>Demo</strong>
-                    <span>Upload a local file into a specific Google Drive folder.</span>
-                  </span>
-                </a>
+            </article>
+
+            <!-- Expense logging -->
+            <article class="example" id="expense-logging">
+              <div class="example-grid">
+                <div class="example-info">
+                  <div class="example-head">
+                    <h3>Logging a folder full of bills into the expenses sheet using AI Mime</h3>
+                    <span class="example-tag">Bash + LLM + Browser Automation</span>
+                  </div>
+                  <p class="example-lead">
+                    Automating the most boring part, fetching data from bills and adding data into a Google Sheet. This becomes very simple using AI Mime. You just record yourself doing the task and AI Mime writes a script to take a folder of bills and add it to the sheet.
+                  </p>
+                  <p class="example-skill">
+                    <span class="pill">Skill</span>
+                    Compiled skill package coming soon.
+                  </p>
+                </div>
+                <div class="example-videos" aria-label="Expense logging demo videos">
+                  <a class="video-card" href="https://youtu.be/csKtuxeV8N4" target="_blank" rel="noopener noreferrer">
+                    <span class="video-thumb">
+                      <img src="https://img.youtube.com/vi/csKtuxeV8N4/hqdefault.jpg" alt="Watch: logging bills to a Google Sheet with AI Mime" loading="lazy" />
+                      <span class="video-play" aria-hidden="true"></span>
+                    </span>
+                  </a>
+                </div>
               </div>
-              <p class="example-skill">
-                <span class="pill">Skill</span>
-                Compiled skill package coming soon.
-              </p>
             </article>
 
             <!-- More examples will be appended here -->
