@@ -17,7 +17,7 @@ environment instead of leaving you with a failed rerun.
 
 [See it in action](#see-it-in-action) · [Install](#installation) · [Quick Demo Flow](#quick-demo-flow) · [How it works](#how-it-works) · [Developer guide](docs/developer-guide.md) · [Community](#community)
 
-[![Download for macOS](https://img.shields.io/badge/DOWNLOAD%20FOR%20MACOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg) [![Discord](https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ghAWAJsB)
+[![Download for macOS](https://img.shields.io/badge/DOWNLOAD%20FOR%20MACOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/prakhar1114/ai_mime/releases/latest/download/AI.Mime.dmg) [![Watch the demo](https://img.shields.io/badge/WATCH%20THE%20DEMO-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/VPoY_GSN5wo) [![Discord](https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ghAWAJsB)
 
 </div>
 
@@ -165,7 +165,13 @@ AI Mime is the single-operator core of a larger executable playbook layer for te
 - [ ] Scheduling, webhooks, natural-language triggers
 - [ ] Human-in-the-loop gates for irreversible actions
 
-## Community
-- [![Discord](https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ghAWAJsB)
-- 🐛 **Issues**: open one on GitHub with broken runs, logs, or reproduction details
-- ⭐ **Star the repo** if you want to follow along
+---
+
+<div align="center">
+
+### If AI Mime saves you clicks, give it a ⭐
+Stars help others find the project - and let us know it's worth building.
+
+Found a broken run? [Open an issue](https://github.com/prakhar1114/ai_mime/issues) with logs and reproduction details.
+
+</div>
