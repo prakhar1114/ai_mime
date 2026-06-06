@@ -3,17 +3,20 @@
 
 # AI Mime
 **Record a task once. Run it forever.**
+</div>
 
-Screen record yourself doing any repetitive task. An agent watches, learns to do
-it end-to-end, then compiles it into a **fast, deterministic script** — plain code
-for the repeatable parts, an LLM only at the genuine decision points, and
-computer-use only for surfaces that can't be automated any other way. The task
-context is captured into a portable Claude Skill so every future run is fast,
-cheap, and repeatable.
+**AI Mime is an automation harness.** Screen record yourself doing any repetitive
+task. An agent watches, learns to do it end-to-end, then compiles it into a
+**fast, deterministic script** — plain code for the repeatable parts, an LLM only
+at the genuine decision points, and computer-use only for surfaces that can't be
+automated any other way. The task context is captured into a portable Claude Skill
+so every future run is fast, cheap, and repeatable.
 
 AI Mime also runs your skills. Provide new inputs and run. When the environment
 shifts and a run breaks, the agent **self-heals** the script to the new
 environment instead of leaving you with a failed rerun.
+
+<div align="center">
 
 [See it in action](#see-it-in-action) · [Examples](https://aimime.cc/examples.html) · [Install](#installation) · [Quick Demo Flow](#quick-demo-flow) · [How it works](#how-it-works) · [Developer guide](docs/developer-guide.md)
 
