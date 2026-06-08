@@ -18,7 +18,7 @@ from multiprocessing import Event, Process, Queue
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -26,7 +26,12 @@ from fastapi.staticfiles import StaticFiles
 from ai_mime.reflect.runner import run_reflect_and_compile_schema
 from ai_mime.screenshot import ScreenshotRecorder
 from ai_mime.debug_log import log, log_server, open_server_log_file
-from ai_mime.agent_runner import AgentBusyError, WorkflowSkillBuildService, WorkspaceAgentChatService
+from ai_mime.agent_runner import (
+    AgentBusyError,
+    WorkflowSkillBuildService,
+    WorkspaceAgentChatService,
+    validate_skill_package,
+)
 from ai_mime.app_data import is_frozen, workflow_runtime_env
 from ai_mime.provider_settings import provider_settings_status, save_provider_settings
 
@@ -200,6 +205,310 @@ def _utc_timestamp() -> str:
 
 def _direct_run_id() -> str:
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
+
+
+def _slugify_task_name(value: str, *, fallback: str = "direct-build") -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or fallback
+
+
+def _write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+_REQUIRED_IMPORT_SKILL_FILES = (
+    "SKILL.md",
+    "run.sh",
+    "scripts/run.py",
+    "inputs/inputs.example.json",
+    "inputs/inputs.template.json",
+    "references/fallback_plan.md",
+)
+_IMPORT_SKIP_DIRS = {
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".agent",
+    "agent",
+    "runs",
+    "outputs",
+}
+_IMPORT_SKIP_FILES = {
+    ".DS_Store",
+    "step_cards.json",
+    "plan_creation.json",
+    "manifest.jsonl",
+}
+_IMPORT_SKIP_SUFFIXES = {
+    ".pyc",
+    ".pyo",
+    ".log",
+    ".tmp",
+    ".temp",
+}
+_IMPORT_WORKFLOW_SCREENSHOT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+_MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024
+_MAX_IMPORT_TOTAL_BYTES = 250 * 1024 * 1024
+
+
+def _safe_upload_relpath(filename: str) -> Path:
+    raw = (filename or "").replace("\\", "/").strip()
+    if not raw:
+        raise ValueError("Uploaded file is missing a relative path")
+    if raw.startswith("/") or raw.startswith("~"):
+        raise ValueError(f"Unsafe upload path: {filename}")
+    parts = [part for part in raw.split("/") if part not in {"", "."}]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Unsafe upload path: {filename}")
+    return Path(*parts)
+
+
+def _strip_common_upload_root(stage_dir: Path) -> Path:
+    entries = [p for p in stage_dir.iterdir() if p.name != "__MACOSX"]
+    if len(entries) == 1 and entries[0].is_dir():
+        return entries[0]
+    return stage_dir
+
+
+def _is_skill_dir(path: Path) -> bool:
+    return path.is_dir() and all((path / rel).is_file() for rel in _REQUIRED_IMPORT_SKILL_FILES)
+
+
+def _find_workflow_skill_dir(workflow_dir: Path) -> Path | None:
+    skills_root = workflow_dir / "skills"
+    if not skills_root.is_dir():
+        return None
+    candidates = [p for p in sorted(skills_root.iterdir()) if _is_skill_dir(p)]
+    return candidates[0] if candidates else None
+
+
+def _parse_skill_frontmatter_fields(skill_dir: Path) -> dict[str, str]:
+    skill_md = skill_dir / "SKILL.md"
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except Exception:
+        return {}
+    m = re.match(r"\A---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+    if not m:
+        return {}
+    out: dict[str, str] = {}
+    for line in m.group(1).splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        out[key.strip()] = value.strip().strip("\"'")
+    return out
+
+
+def _chmod_run_sh(skill_dir: Path) -> None:
+    run_sh = skill_dir / "run.sh"
+    if run_sh.is_file():
+        run_sh.chmod(run_sh.stat().st_mode | 0o755)
+
+
+def _should_skip_import_rel(rel: Path, *, is_workflow: bool, inside_skill: bool, keep_skill_venv: bool) -> bool:
+    parts = rel.parts
+    if any(part == ".venv" for part in parts):
+        return not (inside_skill and keep_skill_venv)
+    if any(part in _IMPORT_SKIP_DIRS for part in parts):
+        return True
+    name = rel.name
+    if name in _IMPORT_SKIP_FILES:
+        return True
+    if name.startswith(".") and name not in {".env"}:
+        return True
+    suffix = rel.suffix.lower()
+    if suffix in _IMPORT_SKIP_SUFFIXES:
+        return True
+    if is_workflow and len(parts) == 1 and suffix in _IMPORT_WORKFLOW_SCREENSHOT_SUFFIXES:
+        return True
+    return False
+
+
+def _copy_import_clean(
+    *,
+    src: Path,
+    dst: Path,
+    is_workflow: bool,
+    skill_dir: Path | None,
+) -> list[str]:
+    removed: list[str] = []
+    skill_dir_resolved = skill_dir.resolve() if skill_dir is not None else None
+    keep_skill_venv = bool(skill_dir is not None and (skill_dir / "requirements.txt").is_file())
+    for path in src.rglob("*"):
+        if path.is_symlink():
+            removed.append(path.relative_to(src).as_posix())
+            continue
+        rel = path.relative_to(src)
+        inside_skill = False
+        if skill_dir_resolved is not None:
+            try:
+                path.resolve().relative_to(skill_dir_resolved)
+                inside_skill = True
+            except ValueError:
+                inside_skill = False
+        if _should_skip_import_rel(
+            rel,
+            is_workflow=is_workflow,
+            inside_skill=inside_skill,
+            keep_skill_venv=keep_skill_venv,
+        ):
+            removed.append(rel.as_posix())
+            if path.is_dir():
+                continue
+            continue
+        target = dst / rel
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+    return sorted(set(removed))
+
+
+def _workflow_id_for_import(display_name: str) -> str:
+    return f"{_direct_run_id()}-{_slugify_task_name(display_name, fallback='imported-skill')}"
+
+
+def _detect_import_root(root: Path) -> tuple[str, Path]:
+    if _is_skill_dir(root):
+        return "skill", root
+    workflow_skill = _find_workflow_skill_dir(root)
+    if workflow_skill is not None:
+        return "workflow", workflow_skill
+    raise ValueError("Uploaded folder is not a valid AI Mime skill or workflow directory")
+
+
+def _validate_import_package(skill_dir: Path, schema: dict[str, Any], optimized_plan: dict[str, Any]) -> None:
+    _chmod_run_sh(skill_dir)
+    validate_skill_package(skill_dir, schema, optimized_plan)
+
+
+def _remove_generated_import_artifacts(root: Path) -> None:
+    for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.is_dir() and path.name in {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}:
+            shutil.rmtree(path, ignore_errors=True)
+        elif path.is_file() and path.suffix.lower() in {".pyc", ".pyo", ".log", ".tmp", ".temp"}:
+            with contextlib.suppress(Exception):
+                path.unlink()
+
+
+def _create_import_preview(stage_dir: Path) -> dict[str, Any]:
+    original_root = _strip_common_upload_root(stage_dir / "original")
+    detected_type, original_skill_dir = _detect_import_root(original_root)
+    clean_root = stage_dir / "clean"
+    if clean_root.exists():
+        shutil.rmtree(clean_root)
+
+    if detected_type == "skill":
+        removed = _copy_import_clean(
+            src=original_root,
+            dst=clean_root,
+            is_workflow=False,
+            skill_dir=original_skill_dir,
+        )
+        clean_skill_dir = clean_root
+        schema: dict[str, Any] = {}
+        optimized_plan: dict[str, Any] = {}
+    else:
+        removed = _copy_import_clean(
+            src=original_root,
+            dst=clean_root,
+            is_workflow=True,
+            skill_dir=original_skill_dir,
+        )
+        clean_skill_dir = _find_workflow_skill_dir(clean_root)
+        if clean_skill_dir is None:
+            raise ValueError("Cleaned workflow does not contain a valid skill package")
+        schema = _read_json(clean_root / "schema.json")
+        optimized_plan = _read_json(clean_root / "optimized_plan.json")
+
+    _validate_import_package(clean_skill_dir, schema, optimized_plan)
+    _remove_generated_import_artifacts(clean_root)
+    fields = _parse_skill_frontmatter_fields(clean_skill_dir)
+    skill_name = fields.get("name") or clean_skill_dir.name
+    display_name = fields.get("name") or clean_skill_dir.name
+    workflow_meta = _read_json(clean_root / "metadata.json") if detected_type == "workflow" else {}
+    if isinstance(workflow_meta.get("name"), str) and workflow_meta["name"].strip():
+        display_name = workflow_meta["name"].strip()
+
+    return {
+        "detected_type": detected_type,
+        "display_name": display_name,
+        "skill_name": skill_name,
+        "skill_dir": str(clean_skill_dir),
+        "removed_preview": removed[:200],
+        "warnings": (
+            ["More than 200 generated or irrelevant files were omitted from this preview."]
+            if len(removed) > 200
+            else []
+        ),
+        "valid": True,
+    }
+
+
+def _install_import_stage(stage_info: dict[str, Any], workflows_root: Path) -> dict[str, Any]:
+    stage_dir = Path(str(stage_info.get("stage_dir") or ""))
+    clean_root = stage_dir / "clean"
+    detected_type = str(stage_info.get("detected_type") or "")
+    display_name = str(stage_info.get("display_name") or "Imported Skill").strip() or "Imported Skill"
+    task_id = _workflow_id_for_import(display_name)
+    workflow_dir = (workflows_root / task_id).resolve()
+    root = workflows_root.resolve()
+    if root not in workflow_dir.parents and workflow_dir != root:
+        raise ValueError("Invalid import destination")
+    if workflow_dir.exists():
+        raise FileExistsError(f"Workflow already exists: {workflow_dir}")
+
+    try:
+        if detected_type == "skill":
+            skill_slug = _slugify_task_name(str(stage_info.get("skill_name") or display_name), fallback="imported-skill")
+            workflow_dir.mkdir(parents=True, exist_ok=False)
+            _write_json(
+                workflow_dir / "metadata.json",
+                {
+                    "name": display_name,
+                    "description": "",
+                    "source": "imported_skill",
+                    "created_at": _utc_timestamp(),
+                },
+            )
+            _write_json(workflow_dir / "schema.json", {})
+            _write_json(workflow_dir / "optimized_plan.json", {})
+            skill_dst = workflow_dir / "skills" / skill_slug
+            shutil.copytree(clean_root, skill_dst)
+            _chmod_run_sh(skill_dst)
+        elif detected_type == "workflow":
+            shutil.copytree(clean_root, workflow_dir)
+            meta = _read_json(workflow_dir / "metadata.json")
+            if not meta:
+                meta = {"name": display_name, "description": ""}
+            if not isinstance(meta.get("name"), str) or not meta["name"].strip():
+                meta["name"] = display_name
+            meta.setdefault("description", "")
+            meta["source"] = meta.get("source") or "imported_workflow"
+            meta["imported_at"] = _utc_timestamp()
+            _write_json(workflow_dir / "metadata.json", meta)
+            if not (workflow_dir / "schema.json").exists():
+                _write_json(workflow_dir / "schema.json", {})
+            if not (workflow_dir / "optimized_plan.json").exists():
+                _write_json(workflow_dir / "optimized_plan.json", {})
+            skill_dir = _find_workflow_skill_dir(workflow_dir)
+            if skill_dir is None:
+                raise ValueError("Installed workflow does not contain a valid skill package")
+            _chmod_run_sh(skill_dir)
+        else:
+            raise ValueError("Unknown staged import type")
+    except Exception:
+        if workflow_dir.exists():
+            shutil.rmtree(workflow_dir, ignore_errors=True)
+        raise
+
+    return {"task_id": task_id, "workflow_dir": str(workflow_dir)}
 
 
 def _snapshot_asset_files(assets_dir: Path) -> dict[str, tuple[int, int]]:
@@ -641,6 +950,7 @@ def create_app(
     task_agent_services: dict[str, WorkspaceAgentChatService] = {}
     replay_agent_services: dict[str, WorkspaceAgentChatService] = {}
     skill_build_services: dict[str, WorkflowSkillBuildService] = {}
+    import_staging: dict[str, dict[str, Any]] = {}
 
     _running_automations: dict[str, subprocess.Popen[str]] = {}
 
@@ -906,6 +1216,122 @@ def create_app(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to queue recording start: {e}")
         return {"ok": True, "queued": True}
+
+    @app.post("/api/direct-build/workflows")
+    def api_create_direct_build_workflow(payload: dict[str, Any] = Body(...)):
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(status_code=400, detail="name must be a non-empty string")
+        display_name = name.strip()
+        slug = _slugify_task_name(display_name)
+        for _attempt in range(20):
+            task_id = f"{_direct_run_id()}-{slug}"
+            workflow_dir = (task_runner.workflows_root / task_id).resolve()
+            task_runner._assert_under_root(workflow_dir, task_runner.workflows_root)
+            if not workflow_dir.exists():
+                break
+        else:
+            raise HTTPException(status_code=500, detail="Failed to allocate a unique workflow id")
+
+        created_at = _utc_timestamp()
+        try:
+            workflow_dir.mkdir(parents=True, exist_ok=False)
+            _write_json(
+                workflow_dir / "metadata.json",
+                {
+                    "name": display_name,
+                    "description": "",
+                    "source": "direct_build",
+                    "created_at": created_at,
+                },
+            )
+            _write_json(workflow_dir / "schema.json", {})
+            _write_json(workflow_dir / "optimized_plan.json", {})
+        except Exception as e:
+            with contextlib.suppress(Exception):
+                if workflow_dir.exists():
+                    shutil.rmtree(workflow_dir)
+            raise HTTPException(status_code=500, detail=f"Failed to create direct build workflow: {e}")
+
+        return {
+            "task_id": task_id,
+            "workflow_dir": str(workflow_dir),
+            "created_at": created_at,
+        }
+
+    @app.post("/api/import/preview")
+    async def api_import_preview(files: list[UploadFile] = File(...)):
+        if not files:
+            raise HTTPException(status_code=400, detail="Upload a skill or workflow folder")
+        staging_id = uuid.uuid4().hex
+        stage_dir = Path(tempfile.mkdtemp(prefix="ai-mime-import-"))
+        original_dir = stage_dir / "original"
+        original_dir.mkdir(parents=True, exist_ok=True)
+        seen: set[str] = set()
+        total_bytes = 0
+        try:
+            for upload in files:
+                rel = _safe_upload_relpath(upload.filename or "")
+                rel_key = rel.as_posix()
+                if rel_key in seen:
+                    raise ValueError(f"Duplicate uploaded path: {rel_key}")
+                seen.add(rel_key)
+                dst = original_dir / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                file_bytes = 0
+                with dst.open("wb") as f:
+                    while True:
+                        chunk = await upload.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        file_bytes += len(chunk)
+                        total_bytes += len(chunk)
+                        if file_bytes > _MAX_IMPORT_FILE_BYTES:
+                            raise ValueError(f"Uploaded file is too large: {rel_key}")
+                        if total_bytes > _MAX_IMPORT_TOTAL_BYTES:
+                            raise ValueError("Uploaded folder is too large")
+                        f.write(chunk)
+            if not seen:
+                raise ValueError("Uploaded folder is empty")
+
+            preview = _create_import_preview(stage_dir)
+            preview["staging_id"] = staging_id
+            import_staging[staging_id] = {
+                "stage_dir": str(stage_dir),
+                **preview,
+                "created_at": time.monotonic(),
+            }
+            return preview
+        except ValueError as e:
+            shutil.rmtree(stage_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            shutil.rmtree(stage_dir, ignore_errors=True)
+            raise HTTPException(status_code=500, detail=f"Failed to preview import: {e}")
+        finally:
+            for upload in files:
+                with contextlib.suppress(Exception):
+                    await upload.close()
+
+    @app.post("/api/import/install")
+    def api_import_install(payload: dict[str, Any] = Body(...)):
+        staging_id = payload.get("staging_id")
+        if not isinstance(staging_id, str) or not staging_id:
+            raise HTTPException(status_code=400, detail="staging_id must be a non-empty string")
+        stage_info = import_staging.get(staging_id)
+        if not stage_info:
+            raise HTTPException(status_code=404, detail="Import preview not found or expired")
+        try:
+            result = _install_import_stage(stage_info, task_runner.workflows_root)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to install import: {e}")
+        finally:
+            removed = import_staging.pop(staging_id, None)
+            if removed is not None:
+                shutil.rmtree(Path(str(removed.get("stage_dir") or "")), ignore_errors=True)
+        return result
 
     @app.post("/api/app/quit")
     def api_quit_app():

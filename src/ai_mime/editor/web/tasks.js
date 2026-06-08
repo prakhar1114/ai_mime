@@ -4,6 +4,8 @@
     refreshBtn: document.getElementById("refreshBtn"),
     providerBtn: document.getElementById("providerBtn"),
     startRecordingBtn: document.getElementById("startRecordingBtn"),
+    directBuildBtn: document.getElementById("directBuildBtn"),
+    uploadSkillBtn: document.getElementById("uploadSkillBtn"),
     agentModeBtn: document.getElementById("agentModeBtn"),
     openWorkflowsBtn: document.getElementById("openWorkflowsBtn"),
     quitAppBtn: document.getElementById("quitAppBtn"),
@@ -235,6 +237,188 @@
     if (existing) existing.remove();
   }
 
+  function closeDirectBuildModal() {
+    const existing = document.querySelector(".modal-overlay.direct-build-modal");
+    if (existing) existing.remove();
+  }
+
+  function closeImportModal() {
+    const existing = document.querySelector(".modal-overlay.import-modal");
+    if (existing) existing.remove();
+  }
+
+  function renderImportPreviewHtml(data) {
+    const warnings = Array.isArray(data.warnings) && data.warnings.length
+      ? `<ul>${data.warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+      : `<div class="modal-desc">No warnings.</div>`;
+    const removed = Array.isArray(data.removed_preview) && data.removed_preview.length
+      ? `<details class="import-details"><summary>${data.removed_preview.length} generated files will be removed</summary><ul>${data.removed_preview.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></details>`
+      : `<div class="modal-desc">No generated files need to be removed.</div>`;
+    return `
+      <div class="import-summary">
+        <div><strong>Type</strong><span>${escapeHtml(data.detected_type || "Unknown")}</span></div>
+        <div><strong>Name</strong><span>${escapeHtml(data.display_name || "Imported Skill")}</span></div>
+        <div><strong>Skill</strong><span>${escapeHtml(data.skill_name || "")}</span></div>
+        <div><strong>Status</strong><span>${data.valid ? "Valid" : "Invalid"}</span></div>
+      </div>
+      <div class="modal-section-title">Warnings</div>
+      ${warnings}
+      <div class="modal-section-title">Cleanup</div>
+      ${removed}
+    `;
+  }
+
+  async function installImportedSkill(stagingId, button, message) {
+    button.disabled = true;
+    message.textContent = "Installing...";
+    try {
+      const data = await request("/api/import/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ staging_id: stagingId }),
+      });
+      const taskId = data && data.task_id;
+      if (!taskId) throw new Error("Import installed without a task id.");
+      const status = await request(`/api/tasks/${encodeURIComponent(taskId)}/status`);
+      if (status && status.can_replay) {
+        window.location.href = `/replay/${encodeURIComponent(taskId)}`;
+      } else {
+        window.location.href = `/skill-build/${encodeURIComponent(taskId)}?action=continue`;
+      }
+    } catch (e) {
+      message.textContent = e.message || String(e);
+      button.disabled = false;
+    }
+  }
+
+  function showImportModal(files) {
+    closeImportModal();
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay import-modal";
+    overlay.innerHTML = `
+      <div class="modal-card import-card" role="dialog" aria-modal="true" aria-label="Upload skill">
+        <div class="modal-header">
+          <div class="modal-title">Upload skill</div>
+          <div class="modal-desc">Verifying the selected folder before installing it into Workflows.</div>
+        </div>
+        <div id="importPreviewBody" class="import-preview-body">
+          <div class="modal-desc">Uploading and checking structure...</div>
+        </div>
+        <div class="provider-message" id="importMessage"></div>
+        <div class="modal-actions row">
+          <button class="modal-btn secondary" id="cancelImportBtn">Cancel</button>
+          <button class="modal-btn primary" id="installImportBtn" disabled>Install</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const body = overlay.querySelector("#importPreviewBody");
+    const message = overlay.querySelector("#importMessage");
+    const installBtn = overlay.querySelector("#installImportBtn");
+    overlay.querySelector("#cancelImportBtn").addEventListener("click", closeImportModal);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) closeImportModal();
+    });
+
+    const form = new FormData();
+    Array.from(files || []).forEach((file) => {
+      form.append("files", file, file.webkitRelativePath || file.name);
+    });
+    fetch("/api/import/preview", { method: "POST", body: form })
+      .then(async (res) => {
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch { /* keep raw */ }
+        if (!res.ok) {
+          const detail = data && data.detail ? data.detail : text || `HTTP ${res.status}`;
+          throw new Error(detail);
+        }
+        return data;
+      })
+      .then((data) => {
+        body.innerHTML = renderImportPreviewHtml(data || {});
+        installBtn.disabled = !(data && data.valid && data.staging_id);
+        installBtn.addEventListener("click", () => installImportedSkill(data.staging_id, installBtn, message));
+      })
+      .catch((e) => {
+        body.innerHTML = `<div class="modal-desc">The selected folder could not be imported.</div>`;
+        message.textContent = e.message || String(e);
+      });
+  }
+
+  function openUploadSkillPicker() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.webkitdirectory = true;
+    input.addEventListener("change", () => {
+      if (input.files && input.files.length) showImportModal(input.files);
+    });
+    input.click();
+  }
+
+  function openDirectBuildModal() {
+    closeDirectBuildModal();
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay direct-build-modal";
+    overlay.innerHTML = `
+      <div class="modal-card direct-build-card" role="dialog" aria-modal="true" aria-label="Direct build workflow">
+        <div class="modal-header">
+          <div class="modal-title">Direct build</div>
+          <div class="modal-desc">Create a workflow and build a reusable skill directly from a task description.</div>
+        </div>
+        <label class="provider-key">
+          <span>Workflow name</span>
+          <input type="text" id="directBuildName" placeholder="e.g. Summarize invoices">
+        </label>
+        <div class="provider-message" id="directBuildMessage"></div>
+        <div class="modal-actions row">
+          <button class="modal-btn secondary" id="cancelDirectBuildBtn">Cancel</button>
+          <button class="modal-btn primary" id="createDirectBuildBtn">Create Workflow</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const nameInput = overlay.querySelector("#directBuildName");
+    const message = overlay.querySelector("#directBuildMessage");
+    const createBtn = overlay.querySelector("#createDirectBuildBtn");
+    const submit = async () => {
+      const name = nameInput.value.trim();
+      if (!name) {
+        message.textContent = "Enter a workflow name.";
+        nameInput.focus();
+        return;
+      }
+      createBtn.disabled = true;
+      message.textContent = "Creating workflow...";
+      try {
+        const data = await request("/api/direct-build/workflows", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        const taskId = data && data.task_id;
+        if (!taskId) throw new Error("Direct build workflow was created without a task id.");
+        window.location.href = `/skill-build/${encodeURIComponent(taskId)}?action=direct-start`;
+      } catch (e) {
+        message.textContent = e.message || String(e);
+        createBtn.disabled = false;
+      }
+    };
+    overlay.querySelector("#cancelDirectBuildBtn").addEventListener("click", closeDirectBuildModal);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) closeDirectBuildModal();
+    });
+    createBtn.addEventListener("click", submit);
+    nameInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submit();
+      }
+    });
+    nameInput.focus();
+  }
+
   async function openProviderModal() {
     if (!providerSettings) await loadProviderSettings();
     const current = providerSettings && providerSettings.provider === "openai" ? "openai" : "anthropic";
@@ -338,6 +522,8 @@
 
   el.refreshBtn.addEventListener("click", loadTasks);
   el.providerBtn.addEventListener("click", openProviderModal);
+  el.directBuildBtn.addEventListener("click", openDirectBuildModal);
+  el.uploadSkillBtn.addEventListener("click", openUploadSkillPicker);
   el.agentModeBtn.addEventListener("click", () => {
     window.location.href = "/agent";
   });

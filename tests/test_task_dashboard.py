@@ -76,6 +76,51 @@ class TaskDashboardTests(unittest.TestCase):
         (wf / "metadata.json").write_text(json.dumps({"name": "Broken Task"}), encoding="utf-8")
         return wf
 
+    def _skill_upload_files(self, prefix: str = "weather-skill") -> list[tuple[str, tuple[str, bytes, str]]]:
+        skill_md = (
+            "---\n"
+            "name: fetch-weather\n"
+            "description: Fetch weather for a location.\n"
+            "---\n\n"
+            "# Fetch Weather\n"
+        ).encode()
+        run_py = (
+            "import argparse, json\n"
+            "p = argparse.ArgumentParser()\n"
+            "p.add_argument('--inputs-json', required=True)\n"
+            "a = p.parse_args()\n"
+            "json.load(open(a.inputs_json))\n"
+            "print('{\"event\":\"workflow_done\",\"outputs\":{\"ok\":true}}')\n"
+        ).encode()
+        run_sh = (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "HERE=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
+            "INPUTS=\"${1:-$HERE/inputs/inputs.example.json}\"\n"
+            "exec python3 \"$HERE/scripts/run.py\" --inputs-json \"$INPUTS\"\n"
+        ).encode()
+        return [
+            ("files", (f"{prefix}/SKILL.md", skill_md, "text/markdown")),
+            ("files", (f"{prefix}/run.sh", run_sh, "application/x-sh")),
+            ("files", (f"{prefix}/scripts/run.py", run_py, "text/x-python")),
+            ("files", (f"{prefix}/inputs/inputs.example.json", b'{"location":"San Francisco, CA"}', "application/json")),
+            ("files", (f"{prefix}/inputs/inputs.template.json", b'{"location":"<FILL IN: location>"}', "application/json")),
+            ("files", (f"{prefix}/references/fallback_plan.md", b"# Fallback\n\nSearch weather manually.\n", "text/markdown")),
+            ("files", (f"{prefix}/runs/old/data.md", b"old run", "text/markdown")),
+            ("files", (f"{prefix}/scripts/__pycache__/run.pyc", b"cached", "application/octet-stream")),
+        ]
+
+    def _workflow_upload_files(self, prefix: str = "invoice-workflow") -> list[tuple[str, tuple[str, bytes, str]]]:
+        files = self._skill_upload_files(f"{prefix}/skills/fetch-weather")
+        files.extend([
+            ("files", (f"{prefix}/metadata.json", b'{"name":"Invoice Workflow"}', "application/json")),
+            ("files", (f"{prefix}/schema.json", b"{}", "application/json")),
+            ("files", (f"{prefix}/optimized_plan.json", b"{}", "application/json")),
+            ("files", (f"{prefix}/outputs/result.json", b"{}", "application/json")),
+            ("files", (f"{prefix}/agent/memory.md", b"old memory", "text/markdown")),
+        ])
+        return files
+
     def test_inventory_marks_ready_and_pending_tasks(self) -> None:
         self._ready_workflow("20260513T000000Z-ready")
         self._ready_workflow("20260513T000050Z-workflow-only")
@@ -301,6 +346,111 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertTrue(data["has_optimized_plan"])
         self.assertFalse(data["has_skill"])
 
+    def test_direct_build_create_workflow_and_dashboard_row(self) -> None:
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        response = client.post("/api/direct-build/workflows", json={"name": "Summarize invoices"})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        task_id = data["task_id"]
+        workflow = Path(data["workflow_dir"])
+        self.assertTrue(workflow.exists())
+        self.assertEqual(json.loads((workflow / "metadata.json").read_text(encoding="utf-8"))["source"], "direct_build")
+        self.assertEqual(json.loads((workflow / "metadata.json").read_text(encoding="utf-8"))["name"], "Summarize invoices")
+        self.assertEqual(json.loads((workflow / "schema.json").read_text(encoding="utf-8")), {})
+        self.assertEqual(json.loads((workflow / "optimized_plan.json").read_text(encoding="utf-8")), {})
+
+        rows = {row["id"]: row for row in client.get("/api/tasks").json()["tasks"]}
+        self.assertIn(task_id, rows)
+        self.assertEqual(rows[task_id]["status"], "ready")
+        self.assertEqual(rows[task_id]["display_name"], "Summarize invoices")
+        self.assertTrue(rows[task_id]["has_schema"])
+        self.assertTrue(rows[task_id]["has_optimized_plan"])
+        self.assertFalse(rows[task_id]["has_skill"])
+
+        page = client.get(f"/skill-build/{task_id}")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("Build Skill", page.text)
+
+    def test_import_preview_and_install_bare_skill(self) -> None:
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        preview = client.post("/api/import/preview", files=self._skill_upload_files())
+
+        self.assertEqual(preview.status_code, 200, preview.text)
+        preview_data = preview.json()
+        self.assertEqual(preview_data["detected_type"], "skill")
+        self.assertTrue(preview_data["valid"])
+        self.assertIn("runs/old/data.md", preview_data["removed_preview"])
+        self.assertIn("scripts/__pycache__/run.pyc", preview_data["removed_preview"])
+
+        install = client.post("/api/import/install", json={"staging_id": preview_data["staging_id"]})
+
+        self.assertEqual(install.status_code, 200, install.text)
+        task_id = install.json()["task_id"]
+        workflow = Path(install.json()["workflow_dir"])
+        self.assertEqual(json.loads((workflow / "metadata.json").read_text(encoding="utf-8"))["source"], "imported_skill")
+        self.assertEqual(json.loads((workflow / "schema.json").read_text(encoding="utf-8")), {})
+        self.assertEqual(json.loads((workflow / "optimized_plan.json").read_text(encoding="utf-8")), {})
+        skill_dir = workflow / "skills" / "fetch-weather"
+        self.assertTrue((skill_dir / "run.sh").exists())
+        self.assertTrue(os.access(skill_dir / "run.sh", os.X_OK))
+        self.assertFalse((skill_dir / "runs").exists())
+        self.assertFalse((skill_dir / "scripts" / "__pycache__").exists())
+
+        row = client.get(f"/api/tasks/{task_id}/status")
+        self.assertEqual(row.status_code, 200, row.text)
+        self.assertTrue(row.json()["has_skill"])
+        self.assertTrue(row.json()["can_replay"])
+
+    def test_import_preview_and_install_workflow_directory(self) -> None:
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        preview = client.post("/api/import/preview", files=self._workflow_upload_files())
+
+        self.assertEqual(preview.status_code, 200, preview.text)
+        preview_data = preview.json()
+        self.assertEqual(preview_data["detected_type"], "workflow")
+        self.assertEqual(preview_data["display_name"], "Invoice Workflow")
+        self.assertIn("outputs/result.json", preview_data["removed_preview"])
+        self.assertIn("agent/memory.md", preview_data["removed_preview"])
+
+        install = client.post("/api/import/install", json={"staging_id": preview_data["staging_id"]})
+
+        self.assertEqual(install.status_code, 200, install.text)
+        workflow = Path(install.json()["workflow_dir"])
+        self.assertEqual(json.loads((workflow / "metadata.json").read_text(encoding="utf-8"))["name"], "Invoice Workflow")
+        self.assertTrue((workflow / "skills" / "fetch-weather" / "run.sh").exists())
+        self.assertFalse((workflow / "outputs").exists())
+        self.assertFalse((workflow / "agent").exists())
+
+        rows = {row["id"]: row for row in client.get("/api/tasks").json()["tasks"]}
+        self.assertIn(install.json()["task_id"], rows)
+        self.assertTrue(rows[install.json()["task_id"]]["has_skill"])
+        self.assertTrue(rows[install.json()["task_id"]]["can_replay"])
+
+    def test_import_preview_rejects_invalid_and_unsafe_folders(self) -> None:
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        invalid = client.post(
+            "/api/import/preview",
+            files=[("files", ("not-a-skill/readme.txt", b"hello", "text/plain"))],
+        )
+        self.assertEqual(invalid.status_code, 400, invalid.text)
+        self.assertIn("not a valid AI Mime skill", invalid.text)
+
+        unsafe = client.post(
+            "/api/import/preview",
+            files=[("files", ("bad/../SKILL.md", b"unsafe", "text/markdown"))],
+        )
+        self.assertEqual(unsafe.status_code, 400, unsafe.text)
+        self.assertIn("Unsafe upload path", unsafe.text)
+
     def test_incomplete_skill_folder_does_not_count_as_built_skill(self) -> None:
         for task_id, has_run_sh in (
             ("20260513T000080Z-bare-skill-dir", False),
@@ -426,6 +576,20 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("Agent Mode", response.text)
         self.assertIn("Provider", response.text)
+        self.assertIn("Direct build", response.text)
+        self.assertIn("Upload skill", response.text)
+
+    def test_direct_build_static_wiring_exists(self) -> None:
+        tasks_js = Path("src/ai_mime/editor/web/tasks.js").read_text(encoding="utf-8")
+        skill_build_js = Path("src/ai_mime/editor/web/skill_build.js").read_text(encoding="utf-8")
+
+        self.assertIn("/api/direct-build/workflows", tasks_js)
+        self.assertIn("action=direct-start", tasks_js)
+        self.assertIn("/api/import/preview", tasks_js)
+        self.assertIn("/api/import/install", tasks_js)
+        self.assertIn("webkitdirectory", tasks_js)
+        self.assertIn("direct-start", skill_build_js)
+        self.assertIn("Start by asking me what task this skill should perform", skill_build_js)
 
     def test_provider_settings_api_reports_status(self) -> None:
         app = create_app(

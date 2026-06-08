@@ -98,6 +98,65 @@ def _write_workflow(workflow_dir: Path, schema: dict, plan: dict) -> Path:
     return skill_dir
 
 
+def _write_direct_workflow_with_skill(workflow_dir: Path) -> Path:
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+    (workflow_dir / "metadata.json").write_text(
+        json.dumps({"name": "Summarize invoices", "source": "direct_build"}),
+        encoding="utf-8",
+    )
+    (workflow_dir / "schema.json").write_text(json.dumps({}), encoding="utf-8")
+    (workflow_dir / "optimized_plan.json").write_text(json.dumps({}), encoding="utf-8")
+    (workflow_dir / "agent").mkdir(exist_ok=True)
+    (workflow_dir / "agent" / "confirmed_inputs.json").write_text(
+        json.dumps({"invoice_dir": "/tmp/invoices"}, indent=2),
+        encoding="utf-8",
+    )
+    skill_dir = workflow_dir / "skills" / workflow_dir.name.lower()
+    (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "inputs").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "references").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: summarize-invoices\n"
+        "description: Summarize invoices from a folder.\n"
+        "---\n\n"
+        "# Summarize Invoices\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "inputs" / "inputs.example.json").write_text(
+        json.dumps({"invoice_dir": "/tmp/invoices"}, indent=2),
+        encoding="utf-8",
+    )
+    (skill_dir / "inputs" / "inputs.template.json").write_text(
+        json.dumps({"invoice_dir": "<FILL IN: invoice folder>"}, indent=2),
+        encoding="utf-8",
+    )
+    (skill_dir / "references" / "fallback_plan.md").write_text(
+        "# Fallback plan\n\nRead invoices and summarize them.\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "scripts" / "run.py").write_text(
+        "import argparse, json\n"
+        "p = argparse.ArgumentParser()\n"
+        "p.add_argument('--inputs-json', required=True)\n"
+        "a = p.parse_args()\n"
+        "json.load(open(a.inputs_json))\n"
+        "print('{\"event\":\"workflow_done\",\"outputs\":{\"summary\":\"ok\"}}')\n",
+        encoding="utf-8",
+    )
+    run_sh = skill_dir / "run.sh"
+    run_sh.write_text(
+        '#!/usr/bin/env bash\n'
+        'set -euo pipefail\n'
+        'HERE="$(cd "$(dirname "$0")" && pwd)"\n'
+        'INPUTS="${1:-$HERE/inputs/inputs.example.json}"\n'
+        'exec python3 "$HERE/scripts/run.py" --inputs-json "$INPUTS"\n',
+        encoding="utf-8",
+    )
+    run_sh.chmod(run_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return skill_dir
+
+
 def _build_service(workflow_dir: Path) -> WorkflowSkillBuildService:
     class UnusedAdapter:
         id = "claude_code"
@@ -179,6 +238,21 @@ class WorkflowSkillBuildServiceTests(unittest.TestCase):
             self.assertEqual(event["status"], "skill_ready")
             self.assertEqual(event["skill_dir"], str(skill_dir))
             self.assertEqual(service._terminal_status, "skill_ready")
+
+    def test_direct_build_empty_schema_plan_can_validate_ready_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td) / "20260607T000000Z-summarize-invoices"
+            skill_dir = _write_direct_workflow_with_skill(workflow_dir)
+            service = _build_service(workflow_dir)
+            _write_signal(workflow_dir, {"status": "skill_ready", "summary": "done"})
+
+            event = service._consume_terminal_signal()
+
+            self.assertIsNotNone(event)
+            assert event is not None
+            self.assertEqual(event["event"], "skill_build_done")
+            self.assertEqual(event["status"], "skill_ready")
+            self.assertEqual(event["skill_dir"], str(skill_dir))
 
     def test_skill_unbuildable_signal_preserves_reason_and_suggested_changes(self) -> None:
         with tempfile.TemporaryDirectory() as td:

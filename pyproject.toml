@@ -27,6 +27,7 @@ dependencies = [
     "tqdm>=4.0.0",
     "setuptools",
     "fastapi>=0.110.0",
+    "python-multipart>=0.0.28",
     "uvicorn>=0.27.0",
     "lmnr[all]",
     "llm-resolver",

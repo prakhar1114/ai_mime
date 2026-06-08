@@ -187,6 +187,32 @@
           }
         }, 150);
       }
+    } else if (action === "direct-start") {
+      hideStartPanel();
+      if (banner) {
+        banner.hidden = true;
+        banner.innerHTML = "";
+      }
+      try {
+        await fetch(`/api/tasks/${encodeURIComponent(taskId)}/skill-build/reset`, { method: "POST" });
+      } catch (err) {
+        console.error("Failed to reset skill build:", err);
+      }
+      if (typeof window.AgentChat?.newChat === "function") {
+        window.AgentChat.newChat();
+      }
+      setTimeout(() => {
+        const emptyState = document.querySelector("#messages .empty-state");
+        if (emptyState) {
+          emptyState.textContent = "Start by describing the task, inputs, outputs, and preferred approach for this direct skill build.";
+        }
+        const input = document.getElementById("messageInput");
+        if (input) {
+          input.placeholder = "Describe the task this skill should perform...";
+          input.focus();
+        }
+        submitAgentPrompt("Start by asking me what task this skill should perform, what inputs it needs, what outputs it should produce, and what approach or constraints matter.");
+      }, 150);
     } else if (action === "continue") {
       hideStartPanel();
       if (activeSessionId) {
