@@ -64,3 +64,11 @@ def test_replay_ui_does_not_submit_fill_in_hints_as_values() -> None:
     assert "raw.map((itemRaw, index)" in js
     assert 'if (!isFillInHintValue(input.value)) return;' in js
     assert 'input.value = "";' in js
+
+
+def test_replay_ui_renders_logs_section_for_older_runs() -> None:
+    js = Path("src/ai_mime/editor/web/replay.js").read_text(encoding="utf-8")
+
+    assert 'res.logs = extractSection("Logs")' in js
+    assert "if (parsed.logs)" in js
+    assert 'line.startsWith("[stderr] ")' in js

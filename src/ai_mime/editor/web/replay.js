@@ -983,6 +983,7 @@
       input: null,
       output: null,
       error: "",
+      logs: "",
       stdout: "",
       stderr: ""
     };
@@ -1013,6 +1014,7 @@
 
     res.command = extractSection("Command Executed");
     res.error = extractSection("Error");
+    res.logs = extractSection("Logs");
     res.stdout = extractSection("Standard Output");
     res.stderr = extractSection("Standard Error");
 
@@ -1067,11 +1069,18 @@
     if (parsed.command) {
       appendOlderLog(`$ ${parsed.command}`);
     }
-    if (parsed.stdout) {
-      parsed.stdout.split("\n").forEach(line => appendOlderLog(line, "stdout"));
-    }
-    if (parsed.stderr) {
-      parsed.stderr.split("\n").forEach(line => appendOlderLog(line, "stderr"));
+    if (parsed.logs) {
+      parsed.logs.split("\n").forEach(line => {
+        const isStderr = line.startsWith("[stderr] ");
+        appendOlderLog(line, isStderr ? "stderr" : "stdout");
+      });
+    } else {
+      if (parsed.stdout) {
+        parsed.stdout.split("\n").forEach(line => appendOlderLog(line, "stdout"));
+      }
+      if (parsed.stderr) {
+        parsed.stderr.split("\n").forEach(line => appendOlderLog(line, "stderr"));
+      }
     }
     
     if (parsed.input) {
