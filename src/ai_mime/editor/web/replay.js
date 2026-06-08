@@ -177,11 +177,8 @@
     }
   }
 
-  // inputs.template.json values look like:
-  //   "<FILL IN: absolute path to a folder containing ...>"
-  // or plain default strings. Parse the placeholder hint into `description`
-  // and treat anything that doesn't look like a <FILL IN> sentinel as a
-  // pre-filled default value.
+  // inputs.template.json values are UI support text only. They describe the
+  // value the user should enter, but are never submitted as input values.
   function paramFromTemplateEntry(name, raw, path) {
     if (Array.isArray(raw)) {
       const sample = raw.length ? raw[0] : "";
@@ -191,9 +188,7 @@
         path,
         type: "array",
         required: true,
-        default: raw.length ? raw.map((itemRaw, index) => (
-          defaultValueForNode(paramFromTemplateEntry(singularize(name), itemRaw, [...path, index]))
-        )) : [defaultValueForNode(item)],
+        default: [defaultValueForNode(item)],
         item,
       };
     }
@@ -213,26 +208,35 @@
       };
     }
 
+    const type = inferType(typeof raw === "string" ? raw : raw, name);
     const value = typeof raw === "string" ? raw : (raw == null ? "" : String(raw));
     let description = "";
-    let defaultVal = "";
+    let placeholder = "";
     let required = true;
-    const m = fillInHintMatch(value);
-    if (m) {
-      description = m[1].trim();
+    const fillIn = fillInHintMatch(value);
+    const optional = optionalHintMatch(value);
+    if (fillIn) {
+      placeholder = fillIn[1].trim();
     } else if (value === "<FILL IN>" || /^<\s*FILL IN\s*>$/i.test(value)) {
-      description = "";
+      placeholder = "";
+    } else if (optional) {
+      placeholder = optional[1].trim();
+      required = false;
+    } else if (/^<\s*OPTIONAL\s*>\s*$/i.test(value)) {
+      placeholder = "";
+      required = false;
     } else {
-      defaultVal = value;
+      placeholder = value;
       required = false;
     }
     return {
       name,
       path,
-      type: inferType(typeof raw === "string" ? raw : raw, name),
+      type,
       description,
+      placeholder,
       required,
-      default: defaultVal,
+      default: emptyValueForType(type),
     };
   }
 
@@ -241,9 +245,23 @@
     return value.match(/^<\s*FILL IN\s*:\s*([\s\S]*?)\s*>\s*$/i);
   }
 
+  function optionalHintMatch(value) {
+    if (typeof value !== "string") return null;
+    return value.match(/^<\s*OPTIONAL\s*:\s*([\s\S]*?)\s*>\s*$/i);
+  }
+
   function isFillInHintValue(value) {
     if (typeof value !== "string") return false;
     return Boolean(fillInHintMatch(value) || /^<\s*FILL IN\s*>\s*$/i.test(value));
+  }
+
+  function isTemplateHintValue(value) {
+    if (typeof value !== "string") return false;
+    return Boolean(
+      isFillInHintValue(value) ||
+      optionalHintMatch(value) ||
+      /^<\s*OPTIONAL\s*>\s*$/i.test(value)
+    );
   }
 
   function singularize(name) {
@@ -257,6 +275,12 @@
     const lc = String(name || "").toLowerCase();
     if (lc.endsWith("_path") || lc.endsWith("_dir") || lc.endsWith("_folder") || lc === "path") return "path";
     return "string";
+  }
+
+  function emptyValueForType(type) {
+    if (type === "boolean" || type === "bool") return false;
+    if (type === "number" || type === "integer") return null;
+    return "";
   }
 
   function renderParamFields(values) {
@@ -283,7 +307,7 @@
     const dataAttrs = `data-path="${escapeHtml(path)}" data-type="${escapeHtml(p.type)}" data-required="${p.required ? "1" : "0"}"`;
       const required = p.required ? ` <span aria-hidden="true" title="required">*</span>` : "";
       const desc = p.description ? `<div class="desc">${escapeHtml(p.description)}</div>` : "";
-    const defaultVal = fieldValue != null ? escapeHtml(String(fieldValue)) : "";
+    const inputValue = fieldValue != null ? escapeHtml(String(fieldValue)) : "";
       if (p.type === "boolean" || p.type === "bool") {
         return `
         <div class="${fieldClass}" ${dataAttrs}>
@@ -297,21 +321,20 @@
         `;
       }
       if (p.type === "number" || p.type === "integer") {
+        const placeholder = p.placeholder || "";
         return `
         <div class="${fieldClass}" ${dataAttrs}>
           <label for="${id}">${escapeHtml(labelText)}${required}</label>
-            <input id="${id}" type="number" value="${defaultVal}" />
+            <input id="${id}" type="number" value="${inputValue}" placeholder="${escapeHtml(placeholder)}" data-placeholder="${escapeHtml(placeholder)}" />
             ${desc}
           </div>
         `;
       }
-      const placeholder = p.type === "path"
-        ? "/absolute/path/to/…"
-        : "";
+      const placeholder = p.placeholder || (p.type === "path" ? "/absolute/path/to/..." : "");
       return `
       <div class="${fieldClass}" ${dataAttrs}>
         <label for="${id}">${escapeHtml(labelText)}${required}</label>
-          <input id="${id}" type="text" value="${defaultVal}" placeholder="${escapeHtml(placeholder)}" spellcheck="false" />
+          <input id="${id}" type="text" value="${inputValue}" placeholder="${escapeHtml(placeholder)}" data-placeholder="${escapeHtml(placeholder)}" spellcheck="false" />
           ${desc}
         </div>
       `;
@@ -383,7 +406,9 @@
       return out;
     }
     if (node.type === "boolean" || node.type === "bool") return Boolean(node.default);
-    if (node.type === "number" || node.type === "integer") return node.default === "" ? null : Number(node.default);
+    if (node.type === "number" || node.type === "integer") {
+      return node.default === "" || node.default == null ? null : Number(node.default);
+    }
     return node.default == null ? "" : node.default;
   }
 
@@ -446,7 +471,7 @@
       } else if (type === "number" || type === "integer") {
         setPathValue(values, path, input.value === "" ? null : Number(input.value));
       } else {
-        setPathValue(values, path, isFillInHintValue(input.value) ? "" : input.value);
+        setPathValue(values, path, isTemplateHintValue(input.value) ? "" : input.value);
       }
     }
     return values;
@@ -461,7 +486,7 @@
       const v = type === "number" || type === "integer"
         ? (input.value === "" ? null : Number(input.value))
         : input.value;
-      if (v === "" || v == null || isFillInHintValue(v) || (typeof v === "number" && Number.isNaN(v))) ok = false;
+      if (v === "" || v == null || isTemplateHintValue(v) || (typeof v === "number" && Number.isNaN(v))) ok = false;
     }
     el.runBtn.disabled = !ok || state.runActive;
     return ok;
@@ -742,11 +767,19 @@
   el.paramFields.addEventListener("focusin", (e) => {
     const input = e.target && e.target.closest ? e.target.closest("input") : null;
     if (!input || input.type === "checkbox") return;
-    if (!isFillInHintValue(input.value)) return;
-    input.value = "";
+    if (input.value === "" && input.dataset.placeholder) {
+      input.placeholder = "";
+    }
+    if (isTemplateHintValue(input.value)) {
+      input.value = "";
+    }
     validateForm();
   });
   el.paramFields.addEventListener("focusout", (e) => {
+    const input = e.target && e.target.closest ? e.target.closest("input") : null;
+    if (input && input.type !== "checkbox" && input.value === "" && input.dataset.placeholder) {
+      input.placeholder = input.dataset.placeholder;
+    }
     // If no field within paramFields holds focus and we're typing, return to idle.
     setTimeout(() => {
       if (state.mode !== "script_typing") return;
