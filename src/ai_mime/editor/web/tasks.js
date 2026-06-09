@@ -6,6 +6,7 @@
     startRecordingBtn: document.getElementById("startRecordingBtn"),
     directBuildBtn: document.getElementById("directBuildBtn"),
     uploadSkillBtn: document.getElementById("uploadSkillBtn"),
+    exploreMarketplaceBtn: document.getElementById("exploreMarketplaceBtn"),
     agentModeBtn: document.getElementById("agentModeBtn"),
     openWorkflowsBtn: document.getElementById("openWorkflowsBtn"),
     quitAppBtn: document.getElementById("quitAppBtn"),
@@ -524,6 +525,9 @@
   el.providerBtn.addEventListener("click", openProviderModal);
   el.directBuildBtn.addEventListener("click", openDirectBuildModal);
   el.uploadSkillBtn.addEventListener("click", openUploadSkillPicker);
+  el.exploreMarketplaceBtn.addEventListener("click", () => {
+    window.location.href = "/marketplace";
+  });
   el.agentModeBtn.addEventListener("click", () => {
     window.location.href = "/agent";
   });

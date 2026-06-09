@@ -1,0 +1,138 @@
+.marketplace-workspace {
+  max-width: 1120px;
+}
+
+.marketplace-tools {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
+
+.marketplace-search {
+  display: grid;
+  gap: 6px;
+  min-width: min(360px, 100%);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.marketplace-search input {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b111a;
+  color: var(--text);
+  padding: 8px 10px;
+  outline: none;
+}
+
+.marketplace-search input:focus {
+  border-color: #3b5878;
+}
+
+.marketplace-surface {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  box-shadow: 0 14px 34px var(--shadow);
+}
+
+.marketplace-row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) 130px;
+  gap: 14px;
+  align-items: start;
+  padding: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.marketplace-row:first-child {
+  border-top: none;
+}
+
+.marketplace-icon {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b111a;
+  object-fit: cover;
+}
+
+.marketplace-main {
+  min-width: 0;
+}
+
+.marketplace-title-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.marketplace-title-line h2 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 17px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marketplace-type {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.marketplace-description {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.marketplace-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.marketplace-tags span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 7px;
+}
+
+.marketplace-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.marketplace-message {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 760px) {
+  .marketplace-tools {
+    justify-content: stretch;
+  }
+
+  .marketplace-row {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .marketplace-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}

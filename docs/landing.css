@@ -731,6 +731,10 @@ h3 {
     display: none;
   }
 
+  .nav a[href="#pipeline"] {
+    display: none;
+  }
+
   .nav a[href="./developer-guide.md"] {
     display: none;
   }

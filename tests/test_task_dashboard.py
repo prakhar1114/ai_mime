@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import queue
 import stat
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -120,6 +123,54 @@ class TaskDashboardTests(unittest.TestCase):
             ("files", (f"{prefix}/agent/memory.md", b"old memory", "text/markdown")),
         ])
         return files
+
+    def _workflow_zip_bytes(
+        self,
+        prefix: str = "invoice-workflow",
+        extra: list[tuple[str, bytes]] | None = None,
+    ) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for _field, (path, data, _content_type) in self._workflow_upload_files(prefix):
+                zf.writestr(path, data)
+            for path, data in extra or []:
+                zf.writestr(path, data)
+        return buf.getvalue()
+
+    def _marketplace_manifest(self, package_bytes: bytes, **item_overrides: object) -> dict[str, object]:
+        item: dict[str, object] = {
+            "id": "invoice-workflow",
+            "name": "Invoice Workflow",
+            "description": "Installable invoice workflow.",
+            "type": "workflow",
+            "version": "0.1.0",
+            "author": "AI Mime",
+            "tags": ["invoice", "test"],
+            "icon": "icons/ai-mime-icon.png",
+            "package_url": "packages/invoice-workflow.zip",
+            "sha256": hashlib.sha256(package_bytes).hexdigest(),
+            "size_bytes": len(package_bytes),
+            "entrypoint": "skills/fetch-weather/run.sh",
+            "skill_name": "fetch-weather",
+        }
+        item.update(item_overrides)
+        return {
+            "version": 1,
+            "name": "Test Marketplace",
+            "homepage": "https://example.com/",
+            "updated_at": "2026-06-09T00:00:00Z",
+            "items": [item],
+        }
+
+    def _patch_marketplace_fetch(self, manifest: dict[str, object], package_bytes: bytes):
+        def fake_fetch(url: str, *, max_bytes: int, label: str) -> bytes:
+            if label == "marketplace manifest":
+                return json.dumps(manifest).encode()
+            if label == "marketplace package":
+                return package_bytes
+            raise AssertionError(f"unexpected fetch: {url} {max_bytes} {label}")
+
+        return patch("ai_mime.editor.server._fetch_url_bytes", side_effect=fake_fetch)
 
     def test_inventory_marks_ready_and_pending_tasks(self) -> None:
         self._ready_workflow("20260513T000000Z-ready")
@@ -451,6 +502,120 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertEqual(unsafe.status_code, 400, unsafe.text)
         self.assertIn("Unsafe upload path", unsafe.text)
 
+    def test_marketplace_manifest_api_normalizes_relative_urls(self) -> None:
+        package_bytes = self._workflow_zip_bytes()
+        manifest = self._marketplace_manifest(package_bytes)
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(manifest, package_bytes):
+            response = client.get("/api/marketplace/manifest")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["name"], "Test Marketplace")
+        self.assertEqual(data["manifest_url"], "https://example.com/catalog/manifest.json")
+        item = data["items"][0]
+        self.assertEqual(item["id"], "invoice-workflow")
+        self.assertEqual(item["package_url"], "https://example.com/catalog/packages/invoice-workflow.zip")
+        self.assertEqual(item["icon_url"], "https://example.com/catalog/icons/ai-mime-icon.png")
+        self.assertEqual(item["entrypoint"], "skills/fetch-weather/run.sh")
+        self.assertEqual(item["skill_name"], "fetch-weather")
+
+    def test_marketplace_manifest_path_override_reads_local_directory(self) -> None:
+        package_bytes = self._workflow_zip_bytes()
+        market = self.root / "marketplace"
+        (market / "packages").mkdir(parents=True)
+        (market / "icons").mkdir()
+        (market / "packages" / "invoice-workflow.zip").write_bytes(package_bytes)
+        (market / "icons" / "ai-mime-icon.png").write_bytes(b"icon")
+        (market / "manifest.json").write_text(json.dumps(self._marketplace_manifest(package_bytes)), encoding="utf-8")
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": str(market)}):
+            manifest = client.get("/api/marketplace/manifest")
+            install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+
+        self.assertEqual(manifest.status_code, 200, manifest.text)
+        data = manifest.json()
+        self.assertEqual(data["source"], "local")
+        self.assertEqual(data["manifest_url"], str((market / "manifest.json").resolve()))
+        self.assertEqual(data["items"][0]["package_url"], "packages/invoice-workflow.zip")
+        self.assertNotIn("_package_path", data["items"][0])
+        self.assertEqual(install.status_code, 200, install.text)
+        workflow = Path(install.json()["workflow_dir"])
+        self.assertTrue((workflow / "skills" / "fetch-weather" / "run.sh").exists())
+
+    def test_marketplace_install_downloads_validates_and_installs_workflow(self) -> None:
+        package_bytes = self._workflow_zip_bytes()
+        manifest = self._marketplace_manifest(package_bytes)
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(manifest, package_bytes):
+            install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+            second_install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+
+        self.assertEqual(install.status_code, 200, install.text)
+        workflow = Path(install.json()["workflow_dir"])
+        self.assertEqual(json.loads((workflow / "metadata.json").read_text(encoding="utf-8"))["name"], "Invoice Workflow")
+        self.assertTrue((workflow / "skills" / "fetch-weather" / "run.sh").exists())
+        self.assertTrue(os.access(workflow / "skills" / "fetch-weather" / "run.sh", os.X_OK))
+        self.assertFalse((workflow / "outputs").exists())
+        self.assertFalse((workflow / "agent").exists())
+
+        rows = {row["id"]: row for row in client.get("/api/tasks").json()["tasks"]}
+        self.assertIn(install.json()["task_id"], rows)
+        self.assertTrue(rows[install.json()["task_id"]]["has_skill"])
+        self.assertTrue(rows[install.json()["task_id"]]["can_replay"])
+
+        self.assertEqual(second_install.status_code, 200, second_install.text)
+        second_workflow = Path(second_install.json()["workflow_dir"])
+        self.assertEqual(
+            json.loads((second_workflow / "metadata.json").read_text(encoding="utf-8"))["name"],
+            "Invoice Workflow (2)",
+        )
+        rows = {row["id"]: row for row in client.get("/api/tasks").json()["tasks"]}
+        self.assertEqual(rows[second_install.json()["task_id"]]["display_name"], "Invoice Workflow (2)")
+        self.assertTrue(rows[second_install.json()["task_id"]]["can_replay"])
+
+    def test_marketplace_install_rejects_bad_packages(self) -> None:
+        valid_package = self._workflow_zip_bytes()
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(self._marketplace_manifest(valid_package), valid_package):
+            missing = client.post("/api/marketplace/install", json={"item_id": "missing"})
+        self.assertEqual(missing.status_code, 404, missing.text)
+
+        bad_checksum_manifest = self._marketplace_manifest(valid_package, sha256="0" * 64)
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(bad_checksum_manifest, valid_package):
+            checksum = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+        self.assertEqual(checksum.status_code, 400, checksum.text)
+        self.assertIn("checksum", checksum.text)
+
+        bad_size_manifest = self._marketplace_manifest(valid_package, size_bytes=len(valid_package) + 1)
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(bad_size_manifest, valid_package):
+            size = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+        self.assertEqual(size.status_code, 400, size.text)
+        self.assertIn("size", size.text)
+
+        unsafe_buf = io.BytesIO()
+        with zipfile.ZipFile(unsafe_buf, "w") as zf:
+            zf.writestr("../SKILL.md", b"unsafe")
+        unsafe_package = unsafe_buf.getvalue()
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(self._marketplace_manifest(unsafe_package), unsafe_package):
+            unsafe = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+        self.assertEqual(unsafe.status_code, 400, unsafe.text)
+        self.assertIn("Unsafe zip path", unsafe.text)
+
+        invalid_package = b"not a zip"
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(self._marketplace_manifest(invalid_package), invalid_package):
+            invalid = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+        self.assertEqual(invalid.status_code, 400, invalid.text)
+        self.assertIn("valid zip", invalid.text)
+
     def test_incomplete_skill_folder_does_not_count_as_built_skill(self) -> None:
         for task_id, has_run_sh in (
             ("20260513T000080Z-bare-skill-dir", False),
@@ -578,6 +743,12 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertIn("Provider", response.text)
         self.assertIn("Direct build", response.text)
         self.assertIn("Upload skill", response.text)
+        self.assertIn("Explore marketplace", response.text)
+
+        marketplace = client.get("/marketplace")
+        self.assertEqual(marketplace.status_code, 200, marketplace.text)
+        self.assertIn("Marketplace", marketplace.text)
+        self.assertIn("/static/marketplace.js", marketplace.text)
 
     def test_direct_build_static_wiring_exists(self) -> None:
         tasks_js = Path("src/ai_mime/editor/web/tasks.js").read_text(encoding="utf-8")
@@ -588,8 +759,18 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertIn("/api/import/preview", tasks_js)
         self.assertIn("/api/import/install", tasks_js)
         self.assertIn("webkitdirectory", tasks_js)
+        self.assertIn("/marketplace", tasks_js)
         self.assertIn("direct-start", skill_build_js)
         self.assertIn("Start by asking me what task this skill should perform", skill_build_js)
+
+    def test_marketplace_static_wiring_exists(self) -> None:
+        marketplace_html = Path("src/ai_mime/editor/web/marketplace.html").read_text(encoding="utf-8")
+        marketplace_js = Path("src/ai_mime/editor/web/marketplace.js").read_text(encoding="utf-8")
+
+        self.assertIn("/static/marketplace.js", marketplace_html)
+        self.assertIn("/api/marketplace/manifest", marketplace_js)
+        self.assertIn("/api/marketplace/install", marketplace_js)
+        self.assertIn("window.location.href = \"/tasks\"", marketplace_js)
 
     def test_provider_settings_api_reports_status(self) -> None:
         app = create_app(
