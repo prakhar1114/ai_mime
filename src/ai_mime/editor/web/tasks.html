@@ -11,46 +11,30 @@
     <link rel="stylesheet" href="/static/tasks.css" />
   </head>
   <body>
-    <div class="shell">
-      <header class="topbar">
-        <div>
-          <div class="brand">AI Mime</div>
-          <h1>Tasks</h1>
+    <div class="tasks-shell">
+      <aside class="sidebar" aria-label="Tasks controls">
+        <div class="sidebar-head">
+          <img class="app-logo" src="/static/icon_128.png" alt="" aria-hidden="true">
+          <div>
+            <div class="brand">AI Mime</div>
+            <h1>Tasks</h1>
+            <div class="sync" id="syncState">Loading</div>
+          </div>
         </div>
-        <div class="toolbar">
-          <div class="sync" id="syncState">Loading</div>
+
+        <div class="toolbar" aria-label="Task actions">
           <button class="btn" id="providerBtn">Provider</button>
-          <button class="btn" id="agentModeBtn">Agent Mode</button>
           <button class="btn primary" id="startRecordingBtn">Start recording</button>
           <button class="btn" id="directBuildBtn">Direct build</button>
           <button class="btn" id="uploadSkillBtn">Upload skill</button>
           <button class="btn" id="exploreMarketplaceBtn">Explore marketplace</button>
-          <button class="btn" id="openWorkflowsBtn">Open Workflows</button>
+          <button class="btn" id="agentModeBtn">Agent Mode</button>
+          <button class="btn" id="openWorkflowsBtn">Open Workflows Folder</button>
           <button class="btn danger" id="quitAppBtn">Quit App</button>
-          <button class="btn" id="refreshBtn">Refresh</button>
         </div>
-      </header>
+      </aside>
 
       <main class="workspace">
-        <section class="summary" aria-label="Task summary">
-          <div class="metric">
-            <div class="metric-value" id="totalCount">0</div>
-            <div class="metric-label">Total</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value" id="readyCount">0</div>
-            <div class="metric-label">Ready</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value" id="attentionCount">0</div>
-            <div class="metric-label">Needs reflection</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value" id="activeCount">0</div>
-            <div class="metric-label">Active</div>
-          </div>
-        </section>
-
         <section class="task-surface">
           <div class="list-head">
             <div>Task</div>
