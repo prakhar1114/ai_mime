@@ -36,7 +36,7 @@ You can refer to the complete example skill package reference at `instructions/e
        ```
    - `inputs/inputs.example.json`     — copy of `agent/confirmed_inputs.json`. Re-runnable as-is.
    - `inputs/inputs.template.json`    — same keys as example, but each value is `"<FILL IN: <one-line description>>"` (or the input's recorded default).
-   - `references/fallback_plan.md`    — REQUIRED. Synthesized from `schema.plan.subtasks[]` + matching `optimized_plan.steps[]`. Per subtask: heading, one-line `Intent:`, the recorded sub-steps as bullets, `Notes:` with selectors / URLs / traps learned in Phase B. A human or the UI agent must be able to finish the task from this file alone if `run.sh` fails.
+   - `references/fallback_plan.md`    — REQUIRED. For reflected workflows, synthesize it from `schema.plan.subtasks[]` + matching `optimized_plan.steps[]`. For direct builds, synthesize it from `agent/learned_notes.md` and the confirmed task definition. Per subtask: heading, one-line `Intent:`, executable fallback steps as bullets, `Notes:` with selectors / URLs / traps learned during exploration. A human or the UI agent must be able to finish the task from this file alone if `run.sh` fails.
 
 3. Free-form `references/`. Beyond `fallback_plan.md`, write whatever notes help a future runner — domain notes, per-subtask notes, selectors, payload shapes. You decide based on what was actually useful in Phase B. Don't force everything into one `learned_notes.md`.
 

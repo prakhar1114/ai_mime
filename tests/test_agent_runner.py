@@ -258,6 +258,30 @@ class AgentRunnerTests(unittest.TestCase):
             self.assertIsNotNone(adapter.runtime_env["AI_MIME_PYTHON_PATH"])
             self.assertIsNotNone(adapter.runtime_env["AI_MIME_UV_PATH"])
 
+    def test_direct_build_prompt_uses_direct_instruction_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            workflow_dir = Path(td)
+            (workflow_dir / "metadata.json").write_text(
+                json.dumps({"name": "Summarize invoices", "source": "direct_build"}),
+                encoding="utf-8",
+            )
+            (workflow_dir / "schema.json").write_text(json.dumps({}), encoding="utf-8")
+            (workflow_dir / "optimized_plan.json").write_text(json.dumps({}), encoding="utf-8")
+            request = build_agent_run_request(
+                workflow_dir=workflow_dir,
+                provider="claude",
+                mode="build_skill_chat",
+            )
+            adapter = FakeAdapter()
+
+            run_agent_task(request, adapter)
+
+            prompt = adapter.prompt or ""
+            self.assertIn("00_direct_build.md", prompt)
+            self.assertIn("direct skill build from the user's task description", prompt)
+            self.assertNotIn("01_phase_a_confirm_inputs.md", prompt)
+            self.assertIn("03_phase_c_synthesis.md", prompt)
+
     def test_general_mode_uses_workflows_workspace_and_allows_missing_schema(self) -> None:
         request = build_agent_run_request(workflow_dir=Path("/tmp/ignored"), provider="claude", mode="general")
         self.assertEqual(request.mode, "general")

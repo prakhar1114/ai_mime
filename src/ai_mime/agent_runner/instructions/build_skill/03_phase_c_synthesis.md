@@ -4,7 +4,7 @@ In this phase, you will write the final deterministic python execution script, r
 
 ## Instructions
 1. Create or overwrite the skill script at `{skill_dir}/scripts/run.py` using details from `agent/learned_notes.md`. (Note: The skill directory `{skill_dir}` is located at `<workflow_dir>/skills/<skill_name>/` under the workflow directory. You can refer to the example script at `instructions/example_skill/scripts/run.py` to see a working reference for how to parse inputs and format progress logs).
-2. Per-step code shape must match its `executor` in the optimized plan:
+2. For reflected workflows, per-step code shape must match its `executor` in the optimized plan. For direct builds, choose the simplest reliable execution shape from `agent/learned_notes.md` and the confirmed approach:
    - `script` → inline Python.
    - `browser_harness` → shell out to `"$AI_MIME_BROWSER_HARNESS_BIN" -c '…'` (or import helpers directly).
    - `ui_agent` → read the sibling UI-agent guide at `../ui_agent/00_ui_agent.md` under the shared instructions root, distill the matching UI Agent Recipe from `agent/learned_notes.md` into a compact task prompt, then shell out to `"$AI_MIME_UI_AGENT_CMD" "<task>" [--schema '<json>'] --json` and parse `result_json` from stdout. The prompt should include task-specific setup, action sequence, decision rules, gotchas, recovery, skip conditions, and final verification; do not paste the full guide or learned-notes file into the prompt.

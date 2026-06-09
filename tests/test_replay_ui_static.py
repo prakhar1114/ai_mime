@@ -20,6 +20,7 @@ def test_replay_ui_uses_real_agent_transport() -> None:
 
     assert 'data-api-prefix="/api/tasks/__TASK_ID__/replay-agent"' in html
     assert '<script src="/static/agent.js"></script>' in html
+    assert '<script src="/static/replay.js?v=20260608-template-hints"></script>' in html
     assert "TODO(agent-runner)" not in js
     assert "buildReplayAgentPrompt" in js
     assert "buildUiAgentFallbackPrompt" in js
@@ -58,9 +59,26 @@ def test_replay_ui_does_not_submit_fill_in_hints_as_values() -> None:
     js = Path("src/ai_mime/editor/web/replay.js").read_text(encoding="utf-8")
 
     assert "fillInHintMatch" in js
+    assert "optionalHintMatch" in js
     assert "isFillInHintValue" in js
-    assert 'setPathValue(values, path, isFillInHintValue(input.value) ? "" : input.value)' in js
-    assert "isFillInHintValue(v)" in js
-    assert "raw.map((itemRaw, index)" in js
-    assert 'if (!isFillInHintValue(input.value)) return;' in js
-    assert 'input.value = "";' in js
+    assert "isTemplateHintValue" in js
+    assert "inputs.template.json values are UI support text only" in js
+    assert "placeholder = optional[1].trim()" in js
+    assert "default: emptyValueForType" in js
+    assert 'setPathValue(values, path, isTemplateHintValue(input.value) ? "" : input.value)' in js
+    assert "defaultVal = value" not in js
+    assert "pre-filled default value" not in js
+    assert "isTemplateHintValue(v)" in js
+    assert 'data-placeholder="${escapeHtml(placeholder)}"' in js
+    assert 'input.placeholder = "";' in js
+    assert "input.placeholder = input.dataset.placeholder" in js
+
+
+def test_replay_inputs_template_endpoint_uses_only_inputs_folder() -> None:
+    server = Path("src/ai_mime/editor/server.py").read_text(encoding="utf-8")
+    start = server.index('@app.get("/api/tasks/{task_id}/skill/inputs-template")')
+    end = server.index('@app.post("/api/tasks/{task_id}/skill/run/stream")')
+    endpoint = server[start:end]
+
+    assert 'skill_dir / "inputs" / "inputs.template.json"' in endpoint
+    assert "optimized_plan" not in endpoint

@@ -329,6 +329,12 @@ Existing memory:
         skill_dir = _skill_dir_for_request(request)
         default_python_path = get_python_path(request.workflow_dir)
         uv_path = get_uv_path()
+        metadata: dict = {}
+        try:
+            metadata = _read_json(request.workflow_dir / "metadata.json")
+        except Exception:
+            metadata = {}
+        is_direct_build = metadata.get("source") == "direct_build"
         existing_skill_files = sorted(
             str(path.relative_to(skill_dir))
             for path in skill_dir.rglob("*")
@@ -337,18 +343,28 @@ Existing memory:
         signal_path = request.workflow_dir / "agent" / BUILD_SIGNAL_FILENAME
         learned_path = request.workflow_dir / "agent" / "learned_notes.md"
         browser_harness_bin = get_managed_browser_harness_path()
-        return f"""You are the AI Mime iterative skill-builder agent for this workflow.
-You are running inside a chat panel — the human user is on the other end of every message and is collaborating with you to produce a deterministic, reusable skill package for this workflow.
+        if is_direct_build:
+            task_flow = f"""This workflow is a direct skill build from the user's task description, not a reflected recording.
 
-Workflow directory: {request.workflow_dir}
-Schema: {request.schema_path}
-Optimized plan: {request.optimized_plan_path}
-Memory file: {memory_path}
-Learned-notes file (append durable findings here): {learned_path}
-Skill directory to create or refine: {skill_dir} (located under <workflow_dir>/skills/<skill_name>/ under your workspace; you must store the packaged skill and its run.sh directly inside this directory)
-Terminal signal file: {signal_path}
+To prevent task dilution and ensure consistent behavior, your instructions are broken down into task files located in the instructions folder:
+{INSTRUCTIONS_ROOT / "build_skill"}
 
-To prevent task dilution and ensure consistent behavior, your instructions are broken down into sequential task files located in the instructions folder:
+Shared UI-agent guide, read only when native UI automation is needed:
+{INSTRUCTIONS_ROOT / "ui_agent" / "00_ui_agent.md"}
+
+An example of a correctly structured and packaged skill is available for your reference at:
+{INSTRUCTIONS_ROOT / "example_skill"}
+
+You MUST execute these tasks step-by-step:
+1. First, read and follow `00_rules.md` in the instructions directory to understand execution guidelines, Python path requirements, and tools.
+2. Next, read and execute `00_direct_build.md` to collect the user's goal, inputs, outputs, approach, constraints, and side-effect concerns. Write durable findings to `agent/learned_notes.md` and confirmed values to `agent/confirmed_inputs.json`.
+3. Once `00_direct_build.md` is complete, continue to `03_phase_c_synthesis.md` to write and validate `scripts/run.py` from the confirmed task details and learned notes.
+4. Finally, read and execute `04_phase_d_packaging.md` to package the skill and write the terminal signal.
+
+CRITICAL: Do NOT read all instruction files at once. Focus only on the active task file, complete its requirements, and only read the next file once the current file's success criteria are fully met.
+"""
+        else:
+            task_flow = f"""To prevent task dilution and ensure consistent behavior, your instructions are broken down into sequential task files located in the instructions folder:
 {INSTRUCTIONS_ROOT / "build_skill"}
 
 Shared UI-agent guide, read only when a step uses `ui_agent`:
@@ -363,6 +379,19 @@ You MUST execute these tasks step-by-step:
 3. Follow the instructions and transition gates at the end of each task file sequentially to move to the next file (e.g. `02_phase_b_execute_steps.md`, `03_phase_c_synthesis.md`, `04_phase_d_packaging.md`).
 
 CRITICAL: Do NOT read all instruction files at once. Focus only on the active task file, complete its requirements, and only read the next file once the current file's success criteria are fully met.
+"""
+        return f"""You are the AI Mime iterative skill-builder agent for this workflow.
+You are running inside a chat panel — the human user is on the other end of every message and is collaborating with you to produce a deterministic, reusable skill package for this workflow.
+
+Workflow directory: {request.workflow_dir}
+Schema: {request.schema_path}
+Optimized plan: {request.optimized_plan_path}
+Memory file: {memory_path}
+Learned-notes file (append durable findings here): {learned_path}
+Skill directory to create or refine: {skill_dir} (located under <workflow_dir>/skills/<skill_name>/ under your workspace; you must store the packaged skill and its run.sh directly inside this directory)
+Terminal signal file: {signal_path}
+
+{task_flow}
 
 Current environment and tools state:
 - Default Python: `{default_python_path}`
