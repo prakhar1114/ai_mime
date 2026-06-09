@@ -22,6 +22,7 @@
           <div class="task-meta">
             <span class="status-pill" id="statusPill" hidden></span>
             <span class="skill-dir mono" id="skillDir"></span>
+            <button class="btn small open-skill-folder" id="openSkillFolderBtn" type="button" hidden>Open Skill Folder</button>
           </div>
         </div>
       </header>
@@ -35,6 +36,14 @@
               <div class="card-sub">Fill in the task inputs and run the deterministic script.</div>
             </div>
             <button class="chevron-btn" id="expandFormBtn" type="button" hidden aria-label="Expand form">▾</button>
+          </div>
+
+          <div class="skill-info" id="skillInfo" hidden>
+            <div class="skill-description" id="skillDescription"></div>
+            <div class="skill-preconditions" id="skillPreconditions" hidden>
+              <div class="skill-info-label">Preconditions</div>
+              <ul id="skillPreconditionsList"></ul>
+            </div>
           </div>
 
           <form class="script-form" id="scriptForm">
@@ -201,6 +210,6 @@
     </div>
 
     <script src="/static/agent.js"></script>
-    <script src="/static/replay.js?v=20260608-template-hints"></script>
+    <script src="/static/replay.js?v=20260609-skill-metadata"></script>
   </body>
 </html>

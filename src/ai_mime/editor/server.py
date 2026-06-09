@@ -304,6 +304,26 @@ def _parse_skill_frontmatter_fields(skill_dir: Path) -> dict[str, str]:
     return out
 
 
+def _parse_skill_preconditions(skill_dir: Path) -> list[str]:
+    skill_md = skill_dir / "SKILL.md"
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except Exception:
+        return []
+    m = re.search(r"^##\s+Preconditions:?\s*$([\s\S]*?)(?=^##\s+|\Z)", text, re.MULTILINE)
+    if not m:
+        return []
+    out: list[str] = []
+    for raw_line in m.group(1).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[-*]\s+", "", line)
+        if line:
+            out.append(line)
+    return out
+
+
 def _chmod_run_sh(skill_dir: Path) -> None:
     run_sh = skill_dir / "run.sh"
     if run_sh.is_file():
@@ -1655,11 +1675,47 @@ def create_app(
             raise HTTPException(status_code=500, detail=f"Failed to parse inputs.template.json: {e}")
         if not isinstance(data, dict):
             raise HTTPException(status_code=500, detail="inputs.template.json must be a JSON object")
+        example_path = skill_dir / "inputs" / "inputs.example.json"
+        examples = _read_json(example_path)
+        if not isinstance(examples, dict):
+            examples = {}
+        fields = _parse_skill_frontmatter_fields(skill_dir)
         return {
             "skill_dir": str(skill_dir),
             "template_path": str(template_path),
             "template": data,
+            "examples": examples,
+            "skill": {
+                "name": fields.get("name") or skill_dir.name,
+                "description": fields.get("description") or "",
+                "preconditions": _parse_skill_preconditions(skill_dir),
+            },
         }
+
+    @app.post("/api/tasks/{task_id}/skill/open-folder")
+    def api_open_skill_folder(task_id: str):
+        _safe_task_id(task_id)
+        if app_command_queue is None:
+            raise HTTPException(status_code=503, detail="App control is unavailable")
+        row = task_runner.get_status(task_id)
+        workflow_dir_raw = row.get("workflow_dir")
+        skill_dir_raw = row.get("skill_dir")
+        if not isinstance(workflow_dir_raw, str) or not workflow_dir_raw:
+            raise HTTPException(status_code=404, detail="Workflow directory not found for task")
+        if not isinstance(skill_dir_raw, str) or not skill_dir_raw:
+            raise HTTPException(status_code=404, detail="Skill is not built for this task yet")
+        workflow_dir = Path(workflow_dir_raw).resolve()
+        skill_dir = Path(skill_dir_raw).resolve()
+        _safe_workflow_dir(task_runner.workflows_root, task_id)
+        if workflow_dir not in skill_dir.parents:
+            raise HTTPException(status_code=400, detail="Invalid skill directory")
+        if not skill_dir.exists() or not skill_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Skill folder not found")
+        try:
+            app_command_queue.put({"type": "open_directory", "path": str(skill_dir)})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to queue open skill folder command: {e}")
+        return {"ok": True, "path": str(skill_dir)}
 
     @app.post("/api/tasks/{task_id}/skill/run/stream")
     def api_skill_run_stream(task_id: str, payload: dict[str, Any] | None = Body(default=None)):
