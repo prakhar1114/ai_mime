@@ -854,6 +854,14 @@ class AutomationOverlay:
     def update_status(self, status: str) -> None:
         try:
             self._indicator.setStatus_(status)
+            if status in ("success", "failed"):
+                AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    2.0,
+                    self._action_handler,
+                    "autoClose:",
+                    None,
+                    False,
+                )
         except Exception as e:
             print(f"Error updating automation status: {e}")
 

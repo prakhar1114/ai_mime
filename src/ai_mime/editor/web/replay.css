@@ -36,7 +36,7 @@ body {
 }
 
 /* Sidebar styles */
-.sidebar {
+.replay-shell > .sidebar {
   position: sticky;
   top: 0;
   height: 100vh;
@@ -72,7 +72,7 @@ body {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.sidebar h1 {
+.replay-shell > .sidebar h1 {
   margin: 2px 0 0;
   font-size: 24px;
   line-height: 1.1;
@@ -105,7 +105,7 @@ body {
   font-size: 14px;
   text-decoration: none;
 }
-.sidebar .btn {
+.replay-shell > .sidebar .btn {
   width: 100%;
   min-height: 40px;
   justify-content: flex-start;
@@ -524,6 +524,22 @@ body {
   background: rgba(11, 15, 20, 0.82);
   backdrop-filter: blur(4px);
   animation: overlayIn 180ms ease both;
+  
+  /* Restoring agent.css light theme variables so the overlay remains light */
+  --bg: #ffffff;
+  --sidebar: #f7f7f5;
+  --sidebar-line: #e4e1dc;
+  --text: #282523;
+  --muted: #7a746d;
+  --muted-soft: #a7a19a;
+  --hover: #ebe9e5;
+  --active: #e7e4df;
+  --user: #eeece8;
+  --composer: #ffffff;
+  --line: #dedbd5;
+  --shadow: rgba(28, 25, 23, 0.12);
+
+  color: var(--text);
 }
 .agent-shell.agent-shell--docked {
   position: absolute;
