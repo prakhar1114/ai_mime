@@ -64,6 +64,29 @@ class SkillRunStreamTests(unittest.TestCase):
             return []
         return sorted(path for path in runs.iterdir() if path.is_dir())
 
+    def _write_replay_metadata_files(self, *, preconditions: str = "") -> None:
+        self._write_run_sh("echo ok\n")
+        skill_md = (
+            "---\n"
+            "name: test-skill\n"
+            "description: Run a test skill from replay.\n"
+            "---\n\n"
+            "# Test Skill\n\n"
+        )
+        if preconditions:
+            skill_md += f"## Preconditions\n{preconditions}\n\n"
+        skill_md += "## Inputs\n- `name` (required, string): Person name.\n"
+        (self.skill / "SKILL.md").write_text(skill_md, encoding="utf-8")
+        (self.skill / "inputs").mkdir(exist_ok=True)
+        (self.skill / "inputs" / "inputs.template.json").write_text(
+            json.dumps({"name": "<FILL IN: person name>", "count": "<OPTIONAL: repeat count>"}),
+            encoding="utf-8",
+        )
+        (self.skill / "inputs" / "inputs.example.json").write_text(
+            json.dumps({"name": "Ada", "count": 2}),
+            encoding="utf-8",
+        )
+
     def test_skill_run_streams_logs_and_parses_workflow_outputs(self) -> None:
         self._write_run_sh(
             r'''
@@ -234,6 +257,48 @@ class SkillRunStreamTests(unittest.TestCase):
         done = [event for event in events if event.get("event") == "done"][-1]
         self.assertFalse(done["success"])
         self.assertNotEqual(done["exit_code"], 0)
+
+    def test_inputs_template_includes_examples_and_skill_metadata(self) -> None:
+        self._write_replay_metadata_files(
+            preconditions="- User is signed in.\n- Network access is available."
+        )
+        client = self._client()
+
+        response = client.get(f"/api/tasks/{self.task_id}/skill/inputs-template")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["template"]["name"], "<FILL IN: person name>")
+        self.assertEqual(data["examples"], {"name": "Ada", "count": 2})
+        self.assertEqual(data["skill"]["name"], "test-skill")
+        self.assertEqual(data["skill"]["description"], "Run a test skill from replay.")
+        self.assertEqual(data["skill"]["preconditions"], ["User is signed in.", "Network access is available."])
+
+    def test_inputs_template_omits_absent_preconditions(self) -> None:
+        self._write_replay_metadata_files()
+        client = self._client()
+
+        response = client.get(f"/api/tasks/{self.task_id}/skill/inputs-template")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["skill"]["preconditions"], [])
+
+    def test_open_skill_folder_queues_validated_directory(self) -> None:
+        self._write_replay_metadata_files()
+        command_q: queue.Queue = queue.Queue()
+        app = create_app(
+            workflows_root=self.workflows,
+            recordings_root=self.recordings,
+            app_command_queue=command_q,
+        )
+        client = TestClient(app)
+
+        response = client.post(f"/api/tasks/{self.task_id}/skill/open-folder")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        command = command_q.get_nowait()
+        self.assertEqual(command["type"], "open_directory")
+        self.assertEqual(Path(command["path"]).resolve(), self.skill.resolve())
 
     def test_replay_agent_sessions_endpoint_is_task_scoped(self) -> None:
         (self.workflow / "optimized_plan.json").write_text(

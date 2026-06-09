@@ -20,7 +20,7 @@ def test_replay_ui_uses_real_agent_transport() -> None:
 
     assert 'data-api-prefix="/api/tasks/__TASK_ID__/replay-agent"' in html
     assert '<script src="/static/agent.js"></script>' in html
-    assert '<script src="/static/replay.js?v=20260608-template-hints"></script>' in html
+    assert '<script src="/static/replay.js?v=20260609-skill-metadata"></script>' in html
     assert "TODO(agent-runner)" not in js
     assert "buildReplayAgentPrompt" in js
     assert "buildUiAgentFallbackPrompt" in js
@@ -40,6 +40,10 @@ def test_replay_ui_uses_real_agent_transport() -> None:
     assert "window.location.assign(`/skill-build/" not in js
     assert "Do not switch to skill-build mode" not in js
     assert "Handing off to the UI agent to complete the task" in html
+    assert 'id="openSkillFolderBtn"' in html
+    assert 'id="skillDescription"' in html
+    assert 'id="skillPreconditionsList"' in html
+    assert "/skill/open-folder" in js
 
 
 def test_replay_ui_supports_nested_repeatable_inputs() -> None:
@@ -72,13 +76,20 @@ def test_replay_ui_does_not_submit_fill_in_hints_as_values() -> None:
     assert 'data-placeholder="${escapeHtml(placeholder)}"' in js
     assert 'input.placeholder = "";' in js
     assert "input.placeholder = input.dataset.placeholder" in js
+    assert "value = source ? getPathValue(source, p.path) : undefined" in js
+    assert "renderExampleHint(p.path)" in js
+    assert 'class="example"' in js
 
 
-def test_replay_inputs_template_endpoint_uses_only_inputs_folder() -> None:
+def test_replay_inputs_template_endpoint_includes_metadata_without_plan_lookup() -> None:
     server = Path("src/ai_mime/editor/server.py").read_text(encoding="utf-8")
     start = server.index('@app.get("/api/tasks/{task_id}/skill/inputs-template")')
     end = server.index('@app.post("/api/tasks/{task_id}/skill/run/stream")')
     endpoint = server[start:end]
 
     assert 'skill_dir / "inputs" / "inputs.template.json"' in endpoint
+    assert 'skill_dir / "inputs" / "inputs.example.json"' in endpoint
+    assert '"examples": examples' in endpoint
+    assert '"description": fields.get("description") or ""' in endpoint
+    assert '"preconditions": _parse_skill_preconditions(skill_dir)' in endpoint
     assert "optimized_plan" not in endpoint

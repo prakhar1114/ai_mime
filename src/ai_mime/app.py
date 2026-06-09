@@ -271,6 +271,9 @@ class RecorderApp(rumps.App):
                 elif cmd.get("type") == "open_workflows_directory":
                     handled = True
                     self._open_workflows_directory()
+                elif cmd.get("type") == "open_directory":
+                    handled = True
+                    self._open_directory(cmd.get("path") or "")
             except Exception as e:
                 log(f"Error handling dashboard command {cmd}: {e}", exc_info=True)
         if handled:
@@ -417,6 +420,16 @@ class RecorderApp(rumps.App):
             subprocess.run(["open", str(path)], check=True)
         except Exception as e:
             rumps.alert(f"Open Workflows Directory failed: {e}")
+
+    def _open_directory(self, path_raw: str) -> None:
+        try:
+            import subprocess
+            path = Path(str(path_raw)).expanduser()
+            if not path.is_dir():
+                raise RuntimeError(f"Directory not found: {path}")
+            subprocess.run(["open", str(path)], check=True)
+        except Exception as e:
+            rumps.alert(f"Open Directory failed: {e}")
 
     def _open_skill_build_for_task(self, task_id: str) -> None:
         try:

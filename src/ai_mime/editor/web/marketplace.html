@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AI Mime - Marketplace</title>
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/icon_16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icon_32.png" />
+    <link rel="icon" type="image/png" sizes="128x128" href="/static/icon_128.png" />
+    <link rel="apple-touch-icon" sizes="256x256" href="/static/icon_256.png" />
+    <link rel="stylesheet" href="/static/marketplace.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <div class="brand">AI Mime</div>
+          <h1>Marketplace</h1>
+        </div>
+        <div class="toolbar">
+          <div class="sync" id="marketplaceState">Loading</div>
+          <button class="btn" id="backToTasksBtn">Tasks</button>
+          <button class="btn" id="refreshMarketplaceBtn">Refresh</button>
+        </div>
+      </header>
+
+      <main class="workspace marketplace-workspace">
+        <section class="marketplace-tools" aria-label="Marketplace controls">
+          <label class="marketplace-search">
+            <span>Search</span>
+            <input id="marketplaceSearch" type="search" autocomplete="off" placeholder="Search workflows">
+          </label>
+        </section>
+
+        <section class="marketplace-surface" aria-label="Marketplace workflows">
+          <div id="marketplaceList" class="marketplace-list">
+            <div class="empty">Loading marketplace...</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/marketplace.js"></script>
+  </body>
+</html>

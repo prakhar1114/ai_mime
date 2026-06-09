@@ -1,23 +1,17 @@
 (() => {
   const el = {
     taskList: document.getElementById("taskList"),
-    refreshBtn: document.getElementById("refreshBtn"),
     providerBtn: document.getElementById("providerBtn"),
     startRecordingBtn: document.getElementById("startRecordingBtn"),
     directBuildBtn: document.getElementById("directBuildBtn"),
     uploadSkillBtn: document.getElementById("uploadSkillBtn"),
+    exploreMarketplaceBtn: document.getElementById("exploreMarketplaceBtn"),
     agentModeBtn: document.getElementById("agentModeBtn"),
     openWorkflowsBtn: document.getElementById("openWorkflowsBtn"),
     quitAppBtn: document.getElementById("quitAppBtn"),
     syncState: document.getElementById("syncState"),
-    totalCount: document.getElementById("totalCount"),
-    readyCount: document.getElementById("readyCount"),
-    attentionCount: document.getElementById("attentionCount"),
-    activeCount: document.getElementById("activeCount"),
   };
 
-  const ACTIVE = new Set(["reflecting", "compiling", "replaying", "deleting"]);
-  const ATTENTION = new Set(["pending_reflection", "failed_reflection", "replay_failed"]);
   let tasks = [];
   let appStatus = {};
   let providerSettings = null;
@@ -64,18 +58,7 @@
     el.syncState.textContent = text;
   }
 
-  function renderSummary() {
-    const ready = tasks.filter((t) => t.status === "ready").length;
-    const attention = tasks.filter((t) => ATTENTION.has(t.status)).length;
-    const active = tasks.filter((t) => ACTIVE.has(t.status)).length;
-    el.totalCount.textContent = String(tasks.length);
-    el.readyCount.textContent = String(ready);
-    el.attentionCount.textContent = String(attention);
-    el.activeCount.textContent = String(active);
-  }
-
   function render() {
-    renderSummary();
     renderAppStatus();
     if (!tasks.length) {
       el.taskList.innerHTML = `<div class="empty">No tasks found.</div>`;
@@ -183,7 +166,7 @@
       appStatus = data.app && typeof data.app === "object" ? data.app : {};
       if (openMenuTaskId && !tasks.some((task) => task.id === openMenuTaskId)) openMenuTaskId = null;
       render();
-      setSync(new Date().toLocaleTimeString());
+      setSync("Ready");
     } catch (e) {
       el.taskList.innerHTML = `<div class="empty">Failed to load tasks: ${escapeHtml(e.message || String(e))}</div>`;
       setSync("Error");
@@ -520,10 +503,12 @@
     }
   });
 
-  el.refreshBtn.addEventListener("click", loadTasks);
   el.providerBtn.addEventListener("click", openProviderModal);
   el.directBuildBtn.addEventListener("click", openDirectBuildModal);
   el.uploadSkillBtn.addEventListener("click", openUploadSkillPicker);
+  el.exploreMarketplaceBtn.addEventListener("click", () => {
+    window.location.href = "/marketplace";
+  });
   el.agentModeBtn.addEventListener("click", () => {
     window.location.href = "/agent";
   });

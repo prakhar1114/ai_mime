@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import io
 import json
 import os
 import queue as thread_queue
@@ -13,7 +15,10 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.parse
+import urllib.request
 import uuid
+import zipfile
 from multiprocessing import Event, Process, Queue
 from pathlib import Path
 from typing import Any
@@ -36,6 +41,9 @@ from ai_mime.app_data import is_frozen, workflow_runtime_env
 from ai_mime.provider_settings import provider_settings_status, save_provider_settings
 
 EDITOR_SERVER_PORT = 58838
+DEFAULT_MARKETPLACE_MANIFEST_URL = "https://market.aimime.cc/manifest.json"
+MARKETPLACE_MANIFEST_PATH_ENV = "AI_MIME_MARKETPLACE_MANIFEST_PATH"
+_MAX_MARKETPLACE_MANIFEST_BYTES = 2 * 1024 * 1024
 
 
 def _kill_processes_on_tcp_port(port: int) -> None:
@@ -253,6 +261,8 @@ _IMPORT_SKIP_SUFFIXES = {
 _IMPORT_WORKFLOW_SCREENSHOT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 _MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024
 _MAX_IMPORT_TOTAL_BYTES = 250 * 1024 * 1024
+_MARKETPLACE_VENV_TIMEOUT_SECONDS = 600
+_MARKETPLACE_VENV_LOG_TAIL_CHARS = 4000
 
 
 def _safe_upload_relpath(filename: str) -> Path:
@@ -301,6 +311,26 @@ def _parse_skill_frontmatter_fields(skill_dir: Path) -> dict[str, str]:
             continue
         key, _, value = line.partition(":")
         out[key.strip()] = value.strip().strip("\"'")
+    return out
+
+
+def _parse_skill_preconditions(skill_dir: Path) -> list[str]:
+    skill_md = skill_dir / "SKILL.md"
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except Exception:
+        return []
+    m = re.search(r"^##\s+Preconditions:?\s*$([\s\S]*?)(?=^##\s+|\Z)", text, re.MULTILINE)
+    if not m:
+        return []
+    out: list[str] = []
+    for raw_line in m.group(1).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[-*]\s+", "", line)
+        if line:
+            out.append(line)
     return out
 
 
@@ -372,6 +402,32 @@ def _copy_import_clean(
 
 def _workflow_id_for_import(display_name: str) -> str:
     return f"{_direct_run_id()}-{_slugify_task_name(display_name, fallback='imported-skill')}"
+
+
+def _existing_workflow_names(workflows_root: Path) -> set[str]:
+    names: set[str] = set()
+    if not workflows_root.exists():
+        return names
+    for child in workflows_root.iterdir():
+        if not child.is_dir():
+            continue
+        meta = _read_json(child / "metadata.json")
+        name = meta.get("name") if isinstance(meta, dict) else None
+        if isinstance(name, str) and name.strip():
+            names.add(name.strip())
+    return names
+
+
+def _unique_workflow_display_name(workflows_root: Path, display_name: str) -> str:
+    base = display_name.strip() or "Imported Skill"
+    existing = _existing_workflow_names(workflows_root)
+    if base not in existing:
+        return base
+    for i in range(2, 10_000):
+        candidate = f"{base} ({i})"
+        if candidate not in existing:
+            return candidate
+    raise ValueError("Could not allocate a unique workflow name")
 
 
 def _detect_import_root(root: Path) -> tuple[str, Path]:
@@ -456,6 +512,7 @@ def _install_import_stage(stage_info: dict[str, Any], workflows_root: Path) -> d
     clean_root = stage_dir / "clean"
     detected_type = str(stage_info.get("detected_type") or "")
     display_name = str(stage_info.get("display_name") or "Imported Skill").strip() or "Imported Skill"
+    display_name = _unique_workflow_display_name(workflows_root, display_name)
     task_id = _workflow_id_for_import(display_name)
     workflow_dir = (workflows_root / task_id).resolve()
     root = workflows_root.resolve()
@@ -487,8 +544,7 @@ def _install_import_stage(stage_info: dict[str, Any], workflows_root: Path) -> d
             meta = _read_json(workflow_dir / "metadata.json")
             if not meta:
                 meta = {"name": display_name, "description": ""}
-            if not isinstance(meta.get("name"), str) or not meta["name"].strip():
-                meta["name"] = display_name
+            meta["name"] = display_name
             meta.setdefault("description", "")
             meta["source"] = meta.get("source") or "imported_workflow"
             meta["imported_at"] = _utc_timestamp()
@@ -509,6 +565,312 @@ def _install_import_stage(stage_info: dict[str, Any], workflows_root: Path) -> d
         raise
 
     return {"task_id": task_id, "workflow_dir": str(workflow_dir)}
+
+
+def _resolve_marketplace_url(base_url: str, value: Any, *, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Marketplace item is missing {field}")
+    resolved = urllib.parse.urljoin(base_url, value.strip())
+    parsed = urllib.parse.urlparse(resolved)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"Marketplace item has an invalid {field}")
+    return resolved
+
+
+def _marketplace_manifest_dir_override() -> Path | None:
+    raw = (os.getenv(MARKETPLACE_MANIFEST_PATH_ENV) or "").strip()
+    if not raw:
+        return None
+    root = Path(raw).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise ValueError(f"{MARKETPLACE_MANIFEST_PATH_ENV} must point to a marketplace directory")
+    return root
+
+
+def _resolve_marketplace_local_file(root: Path, value: Any, *, field: str) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Marketplace item is missing {field}")
+    raw = value.strip().replace("\\", "/")
+    if raw.startswith("/") or raw.startswith("~"):
+        raise ValueError(f"Marketplace item has an unsafe {field}")
+    parts = [part for part in raw.split("/") if part not in {"", "."}]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Marketplace item has an unsafe {field}")
+    path = (root / Path(*parts)).resolve()
+    if root not in path.parents and path != root:
+        raise ValueError(f"Marketplace item has an unsafe {field}")
+    if not path.is_file():
+        raise ValueError(f"Marketplace item {field} file not found")
+    return path
+
+
+def _fetch_url_bytes(url: str, *, max_bytes: int, label: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "AI-Mime/marketplace"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:  # nosec B310 - URL is configured or manifest-derived.
+            out = bytearray()
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.extend(chunk)
+                if len(out) > max_bytes:
+                    raise ValueError(f"{label} is too large")
+            return bytes(out)
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Failed to fetch {label}: {e}") from e
+
+
+def _read_file_bytes(path: Path, *, max_bytes: int, label: str) -> bytes:
+    try:
+        size = path.stat().st_size
+        if size > max_bytes:
+            raise ValueError(f"{label} is too large")
+        return path.read_bytes()
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Failed to read {label}: {e}") from e
+
+
+def _fetch_marketplace_manifest() -> tuple[str, dict[str, Any], Path | None]:
+    manifest_root = _marketplace_manifest_dir_override()
+    if manifest_root is not None:
+        manifest_ref = str((manifest_root / "manifest.json").resolve())
+        raw = _read_file_bytes(manifest_root / "manifest.json", max_bytes=_MAX_MARKETPLACE_MANIFEST_BYTES, label="marketplace manifest")
+    else:
+        manifest_ref = DEFAULT_MARKETPLACE_MANIFEST_URL
+        raw = _fetch_url_bytes(manifest_ref, max_bytes=_MAX_MARKETPLACE_MANIFEST_BYTES, label="marketplace manifest")
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise ValueError(f"Marketplace manifest is not valid JSON: {e}") from e
+    if not isinstance(manifest, dict):
+        raise ValueError("Marketplace manifest must be a JSON object")
+    return manifest_ref, manifest, manifest_root
+
+
+def _normalize_marketplace_item(item: Any, *, manifest_ref: str, manifest_root: Path | None) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise ValueError("Marketplace manifest item must be an object")
+    item_id = item.get("id")
+    name = item.get("name")
+    if not isinstance(item_id, str) or not item_id.strip():
+        raise ValueError("Marketplace item is missing id")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"Marketplace item {item_id!r} is missing name")
+    package_path: str | None = None
+    if manifest_root is not None:
+        package_file = _resolve_marketplace_local_file(manifest_root, item.get("package_url"), field="package_url")
+        package_url = item.get("package_url").strip()
+        package_path = str(package_file)
+    else:
+        package_url = _resolve_marketplace_url(manifest_ref, item.get("package_url"), field="package_url")
+    icon_url = None
+    if isinstance(item.get("icon"), str) and item["icon"].strip():
+        if manifest_root is None:
+            icon_url = _resolve_marketplace_url(manifest_ref, item["icon"], field="icon")
+        else:
+            with contextlib.suppress(ValueError):
+                _resolve_marketplace_local_file(manifest_root, item["icon"], field="icon")
+    sha256 = item.get("sha256")
+    if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256.strip()):
+        raise ValueError(f"Marketplace item {item_id!r} is missing a valid sha256")
+    tags = item.get("tags") if isinstance(item.get("tags"), list) else []
+    out = {
+        "id": item_id.strip(),
+        "name": name.strip(),
+        "description": str(item.get("description") or ""),
+        "type": str(item.get("type") or "workflow"),
+        "version": str(item.get("version") or ""),
+        "author": str(item.get("author") or ""),
+        "tags": [str(v) for v in tags if isinstance(v, (str, int, float))],
+        "icon_url": icon_url,
+        "package_url": package_url,
+        "_package_path": package_path,
+        "sha256": sha256.strip().lower(),
+        "size_bytes": item.get("size_bytes") if isinstance(item.get("size_bytes"), int) else None,
+        "entrypoint": str(item.get("entrypoint") or ""),
+        "skill_name": str(item.get("skill_name") or ""),
+    }
+    if out["size_bytes"] is not None and out["size_bytes"] > _MAX_IMPORT_TOTAL_BYTES:
+        raise ValueError(f"Marketplace item {item_id!r} is too large")
+    return out
+
+
+def _normalized_marketplace_manifest() -> dict[str, Any]:
+    manifest_ref, manifest, manifest_root = _fetch_marketplace_manifest()
+    raw_items = manifest.get("items")
+    if not isinstance(raw_items, list):
+        raise ValueError("Marketplace manifest must contain an items list")
+    items = [_normalize_marketplace_item(item, manifest_ref=manifest_ref, manifest_root=manifest_root) for item in raw_items]
+    return {
+        "version": manifest.get("version"),
+        "name": str(manifest.get("name") or "AI Mime Skills Marketplace"),
+        "homepage": str(manifest.get("homepage") or ""),
+        "updated_at": str(manifest.get("updated_at") or ""),
+        "manifest_url": manifest_ref,
+        "source": "local" if manifest_root is not None else "remote",
+        "items": items,
+    }
+
+
+def _public_marketplace_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    public = dict(manifest)
+    public["items"] = [
+        {key: value for key, value in item.items() if not key.startswith("_")}
+        for item in manifest.get("items", [])
+        if isinstance(item, dict)
+    ]
+    return public
+
+
+def _safe_zip_relpath(filename: str) -> Path:
+    raw = (filename or "").replace("\\", "/").strip()
+    if not raw:
+        raise ValueError("Zip entry is missing a path")
+    if raw.startswith("/") or raw.startswith("~"):
+        raise ValueError(f"Unsafe zip path: {filename}")
+    parts = [part for part in raw.split("/") if part not in {"", "."}]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Unsafe zip path: {filename}")
+    return Path(*parts)
+
+
+def _extract_marketplace_zip(raw_zip: bytes, stage_dir: Path) -> None:
+    original_dir = stage_dir / "original"
+    original_dir.mkdir(parents=True, exist_ok=True)
+    seen: set[str] = set()
+    total_bytes = 0
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw_zip)) as zf:
+            for info in zf.infolist():
+                rel = _safe_zip_relpath(info.filename)
+                rel_key = rel.as_posix()
+                mode = (info.external_attr >> 16) & 0o170000
+                if mode == 0o120000:
+                    raise ValueError(f"Zip entry is a symlink: {rel_key}")
+                if rel_key in seen:
+                    raise ValueError(f"Duplicate zip path: {rel_key}")
+                seen.add(rel_key)
+                if info.is_dir():
+                    (original_dir / rel).mkdir(parents=True, exist_ok=True)
+                    continue
+                if info.file_size > _MAX_IMPORT_FILE_BYTES:
+                    raise ValueError(f"Marketplace package file is too large: {rel_key}")
+                total_bytes += info.file_size
+                if total_bytes > _MAX_IMPORT_TOTAL_BYTES:
+                    raise ValueError("Marketplace package is too large")
+                dst = original_dir / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info, "r") as src, dst.open("wb") as out:
+                    shutil.copyfileobj(src, out)
+    except zipfile.BadZipFile as e:
+        raise ValueError("Marketplace package is not a valid zip file") from e
+    if not any(original_dir.rglob("*")):
+        raise ValueError("Marketplace package is empty")
+
+
+def _create_marketplace_import_stage(item: dict[str, Any]) -> dict[str, Any]:
+    package_path = item.get("_package_path")
+    if isinstance(package_path, str) and package_path:
+        raw_zip = _read_file_bytes(Path(package_path), max_bytes=_MAX_IMPORT_TOTAL_BYTES, label="marketplace package")
+    else:
+        raw_zip = _fetch_url_bytes(item["package_url"], max_bytes=_MAX_IMPORT_TOTAL_BYTES, label="marketplace package")
+    expected_size = item.get("size_bytes")
+    if isinstance(expected_size, int) and expected_size >= 0 and len(raw_zip) != expected_size:
+        raise ValueError("Marketplace package size did not match manifest")
+    actual_sha = hashlib.sha256(raw_zip).hexdigest()
+    if actual_sha != item["sha256"]:
+        raise ValueError("Marketplace package checksum did not match manifest")
+
+    stage_dir = Path(tempfile.mkdtemp(prefix="ai-mime-marketplace-import-"))
+    try:
+        _extract_marketplace_zip(raw_zip, stage_dir)
+        preview = _create_import_preview(stage_dir)
+        return {
+            "stage_dir": str(stage_dir),
+            **preview,
+            "created_at": time.monotonic(),
+            "marketplace_item_id": item["id"],
+        }
+    except Exception:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        raise
+
+
+def _tail_process_output(value: str | None) -> str:
+    if not value:
+        return ""
+    value = value.strip()
+    if len(value) <= _MARKETPLACE_VENV_LOG_TAIL_CHARS:
+        return value
+    return value[-_MARKETPLACE_VENV_LOG_TAIL_CHARS:]
+
+
+def _run_marketplace_venv_command(cmd: list[str], *, cwd: Path, env: dict[str, str], label: str) -> None:
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=_MARKETPLACE_VENV_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        output = _tail_process_output(e.stdout if isinstance(e.stdout, str) else "")
+        detail = f"Marketplace dependency setup timed out during {label}."
+        if output:
+            detail += f"\n\n{output}"
+        raise ValueError(detail) from e
+    except Exception as e:
+        raise ValueError(f"Marketplace dependency setup failed to start during {label}: {e}") from e
+
+    if proc.returncode != 0:
+        output = _tail_process_output(proc.stdout)
+        detail = f"Marketplace dependency setup failed during {label} with exit code {proc.returncode}."
+        if output:
+            detail += f"\n\n{output}"
+        raise ValueError(detail)
+
+
+def _setup_marketplace_skill_venv(workflow_dir: Path, skill_dir: Path) -> None:
+    requirements = skill_dir / "requirements.txt"
+    if not requirements.is_file():
+        return
+
+    stale_venv = skill_dir / ".venv"
+    if stale_venv.exists():
+        shutil.rmtree(stale_venv, ignore_errors=True)
+
+    runtime_env = workflow_runtime_env(workflow_dir)
+    uv_path = runtime_env.get("AI_MIME_UV_PATH")
+    python_path = runtime_env.get("AI_MIME_PYTHON_PATH")
+    if not uv_path or not python_path:
+        raise ValueError("Marketplace dependency setup requires AI_MIME_UV_PATH and AI_MIME_PYTHON_PATH")
+    env = {**os.environ, **runtime_env}
+
+    _run_marketplace_venv_command(
+        [uv_path, "venv", ".venv", "--python", python_path],
+        cwd=skill_dir,
+        env=env,
+        label="virtualenv creation",
+    )
+    _run_marketplace_venv_command(
+        [uv_path, "pip", "install", "-r", "requirements.txt", "--python", ".venv/bin/python"],
+        cwd=skill_dir,
+        env=env,
+        label="dependency installation",
+    )
+
+    venv_python = skill_dir / ".venv" / "bin" / "python"
+    if not venv_python.is_file() or not os.access(venv_python, os.X_OK):
+        raise ValueError("Marketplace dependency setup did not create an executable .venv/bin/python")
 
 
 def _snapshot_asset_files(assets_dir: Path) -> dict[str, tuple[int, int]]:
@@ -977,6 +1339,13 @@ def create_app(
             raise HTTPException(status_code=500, detail="Agent UI not found")
         return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
 
+    @app.get("/marketplace", response_class=HTMLResponse)
+    def marketplace_dashboard():
+        index_path = web_dir / "marketplace.html"
+        if not index_path.exists():
+            raise HTTPException(status_code=500, detail="Marketplace UI not found")
+        return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
+
     @app.get("/reflect/{task_id}", response_class=HTMLResponse)
     def reflect_dashboard(task_id: str):
         _safe_task_id(task_id)
@@ -1333,6 +1702,48 @@ def create_app(
                 shutil.rmtree(Path(str(removed.get("stage_dir") or "")), ignore_errors=True)
         return result
 
+    @app.get("/api/marketplace/manifest")
+    def api_marketplace_manifest():
+        try:
+            return _public_marketplace_manifest(_normalized_marketplace_manifest())
+        except ValueError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to load marketplace manifest: {e}")
+
+    @app.post("/api/marketplace/install")
+    def api_marketplace_install(payload: dict[str, Any] = Body(...)):
+        item_id = payload.get("item_id")
+        if not isinstance(item_id, str) or not item_id.strip():
+            raise HTTPException(status_code=400, detail="item_id must be a non-empty string")
+        try:
+            manifest = _normalized_marketplace_manifest()
+            item = next((row for row in manifest["items"] if row["id"] == item_id.strip()), None)
+            if item is None:
+                raise HTTPException(status_code=404, detail="Marketplace item not found")
+            stage_info = _create_marketplace_import_stage(item)
+            try:
+                result = _install_import_stage(stage_info, task_runner.workflows_root)
+                workflow_dir = Path(str(result.get("workflow_dir") or ""))
+                skill_dir = _find_workflow_skill_dir(workflow_dir)
+                if skill_dir is None:
+                    raise ValueError("Installed marketplace workflow does not contain a valid skill package")
+                try:
+                    _setup_marketplace_skill_venv(workflow_dir, skill_dir)
+                except Exception:
+                    if workflow_dir.exists():
+                        shutil.rmtree(workflow_dir, ignore_errors=True)
+                    raise
+                return result
+            finally:
+                shutil.rmtree(Path(str(stage_info.get("stage_dir") or "")), ignore_errors=True)
+        except HTTPException:
+            raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to install marketplace item: {e}")
+
     @app.post("/api/app/quit")
     def api_quit_app():
         if app_command_queue is None:
@@ -1655,11 +2066,47 @@ def create_app(
             raise HTTPException(status_code=500, detail=f"Failed to parse inputs.template.json: {e}")
         if not isinstance(data, dict):
             raise HTTPException(status_code=500, detail="inputs.template.json must be a JSON object")
+        example_path = skill_dir / "inputs" / "inputs.example.json"
+        examples = _read_json(example_path)
+        if not isinstance(examples, dict):
+            examples = {}
+        fields = _parse_skill_frontmatter_fields(skill_dir)
         return {
             "skill_dir": str(skill_dir),
             "template_path": str(template_path),
             "template": data,
+            "examples": examples,
+            "skill": {
+                "name": fields.get("name") or skill_dir.name,
+                "description": fields.get("description") or "",
+                "preconditions": _parse_skill_preconditions(skill_dir),
+            },
         }
+
+    @app.post("/api/tasks/{task_id}/skill/open-folder")
+    def api_open_skill_folder(task_id: str):
+        _safe_task_id(task_id)
+        if app_command_queue is None:
+            raise HTTPException(status_code=503, detail="App control is unavailable")
+        row = task_runner.get_status(task_id)
+        workflow_dir_raw = row.get("workflow_dir")
+        skill_dir_raw = row.get("skill_dir")
+        if not isinstance(workflow_dir_raw, str) or not workflow_dir_raw:
+            raise HTTPException(status_code=404, detail="Workflow directory not found for task")
+        if not isinstance(skill_dir_raw, str) or not skill_dir_raw:
+            raise HTTPException(status_code=404, detail="Skill is not built for this task yet")
+        workflow_dir = Path(workflow_dir_raw).resolve()
+        skill_dir = Path(skill_dir_raw).resolve()
+        _safe_workflow_dir(task_runner.workflows_root, task_id)
+        if workflow_dir not in skill_dir.parents:
+            raise HTTPException(status_code=400, detail="Invalid skill directory")
+        if not skill_dir.exists() or not skill_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Skill folder not found")
+        try:
+            app_command_queue.put({"type": "open_directory", "path": str(skill_dir)})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to queue open skill folder command: {e}")
+        return {"ok": True, "path": str(skill_dir)}
 
     @app.post("/api/tasks/{task_id}/skill/run/stream")
     def api_skill_run_stream(task_id: str, payload: dict[str, Any] | None = Body(default=None)):

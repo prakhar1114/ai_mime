@@ -6,10 +6,13 @@
   const el = {
     shell,
     taskName: document.getElementById("taskName"),
-    statusPill: document.getElementById("statusPill"),
-    skillDir: document.getElementById("skillDir"),
     skillDirInline: document.getElementById("skillDirInline"),
+    openSkillFolderBtn: document.getElementById("openSkillFolderBtn"),
     scriptCard: document.getElementById("scriptCard"),
+    skillInfo: document.getElementById("skillInfo"),
+    skillDescription: document.getElementById("skillDescription"),
+    skillPreconditions: document.getElementById("skillPreconditions"),
+    skillPreconditionsList: document.getElementById("skillPreconditionsList"),
     expandFormBtn: document.getElementById("expandFormBtn"),
     scriptForm: document.getElementById("scriptForm"),
     paramFields: document.getElementById("paramFields"),
@@ -52,6 +55,7 @@
   const state = {
     mode: "idle",
     params: [],            // recursive input nodes from inputs.template.json
+    examples: {},          // runnable examples from inputs.example.json, shown as hints only
     lastRunValues: null,   // { [name]: value }
     skillDir: null,
     runActive: false,
@@ -85,6 +89,27 @@
       throw new Error(detail);
     }
     return data;
+  }
+
+  function setSkillDir(value) {
+    state.skillDir = value || null;
+    if (el.skillDirInline) el.skillDirInline.textContent = state.skillDir || "…";
+    if (el.openSkillFolderBtn) el.openSkillFolderBtn.hidden = !state.skillDir;
+  }
+
+  function renderSkillInfo(skill) {
+    const description = skill && typeof skill.description === "string" ? skill.description.trim() : "";
+    const preconditions = skill && Array.isArray(skill.preconditions)
+      ? skill.preconditions.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
+      : [];
+    if (el.skillDescription) el.skillDescription.textContent = description;
+    if (el.skillPreconditionsList) {
+      el.skillPreconditionsList.innerHTML = preconditions
+        .map((item) => `<li>${escapeHtml(item)}</li>`)
+        .join("");
+    }
+    if (el.skillPreconditions) el.skillPreconditions.hidden = preconditions.length === 0;
+    if (el.skillInfo) el.skillInfo.hidden = !description && preconditions.length === 0;
   }
 
   // ---------- mode state machine ----------
@@ -125,20 +150,11 @@
     const row = tasksResp && Array.isArray(tasksResp.tasks)
       ? tasksResp.tasks.find((t) => t.id === taskId)
       : null;
-    if (row) {
+      if (row) {
       el.taskName.textContent = row.display_name || row.id;
-      if (row.status) {
-        el.statusPill.hidden = false;
-        el.statusPill.textContent = row.status;
-        el.statusPill.dataset.state = row.status === "ready" ? "ready" : "";
-      }
-      state.skillDir = row.skill_dir || null;
+      setSkillDir(row.skill_dir || null);
     } else {
       el.taskName.textContent = taskId;
-    }
-    if (state.skillDir) {
-      el.skillDir.textContent = state.skillDir;
-      if (el.skillDirInline) el.skillDirInline.textContent = state.skillDir;
     }
 
     // Skill inputs template — the canonical place for replay inputs is
@@ -147,10 +163,10 @@
     try {
       const resp = await request(`/api/tasks/${encodeURIComponent(taskId)}/skill/inputs-template`);
       if (resp && resp.skill_dir) {
-        state.skillDir = resp.skill_dir;
-        el.skillDir.textContent = resp.skill_dir;
-        if (el.skillDirInline) el.skillDirInline.textContent = resp.skill_dir;
+        setSkillDir(resp.skill_dir);
       }
+      state.examples = resp && resp.examples && typeof resp.examples === "object" ? resp.examples : {};
+      renderSkillInfo(resp && resp.skill);
       const tpl = (resp && resp.template) || {};
       state.params = Object.entries(tpl).map(([name, raw]) => paramFromTemplateEntry(name, raw, [name]));
       renderParamFields();
@@ -307,6 +323,7 @@
     const dataAttrs = `data-path="${escapeHtml(path)}" data-type="${escapeHtml(p.type)}" data-required="${p.required ? "1" : "0"}"`;
       const required = p.required ? ` <span aria-hidden="true" title="required">*</span>` : "";
       const desc = p.description ? `<div class="desc">${escapeHtml(p.description)}</div>` : "";
+      const example = renderExampleHint(p.path);
     const inputValue = fieldValue != null ? escapeHtml(String(fieldValue)) : "";
       if (p.type === "boolean" || p.type === "bool") {
         return `
@@ -317,6 +334,7 @@
             <span>${escapeHtml(labelText)}</span>
             </div>
             ${desc}
+            ${example}
           </div>
         `;
       }
@@ -327,6 +345,7 @@
           <label for="${id}">${escapeHtml(labelText)}${required}</label>
             <input id="${id}" type="number" value="${inputValue}" placeholder="${escapeHtml(placeholder)}" data-placeholder="${escapeHtml(placeholder)}" />
             ${desc}
+            ${example}
           </div>
         `;
       }
@@ -336,6 +355,7 @@
         <label for="${id}">${escapeHtml(labelText)}${required}</label>
           <input id="${id}" type="text" value="${inputValue}" placeholder="${escapeHtml(placeholder)}" data-placeholder="${escapeHtml(placeholder)}" spellcheck="false" />
           ${desc}
+          ${example}
         </div>
       `;
   }
@@ -423,6 +443,19 @@
       cur = cur[part];
     }
     return cur;
+  }
+
+  function formatExampleValue(value) {
+    if (value === undefined || value === null || value === "") return "";
+    const raw = typeof value === "string" ? value : JSON.stringify(value);
+    if (raw == null || raw === "") return "";
+    return raw.length > 120 ? raw.slice(0, 117) + "..." : raw;
+  }
+
+  function renderExampleHint(path) {
+    const formatted = formatExampleValue(getPathValue(state.examples, path));
+    if (!formatted) return "";
+    return `<div class="example">Example: <span class="mono">${escapeHtml(formatted)}</span></div>`;
   }
 
   function setPathValue(obj, path, value) {
@@ -518,6 +551,19 @@
   el.olderRunDetailCard.querySelectorAll(".tab").forEach((t) => {
     t.addEventListener("click", () => selectTab(t.dataset.tab, el.olderRunDetailCard));
   });
+
+  if (el.openSkillFolderBtn) {
+    el.openSkillFolderBtn.addEventListener("click", async () => {
+      el.openSkillFolderBtn.disabled = true;
+      try {
+        await request(`/api/tasks/${encodeURIComponent(taskId)}/skill/open-folder`, { method: "POST" });
+      } catch (err) {
+        alert(err && err.message ? err.message : String(err || "Failed to open skill folder"));
+      } finally {
+        el.openSkillFolderBtn.disabled = false;
+      }
+    });
+  }
 
   // ---------- script run (STUB) ----------
 
