@@ -6,8 +6,6 @@
   const el = {
     shell,
     taskName: document.getElementById("taskName"),
-    statusPill: document.getElementById("statusPill"),
-    skillDir: document.getElementById("skillDir"),
     skillDirInline: document.getElementById("skillDirInline"),
     openSkillFolderBtn: document.getElementById("openSkillFolderBtn"),
     scriptCard: document.getElementById("scriptCard"),
@@ -95,7 +93,6 @@
 
   function setSkillDir(value) {
     state.skillDir = value || null;
-    if (el.skillDir) el.skillDir.textContent = state.skillDir || "";
     if (el.skillDirInline) el.skillDirInline.textContent = state.skillDir || "…";
     if (el.openSkillFolderBtn) el.openSkillFolderBtn.hidden = !state.skillDir;
   }
@@ -153,13 +150,8 @@
     const row = tasksResp && Array.isArray(tasksResp.tasks)
       ? tasksResp.tasks.find((t) => t.id === taskId)
       : null;
-    if (row) {
+      if (row) {
       el.taskName.textContent = row.display_name || row.id;
-      if (row.status) {
-        el.statusPill.hidden = false;
-        el.statusPill.textContent = row.status;
-        el.statusPill.dataset.state = row.status === "ready" ? "ready" : "";
-      }
       setSkillDir(row.skill_dir || null);
     } else {
       el.taskName.textContent = taskId;
@@ -406,7 +398,6 @@
           <div>
             <div class="group-title">${escapeHtml(p.name)}</div>
             <div class="desc">Add one entry for each ${escapeHtml(itemName)}.</div>
-            ${renderExampleHint(p.path)}
           </div>
           <button class="btn small" type="button" data-array-add="${escapeHtml(path)}">Add ${escapeHtml(itemName)}</button>
         </div>

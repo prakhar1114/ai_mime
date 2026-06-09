@@ -834,6 +834,9 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertIn("Direct build", response.text)
         self.assertIn("Upload skill", response.text)
         self.assertIn("Explore marketplace", response.text)
+        self.assertIn("Open Workflows Folder", response.text)
+        self.assertNotIn(">Refresh<", response.text)
+        self.assertLess(response.text.index("Agent Mode"), response.text.index("Open Workflows Folder"))
 
         marketplace = client.get("/marketplace")
         self.assertEqual(marketplace.status_code, 200, marketplace.text)
@@ -857,6 +860,8 @@ class TaskDashboardTests(unittest.TestCase):
         marketplace_html = Path("src/ai_mime/editor/web/marketplace.html").read_text(encoding="utf-8")
         marketplace_js = Path("src/ai_mime/editor/web/marketplace.js").read_text(encoding="utf-8")
 
+        self.assertNotIn("/static/tasks.css", marketplace_html)
+        self.assertIn("/static/marketplace.css", marketplace_html)
         self.assertIn("/static/marketplace.js", marketplace_html)
         self.assertIn("/api/marketplace/manifest", marketplace_js)
         self.assertIn("/api/marketplace/install", marketplace_js)

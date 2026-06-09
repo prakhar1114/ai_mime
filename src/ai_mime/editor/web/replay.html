@@ -13,37 +13,40 @@
   </head>
   <body>
     <div class="replay-shell" data-task-id="__TASK_ID__" data-mode="idle">
-      <header class="replay-top">
-        <div class="crumbs">
-          <a class="back" href="/tasks">← Tasks</a>
-        </div>
-        <div class="title-block">
-          <div class="task-name" id="taskName">Loading…</div>
-          <div class="task-meta">
-            <span class="status-pill" id="statusPill" hidden></span>
-            <span class="skill-dir mono" id="skillDir"></span>
-            <button class="btn small open-skill-folder" id="openSkillFolderBtn" type="button" hidden>Open Skill Folder</button>
+      <aside class="sidebar" aria-label="Replay controls">
+        <div class="sidebar-head">
+          <img class="app-logo" src="/static/icon_128.png" alt="" aria-hidden="true">
+          <div>
+            <div class="brand">AI Mime</div>
+            <h1>Task Replay</h1>
           </div>
         </div>
-      </header>
 
-      <main class="replay-main">
+        <div class="toolbar" aria-label="Task actions">
+          <button class="btn primary" id="agentPill" type="button">Run task variation with agent</button>
+          <button class="btn" id="openSkillFolderBtn" type="button" hidden>Open Folder</button>
+          <a class="btn" href="/tasks">← Back to Tasks</a>
+        </div>
+      </aside>
+
+      <main class="workspace replay-main">
+        <div class="hero-info skill-info" id="skillInfo">
+          <h2 class="task-name" id="taskName">Loading…</h2>
+          <div class="skill-description" id="skillDescription"></div>
+          <div class="skill-preconditions" id="skillPreconditions" hidden>
+            <div class="skill-info-label">Preconditions</div>
+            <ul id="skillPreconditionsList"></ul>
+          </div>
+        </div>
+
         <!-- SCRIPT MODE: top form -->
-        <section class="script-card" id="scriptCard">
+        <section class="task-surface script-card" id="scriptCard">
           <div class="card-head">
             <div>
               <div class="card-title">Run the skill</div>
               <div class="card-sub">Fill in the task inputs and run the deterministic script.</div>
             </div>
             <button class="chevron-btn" id="expandFormBtn" type="button" hidden aria-label="Expand form">▾</button>
-          </div>
-
-          <div class="skill-info" id="skillInfo" hidden>
-            <div class="skill-description" id="skillDescription"></div>
-            <div class="skill-preconditions" id="skillPreconditions" hidden>
-              <div class="skill-info-label">Preconditions</div>
-              <ul id="skillPreconditionsList"></ul>
-            </div>
           </div>
 
           <form class="script-form" id="scriptForm">
@@ -148,13 +151,6 @@
           </div>
         </section>
       </main>
-
-      <!-- AGENT DOCK: collapsed pill -->
-      <button class="agent-pill" id="agentPill" type="button">
-        <span class="pill-icon">💬</span>
-        <span class="pill-label">Run a variation with the agent</span>
-        <span class="pill-hint">The agent has the full skill (and gotchas) in context.</span>
-      </button>
 
       <!-- AGENT DOCK: expanded overlay (skill_build-style chat) -->
       <div class="agent-overlay" id="agentOverlay" hidden>
