@@ -554,10 +554,12 @@ class TaskDashboardTests(unittest.TestCase):
         client = TestClient(app)
 
         with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(manifest, package_bytes):
-            install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
-            second_install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+            with patch("ai_mime.editor.server._run_marketplace_venv_command") as venv_command:
+                install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+                second_install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
 
         self.assertEqual(install.status_code, 200, install.text)
+        venv_command.assert_not_called()
         workflow = Path(install.json()["workflow_dir"])
         self.assertEqual(json.loads((workflow / "metadata.json").read_text(encoding="utf-8"))["name"], "Invoice Workflow")
         self.assertTrue((workflow / "skills" / "fetch-weather" / "run.sh").exists())
@@ -579,6 +581,94 @@ class TaskDashboardTests(unittest.TestCase):
         rows = {row["id"]: row for row in client.get("/api/tasks").json()["tasks"]}
         self.assertEqual(rows[second_install.json()["task_id"]]["display_name"], "Invoice Workflow (2)")
         self.assertTrue(rows[second_install.json()["task_id"]]["can_replay"])
+
+    def test_marketplace_install_creates_skill_venv_for_requirements(self) -> None:
+        package_bytes = self._workflow_zip_bytes(
+            extra=[
+                ("invoice-workflow/skills/fetch-weather/requirements.txt", b"requests==2.32.3\n"),
+                ("invoice-workflow/skills/fetch-weather/.venv/bin/python", b"stale python"),
+            ]
+        )
+        manifest = self._marketplace_manifest(package_bytes)
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+        calls: list[tuple[list[str], str, dict[str, str]]] = []
+
+        def fake_runtime_env(workflow_dir: Path) -> dict[str, str]:
+            return {
+                "AI_MIME_UV_PATH": "/fake/uv",
+                "AI_MIME_PYTHON_PATH": "/fake/python",
+                "AI_MIME_TEST_WORKFLOW_DIR": str(workflow_dir),
+            }
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            cmd_list = [str(part) for part in cmd]
+            cwd = str(kwargs.get("cwd") or "")
+            env = kwargs.get("env") or {}
+            if "-m" in cmd_list and "py_compile" in cmd_list:
+                return type("Proc", (), {"returncode": 0, "stdout": ""})()
+            calls.append((cmd_list, cwd, dict(env)))
+            if cmd_list[:2] == ["/fake/uv", "venv"]:
+                venv_python = Path(cwd) / ".venv" / "bin" / "python"
+                venv_python.parent.mkdir(parents=True, exist_ok=True)
+                venv_python.write_text("#!/usr/bin/env python\n", encoding="utf-8")
+                venv_python.chmod(0o755)
+            return type("Proc", (), {"returncode": 0, "stdout": "ok"})()
+
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch(
+            "ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL",
+            "https://example.com/catalog/manifest.json",
+        ), self._patch_marketplace_fetch(manifest, package_bytes), patch(
+            "ai_mime.editor.server.workflow_runtime_env",
+            side_effect=fake_runtime_env,
+        ), patch("ai_mime.editor.server.subprocess.run", side_effect=fake_run):
+            install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+
+        self.assertEqual(install.status_code, 200, install.text)
+        workflow = Path(install.json()["workflow_dir"])
+        skill_dir = workflow / "skills" / "fetch-weather"
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0], ["/fake/uv", "venv", ".venv", "--python", "/fake/python"])
+        self.assertEqual(calls[1][0], ["/fake/uv", "pip", "install", "-r", "requirements.txt", "--python", ".venv/bin/python"])
+        for _cmd, cwd, env in calls:
+            self.assertEqual(cwd, str(skill_dir))
+            self.assertEqual(env["AI_MIME_UV_PATH"], "/fake/uv")
+            self.assertEqual(env["AI_MIME_PYTHON_PATH"], "/fake/python")
+            self.assertEqual(env["AI_MIME_TEST_WORKFLOW_DIR"], str(workflow))
+        self.assertEqual((skill_dir / ".venv" / "bin" / "python").read_text(encoding="utf-8"), "#!/usr/bin/env python\n")
+        rows = {row["id"]: row for row in client.get("/api/tasks").json()["tasks"]}
+        self.assertTrue(rows[install.json()["task_id"]]["has_skill"])
+        self.assertTrue(rows[install.json()["task_id"]]["can_replay"])
+
+    def test_marketplace_install_rolls_back_when_venv_setup_fails(self) -> None:
+        package_bytes = self._workflow_zip_bytes(
+            extra=[("invoice-workflow/skills/fetch-weather/requirements.txt", b"missing-package==0\n")]
+        )
+        manifest = self._marketplace_manifest(package_bytes)
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        def fake_runtime_env(_workflow_dir: Path) -> dict[str, str]:
+            return {"AI_MIME_UV_PATH": "/fake/uv", "AI_MIME_PYTHON_PATH": "/fake/python"}
+
+        def fake_run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+            cmd_list = [str(part) for part in cmd]
+            if "-m" in cmd_list and "py_compile" in cmd_list:
+                return type("Proc", (), {"returncode": 0, "stdout": ""})()
+            return type("Proc", (), {"returncode": 1, "stdout": "dependency resolution failed"})()
+
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch(
+            "ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL",
+            "https://example.com/catalog/manifest.json",
+        ), self._patch_marketplace_fetch(manifest, package_bytes), patch(
+            "ai_mime.editor.server.workflow_runtime_env",
+            side_effect=fake_runtime_env,
+        ), patch("ai_mime.editor.server.subprocess.run", side_effect=fake_run):
+            install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+
+        self.assertEqual(install.status_code, 400, install.text)
+        self.assertIn("Marketplace dependency setup failed", install.text)
+        self.assertEqual(client.get("/api/tasks").json()["tasks"], [])
 
     def test_marketplace_install_rejects_bad_packages(self) -> None:
         valid_package = self._workflow_zip_bytes()
