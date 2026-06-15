@@ -44,6 +44,7 @@ EDITOR_SERVER_PORT = 58838
 DEFAULT_MARKETPLACE_MANIFEST_URL = "https://market.aimime.cc/manifest.json"
 MARKETPLACE_MANIFEST_PATH_ENV = "AI_MIME_MARKETPLACE_MANIFEST_PATH"
 _MAX_MARKETPLACE_MANIFEST_BYTES = 2 * 1024 * 1024
+TASK_STATUSES: dict[str, dict[str, Any]] = {}
 
 
 def _kill_processes_on_tcp_port(port: int) -> None:
@@ -998,10 +999,12 @@ class TaskRunner:
         workflows_root: Path,
         recordings_root: Path,
         app_state: Any | None = None,
+        app_command_queue: Any | None = None,
     ) -> None:
         self.workflows_root = workflows_root
         self.recordings_root = recordings_root
         self.app_state = app_state
+        self.app_command_queue = app_command_queue
         self._lock = threading.Lock()
         self._states: dict[str, dict[str, Any]] = {}
         self._reflect_processes: dict[str, tuple[Process, Queue]] = {}
@@ -1228,6 +1231,17 @@ class TaskRunner:
                     "error": None,
                     "progress": self._progress_from_event(evt, fallback_phase=phase),
                 }
+                
+                label = str(evt.get("label") or "")
+                if label:
+                    if self.app_command_queue is not None:
+                        self.app_command_queue.put({
+                            "type": "update_agent_status",
+                            "status": label,
+                            "needs_input": False,
+                            "task_id": task_id,
+                        })
+                    TASK_STATUSES[task_id] = {"status": label, "needs_input": False}
                 _task_log(f"reflect progress: task_id={task_id} phase={phase} progress={self._states[task_id]['progress'].get('value')}")
             elif et == "reflect_compile_done":
                 self._states[task_id] = {
@@ -1307,6 +1321,7 @@ def create_app(
         workflows_root=workflows_root,
         recordings_root=recordings_root,
         app_state=app_state,
+        app_command_queue=app_command_queue,
     )
     agent_service = agent_chat_service or WorkspaceAgentChatService()
     task_agent_services: dict[str, WorkspaceAgentChatService] = {}
@@ -1414,7 +1429,6 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-
         async def _sse():
             if app_command_queue is not None:
                 app_command_queue.put({
@@ -1422,6 +1436,19 @@ def create_app(
                     "mode": service.mode,
                     "task_id": task_id or "",
                 })
+                default_status = "Starting workflow..."
+                app_command_queue.put({
+                    "type": "update_agent_status",
+                    "status": default_status,
+                    "needs_input": False,
+                    "task_id": task_id or "",
+                })
+                if task_id:
+                    TASK_STATUSES[task_id] = {"status": default_status, "needs_input": False}
+                
+            # Yield default status immediately
+            yield f"data: {json.dumps({'event': 'agent_status', 'status': default_status, 'needs_input': False})}\n\n"
+
             message_accum = ""
             try:
                 async for event in event_iter:
@@ -1437,6 +1464,19 @@ def create_app(
                             })
                         elif event.get("event") == "tool_use":
                             tool_name = event.get("name") or ""
+                            if tool_name == "set_status":
+                                tool_input = event.get("input") or {}
+                                status_str = tool_input.get("status", "")
+                                needs_input = tool_input.get("needs_input", False)
+                                app_command_queue.put({
+                                    "type": "update_agent_status",
+                                    "status": status_str,
+                                    "needs_input": needs_input,
+                                    "task_id": task_id or "",
+                                })
+                                if task_id:
+                                    TASK_STATUSES[task_id] = {"status": status_str, "needs_input": needs_input}
+                                yield f"data: {json.dumps({'event': 'agent_status', 'status': status_str, 'needs_input': needs_input})}\n\n"
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "tool": tool_name,
@@ -1840,7 +1880,10 @@ def create_app(
 
     @app.get("/api/tasks/{task_id}/status")
     def api_task_status(task_id: str):
-        return task_runner.get_status(task_id)
+        status = task_runner.get_status(task_id)
+        if task_id in TASK_STATUSES:
+            status["agent_status"] = TASK_STATUSES[task_id]
+        return status
 
     @app.get("/api/tasks/{task_id}/reflect/status")
     def api_task_reflect_status(task_id: str):

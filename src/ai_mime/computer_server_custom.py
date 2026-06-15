@@ -19,6 +19,7 @@ from PIL import Image as PILImage
 CUSTOM_TOOL_NAMES = (
     "computer_get_window_state",
     "computer_perform_action_and_get_state",
+    "set_status",
 )
 
 
@@ -208,6 +209,19 @@ def install_custom_tools() -> CustomToolInstallResult:
                     text=f"Accessibility Tree:\n{json.dumps(tree, indent=2)}",
                 ),
             ]
+
+        @mcp.tool
+        async def set_status(status: str, needs_input: bool = False) -> str:
+            """
+            Notify the user of high-level progress, major phase changes, or if user input is needed.
+            
+            Args:
+                status: A short description of the current status or phase.
+                needs_input: Set to true if the agent is blocked and requires the user to respond in chat.
+            """
+            # This tool is intercepted by the ai_mime server before reaching the MCP server.
+            # But in case it is executed, we just return a success message.
+            return f"Status set to '{status}' (needs_input={needs_input})"
 
         return mcp
 

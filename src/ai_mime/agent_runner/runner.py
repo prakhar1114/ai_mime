@@ -134,26 +134,7 @@ def _skill_dir_for_request(request: AgentRunRequest) -> Path:
     return _skill_dir_for(request.workflow_dir, schema)
 
 
-def _default_skill_builder_mcp_servers() -> dict[str, dict]:
-    """Always-on MCP servers for the build_skill_chat agent.
 
-    Honors `AI_MIME_MCP_SERVERS_JSON` (a JSON object) so the macOS app
-    installer can ship zero-config servers without code changes. Invalid
-    JSON is ignored — never fails the build.
-
-    TODO: bundle safe out-of-the-box defaults (e.g. a free web-fetch MCP)
-    once we've picked them.
-    """
-    raw = os.getenv("AI_MIME_MCP_SERVERS_JSON")
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except Exception:
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    return {k: v for k, v in parsed.items() if isinstance(k, str) and isinstance(v, dict)}
 
 
 def _filesystem_access_from_plan(optimized_plan: dict) -> FilesystemAccess:
@@ -262,9 +243,9 @@ def build_agent_run_request(
     # standalone UI agent uses via $AI_MIME_UI_AGENT_CMD).
     mcp_servers: dict | None = None
     if mode == "build_skill_chat":
-        mcp_servers = {**_default_skill_builder_mcp_servers(), **cua_mcp_servers()}
+        mcp_servers = cua_mcp_servers()
     elif mode == "replay_execution":
-        mcp_servers = dict(cua_mcp_servers())
+        mcp_servers = cua_mcp_servers()
 
     return AgentRunRequest(
         provider=provider,

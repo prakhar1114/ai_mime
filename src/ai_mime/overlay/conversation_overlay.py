@@ -8,6 +8,8 @@ Used during active agent interactions in build_skill_chat or replay_execution mo
 # pyright: reportAttributeAccessIssue=false
 
 import AppKit  # type: ignore[import-not-found]
+import WebKit
+import json
 import objc
 import Foundation
 import threading
@@ -15,6 +17,7 @@ import urllib.request
 import urllib.parse
 import webbrowser
 
+from ai_mime.overlay.overlay_html import OVERLAY_HTML
 from ai_mime.overlay.ui_common import (
     active_screen_visible_frame,
     make_hud_effect_view,
@@ -36,75 +39,6 @@ _MESSAGE_MAX_LINES = 4
 _TOOL_MAX_LINES = 2
 
 
-class PulsingDotView(AppKit.NSView):  # type: ignore[misc]
-    """
-    Custom NSView that draws a green circle and pulses its opacity via an NSTimer.
-    """
-
-    def initWithFrame_(self, frame):
-        self = objc.super(PulsingDotView, self).initWithFrame_(frame)
-        if self:
-            self._owner = None
-            self._color = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.15, 0.8, 0.25, 1.0)
-            self._alpha = 1.0
-            self._increasing = False
-            self._timer = None
-            try:
-                self._timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                    0.08,
-                    self,
-                    "pulse:",
-                    None,
-                    True,
-                )
-            except Exception:
-                pass
-        return self
-
-    def setColor_(self, color):
-        self._color = color
-        self.setNeedsDisplay_(True)
-
-    def pulse_(self, sender):
-        if self._increasing:
-            self._alpha += 0.08
-            if self._alpha >= 1.0:
-                self._alpha = 1.0
-                self._increasing = False
-        else:
-            self._alpha -= 0.08
-            if self._alpha <= 0.3:
-                self._alpha = 0.3
-                self._increasing = True
-        self.setNeedsDisplay_(True)
-
-    def drawRect_(self, rect):
-        AppKit.NSColor.clearColor().set()
-        AppKit.NSRectFill(self.bounds())
-
-        path = AppKit.NSBezierPath.bezierPathWithOvalInRect_(self.bounds())
-        color_with_alpha = self._color.colorWithAlphaComponent_(self._alpha)
-        color_with_alpha.set()
-        path.fill()
-
-    def mouseDown_(self, event):
-        try:
-            if hasattr(self, "_owner") and self._owner and self._owner.is_minimized:
-                self._owner.maximize()
-                return
-        except Exception:
-            pass
-        objc.super(PulsingDotView, self).mouseDown_(event)
-
-    def close(self):
-        if self._timer:
-            try:
-                self._timer.invalidate()
-            except Exception:
-                pass
-            self._timer = None
-
-
 class InteractiveHUDView(AppKit.NSVisualEffectView):  # type: ignore[misc]
     def initWithFrame_(self, frame):
         self = objc.super(InteractiveHUDView, self).initWithFrame_(frame)
@@ -122,52 +56,29 @@ class InteractiveHUDView(AppKit.NSVisualEffectView):  # type: ignore[misc]
         objc.super(InteractiveHUDView, self).mouseDown_(event)
 
 
-class ConversationOverlayActionHandler(AppKit.NSObject):  # type: ignore[misc]
-    def interrupt_(self, sender):  # noqa: N802 - ObjC selector
+class WebOverlayMessageHandler(AppKit.NSObject):  # type: ignore[misc]
+    def userContentController_didReceiveScriptMessage_(self, userContentController, message):
         try:
-            self._overlay._handle_interrupt()  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-    def showChat_(self, sender):  # noqa: N802 - ObjC selector
-        try:
-            self._overlay._handle_show_chat()  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-    def hide_(self, sender):  # noqa: N802 - ObjC selector
-        try:
-            self._overlay.minimize()  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-
-def _configure_wrapping_label(label, *, max_lines: int) -> None:
-    try:
-        label.setMaximumNumberOfLines_(int(max_lines))
-        label.setLineBreakMode_(AppKit.NSLineBreakByWordWrapping)  # type: ignore[attr-defined]
-        label.setTranslatesAutoresizingMaskIntoConstraints_(False)
-        label.setContentCompressionResistancePriority_forOrientation_(
-            250,
-            AppKit.NSLayoutConstraintOrientationHorizontal,  # type: ignore[attr-defined]
-        )
-    except Exception:
-        pass
-
-    try:
-        cell = label.cell()
-        cell.setUsesSingleLineMode_(False)
-        cell.setWraps_(True)
-        cell.setScrollable_(False)
-        if hasattr(cell, "setTruncatesLastVisibleLine_"):
-            cell.setTruncatesLastVisibleLine_(True)
-    except Exception:
-        pass
-
+            body = message.body()
+            if hasattr(body, "get"):
+                action = body.get("type")
+                if action == "hide":
+                    self._overlay.minimize()
+                elif action == "show_chat":
+                    self._overlay._handle_show_chat()
+                elif action == "interrupt":
+                    self._overlay._handle_interrupt()
+                elif action == "resize":
+                    height = body.get("height", 0)
+                    self._overlay._clamp_expanded_frame(float(height))
+                elif action == "maximize":
+                    self._overlay.maximize()
+        except Exception as e:
+            print(f"Error handling JS message: {e}")
 
 class ConversationOverlay:
     """
-    Floating, always-on-top, resizable HUD overlay indicating agent activity.
+    Floating, always-on-top, resizable HUD overlay indicating agent activity, powered by WebKit.
     """
 
     def __init__(self, port: int, task_id: str, mode: str) -> None:
@@ -179,222 +90,62 @@ class ConversationOverlay:
         self.height = 220.0
         self.is_minimized = False
 
-        # Center vertically on the right edge of the active screen
         rect = self._expanded_frame(self.height)
-
-        # Make the panel borderless and always-on-top, non-activating
         self._panel = make_overlay_panel(rect, nonactivating=True)
+        self._panel.setIgnoresMouseEvents_(False)
 
-        # Apply resizable style mask and limits
         try:
             style = AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel | AppKit.NSWindowStyleMaskResizable
             self._panel.setStyleMask_(style)
             self._apply_expanded_size_limits()
+            self._panel.setOpaque_(False)
+            self._panel.setBackgroundColor_(AppKit.NSColor.clearColor())
         except Exception:
             pass
 
-        # Create content view using custom InteractiveHUDView class
-        self._content = InteractiveHUDView.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 0, self.width, self.height)
-        )
+        # Set up WebKit
+        config = WebKit.WKWebViewConfiguration.alloc().init()
         try:
-            self._content.setAutoresizingMask_(
+            config.setValue_forKey_(False, "drawsBackground")
+        except Exception:
+            pass
+        uc = WebKit.WKUserContentController.alloc().init()
+        
+        self._action_handler = WebOverlayMessageHandler.alloc().init()
+        self._action_handler._overlay = self
+        
+        uc.addScriptMessageHandler_name_(self._action_handler, "overlay")
+        config.setUserContentController_(uc)
+        
+        self._webview = WebKit.WKWebView.alloc().initWithFrame_configuration_(
+            AppKit.NSMakeRect(0, 0, self.width, self.height), config
+        )
+        
+        try:
+            self._webview.setAutoresizingMask_(
                 int(getattr(AppKit, "NSViewWidthSizable", 2)) | int(getattr(AppKit, "NSViewHeightSizable", 16))
             )
-            self._content.setBlendingMode_(AppKit.NSVisualEffectBlendingModeBehindWindow)
-            material = getattr(AppKit, "NSVisualEffectMaterialHUDWindow", None)
-            if material is None:
-                material = getattr(AppKit, "NSVisualEffectMaterialMenu", None)
-            if material is not None:
-                self._content.setMaterial_(material)
-            self._content.setState_(AppKit.NSVisualEffectStateActive)
-        except Exception:
-            pass
-        self._content._owner = self
-        self._panel.setContentView_(self._content)
-
-        # Vertical stack for organizing labels and buttons
-        self._stack = AppKit.NSStackView.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 0, self.width, self.height)
-        )
-        self._stack.setOrientation_(AppKit.NSUserInterfaceLayoutOrientationVertical)  # type: ignore[attr-defined]
-        self._stack.setAlignment_(AppKit.NSLayoutAttributeLeading)  # type: ignore[attr-defined]
-        self._stack.setSpacing_(6.0)
-
-        # Title Row: Pulsing Indicator + Mode Name
-        self._header_row = AppKit.NSStackView.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 0, self.width, 24)
-        )
-        self._header_row.setOrientation_(AppKit.NSUserInterfaceLayoutOrientationHorizontal)  # type: ignore[attr-defined]
-        self._header_row.setAlignment_(AppKit.NSLayoutAttributeCenterY)  # type: ignore[attr-defined]
-        self._header_row.setSpacing_(8.0)
-
-        # Bright Green Color for active agent indicator
-        self._dot = PulsingDotView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 10, 10))
-        self._dot._owner = self
-        green_color = AppKit.NSColor.colorWithRed_green_blue_alpha_(0.15, 0.8, 0.25, 1.0)
-        try:
-            self._dot.setColor_(green_color)
+            self._webview.setOpaque_(False)
+            self._webview.setBackgroundColor_(AppKit.NSColor.clearColor())
+            if self._webview.respondsToSelector_("setUnderPageBackgroundColor:"):
+                self._webview.setUnderPageBackgroundColor_(AppKit.NSColor.clearColor())
         except Exception:
             pass
 
+        self._webview.loadHTMLString_baseURL_(OVERLAY_HTML, None)
+        self._panel.setContentView_(self._webview)
+
+        self._clamp_expanded_frame()
+        self.hide()
+
+        # Init state
         title_text = "AI Agent"
         if mode == "build_skill_chat":
             title_text = "AI Mime: Skill Builder"
         elif mode == "replay_execution":
             title_text = "AI Mime: Replay Agent"
-        self._title = title_label(title_text)
-        try:
-            self._title.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)  # type: ignore[attr-defined]
-            self._title.setMaximumNumberOfLines_(1)
-            self._title.setContentCompressionResistancePriority_forOrientation_(
-                250,
-                AppKit.NSLayoutConstraintOrientationHorizontal,  # type: ignore[attr-defined]
-            )
-        except Exception:
-            pass
-
-        self._header_row.addArrangedSubview_(self._dot)
-        self._header_row.addArrangedSubview_(self._title)
-
-        # Message Label showing text snippets
-        self._message_label = AppKit.NSTextField.labelWithString_("Initializing conversation...")
-        try:
-            self._message_label.setFont_(sys_font(12.0))
-            self._message_label.setTextColor_(AppKit.NSColor.labelColor())
-        except Exception:
-            pass
-        _configure_wrapping_label(self._message_label, max_lines=_MESSAGE_MAX_LINES)
-
-        # Tool Status Label
-        self._tool_label = AppKit.NSTextField.labelWithString_("Thinking...")
-        try:
-            w_medium = float(getattr(AppKit, "NSFontWeightMedium", 0.23))  # type: ignore[attr-defined]
-            self._tool_label.setFont_(sys_font(11.0, w_medium))
-            self._tool_label.setTextColor_(AppKit.NSColor.secondaryLabelColor())
-        except Exception:
-            pass
-        _configure_wrapping_label(self._tool_label, max_lines=_TOOL_MAX_LINES)
-
-        # Controls Row
-        self._controls_row = AppKit.NSStackView.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 0, self.width, 24)
-        )
-        self._controls_row.setOrientation_(AppKit.NSUserInterfaceLayoutOrientationHorizontal)  # type: ignore[attr-defined]
-        self._controls_row.setAlignment_(AppKit.NSLayoutAttributeCenterY)  # type: ignore[attr-defined]
-        self._controls_row.setSpacing_(8.0)
-
-        # Spacer pushes buttons to the right
-        spacer = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 1, 1))
-        self._controls_row.addArrangedSubview_(spacer)
-        try:
-            spacer.setContentHuggingPriority_forOrientation_(
-                1,
-                AppKit.NSLayoutConstraintOrientationHorizontal,  # type: ignore[attr-defined]
-            )
-        except Exception:
-            pass
-
-        # Action Handler
-        self._action_handler = ConversationOverlayActionHandler.alloc().init()
-        self._action_handler._overlay = self  # type: ignore[attr-defined]
-
-        # Hide Button
-        self._hide_btn = AppKit.NSButton.buttonWithTitle_target_action_(
-            "Hide",
-            self._action_handler,
-            "hide:",
-        )
-        style_small_button(self._hide_btn)
-        self._protect_button_width(self._hide_btn)
-        self._controls_row.addArrangedSubview_(self._hide_btn)
-
-        # Show Chat Button
-        self._show_chat_btn = AppKit.NSButton.buttonWithTitle_target_action_(
-            "Show Chat",
-            self._action_handler,
-            "showChat:",
-        )
-        style_small_button(self._show_chat_btn)
-        self._protect_button_width(self._show_chat_btn)
-        self._controls_row.addArrangedSubview_(self._show_chat_btn)
-
-        # Interrupt Button
-        self._interrupt_btn = AppKit.NSButton.buttonWithTitle_target_action_(
-            "Interrupt",
-            self._action_handler,
-            "interrupt:",
-        )
-        style_small_button(self._interrupt_btn)
-        self._protect_button_width(self._interrupt_btn)
-        self._controls_row.addArrangedSubview_(self._interrupt_btn)
-
-        # Layout stacking
-        self._stack.addArrangedSubview_(self._header_row)
-        self._stack.addArrangedSubview_(self._message_label)
-        self._stack.addArrangedSubview_(self._tool_label)
-
-        # Add vertical spacer to push controls to the bottom when window is taller
-        self._v_spacer = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 1, 1))
-        self._stack.addArrangedSubview_(self._v_spacer)
-        try:
-            self._v_spacer.setContentHuggingPriority_forOrientation_(
-                1.0,
-                AppKit.NSLayoutConstraintOrientationVertical,  # type: ignore[attr-defined]
-            )
-        except Exception:
-            pass
-
-        self._stack.addArrangedSubview_(self._controls_row)
-
-        self._content.addSubview_(self._stack)
-
-        # Constraints
-        margin_layout = _CONTENT_MARGIN
-        self._stack.setTranslatesAutoresizingMaskIntoConstraints_(False)
-        self._dot.setTranslatesAutoresizingMaskIntoConstraints_(False)
-        try:
-            AppKit.NSLayoutConstraint.activateConstraints_(
-                [
-                    self._stack.leadingAnchor().constraintEqualToAnchor_constant_(
-                        self._content.leadingAnchor(), margin_layout
-                    ),
-                    self._stack.trailingAnchor().constraintEqualToAnchor_constant_(
-                        self._content.trailingAnchor(), -margin_layout
-                    ),
-                    self._stack.topAnchor().constraintEqualToAnchor_constant_(
-                        self._content.topAnchor(), margin_layout
-                    ),
-                    self._stack.bottomAnchor().constraintEqualToAnchor_constant_(
-                        self._content.bottomAnchor(), -margin_layout
-                    ),
-                    self._dot.widthAnchor().constraintEqualToConstant_(10.0),
-                    self._dot.heightAnchor().constraintEqualToConstant_(10.0),
-                    self._message_label.widthAnchor().constraintEqualToAnchor_(
-                        self._stack.widthAnchor()
-                    ),
-                    self._tool_label.widthAnchor().constraintEqualToAnchor_(
-                        self._stack.widthAnchor()
-                    ),
-                    self._header_row.widthAnchor().constraintEqualToAnchor_(
-                        self._stack.widthAnchor()
-                    ),
-                    self._controls_row.widthAnchor().constraintEqualToAnchor_(
-                        self._stack.widthAnchor()
-                    ),
-                ]
-            )
-        except Exception:
-            pass
-
-        try:
-            self._message_label.setPreferredMaxLayoutWidth_(float(self.width - 20.0))
-            self._tool_label.setPreferredMaxLayoutWidth_(float(self.width - 20.0))
-        except Exception:
-            pass
-
-        self._clamp_expanded_frame()
-        self.hide()
+        
+        self._push_state({"title": title_text, "mode": "maximized"})
 
     def _expanded_width(self) -> float:
         try:
@@ -431,25 +182,18 @@ class ConversationOverlay:
             self.width = self._expanded_width()
             self._apply_expanded_size_limits()
             frame = self._expanded_frame(height)
-            self._content.setFrameSize_(frame.size)
-            self._message_label.setPreferredMaxLayoutWidth_(float(self.width - 2.0 * _CONTENT_MARGIN))
-            self._tool_label.setPreferredMaxLayoutWidth_(float(self.width - 2.0 * _CONTENT_MARGIN))
+            self._webview.setFrameSize_(frame.size)
             self._panel.setFrame_display_animate_(frame, True, animate)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error in _clamp_expanded_frame: {e}")
 
-    def _protect_button_width(self, button) -> None:
+    def _push_state(self, state_dict: dict) -> None:
         try:
-            button.setContentCompressionResistancePriority_forOrientation_(
-                1000,
-                AppKit.NSLayoutConstraintOrientationHorizontal,  # type: ignore[attr-defined]
-            )
-            button.setContentHuggingPriority_forOrientation_(
-                750,
-                AppKit.NSLayoutConstraintOrientationHorizontal,  # type: ignore[attr-defined]
-            )
-        except Exception:
-            pass
+            state_json = json.dumps(state_dict)
+            script = f"updateOverlayState({json.dumps(state_json)});"
+            self._webview.evaluateJavaScript_completionHandler_(script, None)
+        except Exception as e:
+            print(f"Error evaluating JS: {e}")
 
     def show(self) -> None:
         try:
@@ -473,33 +217,22 @@ class ConversationOverlay:
                 return
             self.is_minimized = True
 
-            # Save the current frame size
             current_frame = self._panel.frame()
             self._expanded_size = current_frame.size
 
-            # Hide standard UI views
-            self._title.setHidden_(True)
-            self._message_label.setHidden_(True)
-            self._tool_label.setHidden_(True)
-            if hasattr(self, "_v_spacer") and self._v_spacer:
-                self._v_spacer.setHidden_(True)
-            self._controls_row.setHidden_(True)
+            self._push_state({"mode": "minimized"})
 
-            # Temporarily clear min/max size limits before resizing down to minimize size
-            self._panel.setMinSize_(AppKit.NSMakeSize(36.0, 36.0))
-            self._panel.setMaxSize_(AppKit.NSMakeSize(36.0, 36.0))
+            self._panel.setMinSize_(AppKit.NSMakeSize(32.0, 64.0))
+            self._panel.setMaxSize_(AppKit.NSMakeSize(32.0, 64.0))
 
-            # Disable resizing while minimized
             style = AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel
             self._panel.setStyleMask_(style)
 
-            # Position on the right edge vertically centered
             sx, sy, sw, sh = active_screen_visible_frame()
-            mini_w, mini_h = 36.0, 36.0
+            mini_w, mini_h = 32.0, 64.0
             x = float(sx + sw - mini_w - _RIGHT_EDGE_MARGIN)
             y = float(sy + (sh - mini_h) / 2.0)
 
-            # Set new frame
             self._panel.setFrame_display_animate_(AppKit.NSMakeRect(x, y, mini_w, mini_h), True, True)
         except Exception as e:
             print(f"Error minimizing conversation overlay: {e}")
@@ -510,99 +243,36 @@ class ConversationOverlay:
                 return
             self.is_minimized = False
 
-            # Enable resizable style
             style = AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel | AppKit.NSWindowStyleMaskResizable
             self._panel.setStyleMask_(style)
 
-            # Set the limits back to expanded/max values
             self._apply_expanded_size_limits()
 
-            # Restore expanded size or default size
             h = float(self._expanded_size.height if hasattr(self, "_expanded_size") else self.height)
 
-            # Set new frame
             self._panel.setFrame_display_animate_(self._expanded_frame(h), True, True)
 
-            # Show standard UI views again if they are not empty/missing
-            self._title.setHidden_(False)
-
-            message_val = self._message_label.stringValue()
-            if message_val and str(message_val).strip():
-                self._message_label.setHidden_(False)
-            else:
-                self._message_label.setHidden_(True)
-
-            tool_val = self._tool_label.stringValue()
-            if tool_val and str(tool_val).strip():
-                self._tool_label.setHidden_(False)
-            else:
-                self._tool_label.setHidden_(True)
-
-            if hasattr(self, "_v_spacer") and self._v_spacer:
-                self._v_spacer.setHidden_(False)
-            self._controls_row.setHidden_(False)
-
-            self._update_window_height()
+            self._push_state({"mode": "maximized"})
         except Exception as e:
             print(f"Error maximizing conversation overlay: {e}")
 
     def close(self) -> None:
         try:
-            if hasattr(self, "_dot") and self._dot:
-                self._dot.close()
-        except Exception:
-            pass
-        try:
             self._panel.close()
         except Exception:
             pass
 
-    def _update_window_height(self) -> None:
-        try:
-            if self.is_minimized:
-                return
-
-            # Force layout pass to ensure fitting size is up to date
-            self._stack.layoutSubtreeIfNeeded()
-
-            stack_height = float(self._stack.fittingSize().height)
-            needed_height = stack_height + 2.0 * _CONTENT_MARGIN
-
-            # Bound the height between a minimum of 90.0 and maximum of 280.0
-            new_height = max(_MIN_EXPANDED_HEIGHT, min(_MAX_EXPANDED_HEIGHT, needed_height))
-
-            # Always clamp the frame: long intrinsic content can otherwise widen
-            # the borderless panel and push controls outside the visible screen.
-            self._clamp_expanded_frame(new_height)
-        except Exception as e:
-            print(f"Error updating window height: {e}")
-
     def update_text(self, text: str) -> None:
         try:
             cleaned = text.strip() if text else ""
-            if not cleaned:
-                self._message_label.setHidden_(True)
-                self._message_label.setStringValue_("")
-            else:
-                self._message_label.setStringValue_(cleaned)
-                self._message_label.setHidden_(bool(self.is_minimized))
-            self._update_window_height()
+            self._push_state({"message": cleaned})
         except Exception:
             pass
 
     def update_tool(self, tool_name: str) -> None:
         try:
             cleaned_tool = tool_name.strip() if tool_name else ""
-            if not cleaned_tool:
-                self._tool_label.setHidden_(True)
-                self._tool_label.setStringValue_("")
-            else:
-                if cleaned_tool.lower() == "thinking...":
-                    self._tool_label.setStringValue_("Thinking...")
-                else:
-                    self._tool_label.setStringValue_(f"Running Tool: {cleaned_tool}")
-                self._tool_label.setHidden_(bool(self.is_minimized))
-            self._update_window_height()
+            self._push_state({"tool": cleaned_tool})
         except Exception:
             pass
 
@@ -620,10 +290,7 @@ class ConversationOverlay:
 
     def _handle_interrupt(self) -> None:
         try:
-            self._interrupt_btn.setEnabled_(False)
-            self._tool_label.setStringValue_("Interrupting agent...")
-            if self.is_minimized:
-                self._tool_label.setHidden_(True)
+            self._push_state({"tool": "Interrupting agent...", "interrupt_disabled": True})
         except Exception:
             pass
 
@@ -644,7 +311,6 @@ class ConversationOverlay:
                 print(f"Error interrupting agent: {e}")
 
         threading.Thread(target=_post_interrupt, daemon=True).start()
-
 
 def focus_browser_tab(port: int, path_suffix: str) -> None:
     try:
