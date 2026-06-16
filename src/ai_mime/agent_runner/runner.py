@@ -324,6 +324,10 @@ Existing memory:
         signal_path = request.workflow_dir / "agent" / BUILD_SIGNAL_FILENAME
         learned_path = request.workflow_dir / "agent" / "learned_notes.md"
         browser_harness_bin = get_managed_browser_harness_path()
+        if skill_dir.exists():
+            skill_dir_line = f"Skill directory to refine (use this exact path): {skill_dir}"
+        else:
+            skill_dir_line = f"Skill directory to create (use this exact path): {skill_dir}"
         if is_direct_build:
             task_flow = f"""This workflow is a direct skill build from the user's task description, not a reflected recording.
 
@@ -369,7 +373,7 @@ Schema: {request.schema_path}
 Optimized plan: {request.optimized_plan_path}
 Memory file: {memory_path}
 Learned-notes file (append durable findings here): {learned_path}
-Skill directory to create or refine: {skill_dir} (located under <workflow_dir>/skills/<skill_name>/ under your workspace; you must store the packaged skill and its run.sh directly inside this directory)
+{skill_dir_line} (store the packaged skill and its run.sh directly inside this directory)
 Terminal signal file: {signal_path}
 
 {task_flow}
@@ -404,12 +408,19 @@ Existing memory:
             for path in skill_dir.rglob("*")
             if skill_dir.exists() and path.is_file()
         )
+        if skill_dir.exists():
+            skill_dir_line = f"Skill directory (use this exact path): {skill_dir}"
+        else:
+            skill_dir_line = (
+                f"Skill directory: no packaged skill found under "
+                f"{request.workflow_dir / 'skills'} yet"
+            )
 
         return f"""You are the AI Mime replay execution agent for this workflow.
 You are running in the Replay page chat. Your job is to help run an existing skill, validate inputs, and handle variants of the task using the skill context.
 
 Workflow directory: {request.workflow_dir}
-Skill directory: {skill_dir} (located at <workflow_dir>/skills/<skill_name>/ under your workspace)
+{skill_dir_line}
 Memory file: {memory_path}
 Replay notes file: {replay_notes_path}
 Domain notes file: {domain_notes_path}

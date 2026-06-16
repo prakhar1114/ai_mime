@@ -43,7 +43,7 @@ If the first message does not clearly match healing, assume you are in **Mode A*
 - The skill's `run.sh` will resolve and use the existing `.venv` if one exists.
 
 ## Skill Directory Path
-- The skill lives in `skills/<skill_name>/` under the workflow directory (the exact path is given to you in the prompt above).
+- The skill lives in `skills/<skill_name>/` under the workflow directory. The exact absolute path is given to you in the prompt above — use it verbatim.
 - Any targeted edits allowed during triage must be made directly within this skill directory.
 
 ## Conversation Style
