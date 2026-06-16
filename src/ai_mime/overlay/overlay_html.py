@@ -169,8 +169,16 @@ OVERLAY_HTML = """
   </div>
 
   <div class="content" id="content-area">
-    <div class="message" id="message-text">Initializing...</div>
-    <div class="tool-label" id="tool-text"></div>
+    <div onclick="toggleDetails()" style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-bottom: 4px;" title="Toggle Details">
+      <div class="status" id="status-text" style="font-weight: bold; font-size: 13px;">Initializing...</div>
+      <svg id="details-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transition: transform 0.2s; color: var(--text-secondary);">
+        <polyline points="6 9 12 15 18 9"></polyline>
+      </svg>
+    </div>
+    <div id="detailed-content" style="display: none;">
+      <div class="message" id="message-text"></div>
+      <div class="tool-label" id="tool-text"></div>
+    </div>
   </div>
 
   <div class="actions" id="actions-area">
@@ -183,6 +191,7 @@ OVERLAY_HTML = """
 <script>
   let lastHeight = 0;
   let isMinimized = false;
+  let isDetailedView = false;
 
   // Initialize marked options
   marked.use({
@@ -218,13 +227,32 @@ OVERLAY_HTML = """
     }
   }
 
-  function handleHeaderClick() {
+  function handleMinimizeClick() {
       if (isMinimized) {
           sendAction('maximize');
       }
   }
 
-  document.getElementById('header-area').addEventListener('mousedown', handleHeaderClick);
+  function toggleDetails() {
+      isDetailedView = !isDetailedView;
+      document.getElementById('detailed-content').style.display = isDetailedView ? 'block' : 'none';
+      
+      const chevron = document.getElementById('details-chevron');
+      if (chevron) {
+          chevron.style.transform = isDetailedView ? 'rotate(180deg)' : 'rotate(0deg)';
+      }
+      
+      // Force immediate height recalculation
+      setTimeout(() => {
+          lastHeight = 0;
+          const height = document.documentElement.scrollHeight;
+          if (window.webkit && window.webkit.messageHandlers.overlay) {
+              window.webkit.messageHandlers.overlay.postMessage({ type: 'resize', height: height });
+          }
+      }, 10);
+  }
+
+  document.getElementById('main-container').addEventListener('mousedown', handleMinimizeClick);
 
   // Exposed function for Python to call
   function updateOverlayState(stateStr) {
@@ -303,6 +331,22 @@ OVERLAY_HTML = """
       } else {
         toolDiv.style.display = 'block';
         toolDiv.textContent = state.tool === 'Thinking...' ? 'Thinking...' : 'Running Tool: ' + state.tool;
+      }
+    }
+
+    if (state.status !== undefined) {
+      const statusDiv = document.getElementById('status-text');
+      statusDiv.textContent = state.status;
+    }
+
+    if (state.needs_input !== undefined) {
+      const dot = document.getElementById('status-dot');
+      if (state.needs_input) {
+        dot.style.backgroundColor = '#ff9500'; // Orange
+        dot.style.boxShadow = '0 0 8px #ff9500';
+      } else {
+        dot.style.backgroundColor = 'var(--accent)'; // Green
+        dot.style.boxShadow = '0 0 8px var(--accent)';
       }
     }
 

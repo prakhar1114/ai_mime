@@ -1231,7 +1231,7 @@ class TaskRunner:
                     "error": None,
                     "progress": self._progress_from_event(evt, fallback_phase=phase),
                 }
-                
+
                 label = str(evt.get("label") or "")
                 if label:
                     if self.app_command_queue is not None:
@@ -1430,22 +1430,33 @@ def create_app(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         async def _sse():
+            default_status = "Starting workflow..."
+            if service.mode == "build_skill_chat":
+                default_status = "Understanding Task Details"
+            elif service.mode == "replay_execution":
+                if message and "The deterministic replay script failed" in message:
+                    default_status = "Debugging Failure"
+                else:
+                    default_status = "Running Task"
+
+            if task_id:
+                TASK_STATUSES[task_id] = {"status": default_status, "needs_input": False}
+
             if app_command_queue is not None:
                 app_command_queue.put({
                     "type": "show_conversation_overlay",
                     "mode": service.mode,
                     "task_id": task_id or "",
+                    "status": default_status,
+                    "needs_input": False,
                 })
-                default_status = "Starting workflow..."
                 app_command_queue.put({
                     "type": "update_agent_status",
                     "status": default_status,
                     "needs_input": False,
                     "task_id": task_id or "",
                 })
-                if task_id:
-                    TASK_STATUSES[task_id] = {"status": default_status, "needs_input": False}
-                
+
             # Yield default status immediately
             yield f"data: {json.dumps({'event': 'agent_status', 'status': default_status, 'needs_input': False})}\n\n"
 
@@ -1455,9 +1466,10 @@ def create_app(
                     if app_command_queue is not None:
                         if event.get("event") == "text":
                             message_accum += event.get("text") or ""
-                            snippet = message_accum
-                            if len(snippet) > 500:
-                                snippet = "..." + snippet[-497:]
+                            lines = message_accum.splitlines(keepends=True)
+                            snippet = "".join(lines[-4:])
+                            if len(snippet) > 800:
+                                snippet = "..." + snippet[-797:]
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "text": snippet,
@@ -1822,7 +1834,7 @@ def create_app(
         runs_dir = workflow_dir / "runs"
         if not runs_dir.exists() or not runs_dir.is_dir():
             return {"runs": []}
-        
+
         runs = []
         for run_dir in sorted(runs_dir.iterdir(), key=lambda x: x.name, reverse=True):
             if not run_dir.is_dir():
@@ -1830,11 +1842,11 @@ def create_app(
             data_path = run_dir / "data.md"
             if not data_path.exists():
                 continue
-            
+
             run_id = run_dir.name
             status = "unknown"
             started = ""
-            
+
             try:
                 content = data_path.read_text(encoding="utf-8")
                 # Parse Status
@@ -1847,7 +1859,7 @@ def create_app(
                     started = started_match.group(1).strip()
             except Exception:
                 pass
-                
+
             runs.append({
                 "run_id": run_id,
                 "status": status,

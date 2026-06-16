@@ -81,7 +81,7 @@ class ConversationOverlay:
     Floating, always-on-top, resizable HUD overlay indicating agent activity, powered by WebKit.
     """
 
-    def __init__(self, port: int, task_id: str, mode: str) -> None:
+    def __init__(self, port: int, task_id: str, mode: str, status: str = None, needs_input: bool = False) -> None:
         self.port = port
         self.task_id = task_id
         self.mode = mode
@@ -132,20 +132,23 @@ class ConversationOverlay:
         except Exception:
             pass
 
-        self._webview.loadHTMLString_baseURL_(OVERLAY_HTML, None)
-        self._panel.setContentView_(self._webview)
-
-        self._clamp_expanded_frame()
-        self.hide()
-
-        # Init state
         title_text = "AI Agent"
         if mode == "build_skill_chat":
             title_text = "AI Mime: Skill Builder"
         elif mode == "replay_execution":
             title_text = "AI Mime: Replay Agent"
-        
-        self._push_state({"title": title_text, "mode": "maximized"})
+
+        status_text = status if status is not None else "Initializing..."
+
+        state_dict = {"title": title_text, "mode": "maximized", "status": status_text, "needs_input": needs_input}
+        state_json = json.dumps(json.dumps(state_dict))
+        injected_html = OVERLAY_HTML.replace("</body>", f"<script>updateOverlayState({state_json});</script></body>")
+
+        self._webview.loadHTMLString_baseURL_(injected_html, None)
+        self._panel.setContentView_(self._webview)
+
+        self._clamp_expanded_frame()
+        self.hide()
 
     def _expanded_width(self) -> float:
         try:
@@ -273,6 +276,12 @@ class ConversationOverlay:
         try:
             cleaned_tool = tool_name.strip() if tool_name else ""
             self._push_state({"tool": cleaned_tool})
+        except Exception:
+            pass
+
+    def update_status(self, status: str, needs_input: bool) -> None:
+        try:
+            self._push_state({"status": status, "needs_input": needs_input})
         except Exception:
             pass
 
