@@ -324,6 +324,10 @@ Existing memory:
         signal_path = request.workflow_dir / "agent" / BUILD_SIGNAL_FILENAME
         learned_path = request.workflow_dir / "agent" / "learned_notes.md"
         browser_harness_bin = get_managed_browser_harness_path()
+        if skill_dir.exists():
+            skill_dir_line = f"Skill directory to refine (use this exact path): {skill_dir}"
+        else:
+            skill_dir_line = f"Skill directory to create (use this exact path): {skill_dir}"
         if is_direct_build:
             task_flow = f"""This workflow is a direct skill build from the user's task description, not a reflected recording.
 
@@ -369,7 +373,7 @@ Schema: {request.schema_path}
 Optimized plan: {request.optimized_plan_path}
 Memory file: {memory_path}
 Learned-notes file (append durable findings here): {learned_path}
-Skill directory to create or refine: {skill_dir} (located under <workflow_dir>/skills/<skill_name>/ under your workspace; you must store the packaged skill and its run.sh directly inside this directory)
+{skill_dir_line} (store the packaged skill and its run.sh directly inside this directory)
 Terminal signal file: {signal_path}
 
 {task_flow}
@@ -404,12 +408,19 @@ Existing memory:
             for path in skill_dir.rglob("*")
             if skill_dir.exists() and path.is_file()
         )
+        if skill_dir.exists():
+            skill_dir_line = f"Skill directory (use this exact path): {skill_dir}"
+        else:
+            skill_dir_line = (
+                f"Skill directory: no packaged skill found under "
+                f"{request.workflow_dir / 'skills'} yet"
+            )
 
         return f"""You are the AI Mime replay execution agent for this workflow.
 You are running in the Replay page chat. Your job is to help run an existing skill, validate inputs, and handle variants of the task using the skill context.
 
 Workflow directory: {request.workflow_dir}
-Skill directory: {skill_dir} (located at <workflow_dir>/skills/<skill_name>/ under your workspace)
+{skill_dir_line}
 Memory file: {memory_path}
 Replay notes file: {replay_notes_path}
 Domain notes file: {domain_notes_path}
@@ -422,11 +433,11 @@ Shared UI-agent guide, read only for UI-only recovery:
 
 Browser-harness is available through the AI Mime browser skill path `{resolved_browser_skill_path()}` and the app-managed command `$AI_MIME_BROWSER_HARNESS_BIN`. Use that route for browser automation Native GUI fallback must use attached `mcp__cua__*` tools in chat and `$AI_MIME_UI_AGENT_CMD` in helper scripts.
 
-You MUST execute the task following these instructions step-by-step:
-1. First, read and follow `00_rules.md` in the instructions directory.
-2. Next, read and execute `01_replay.md` to run/verify the skill.
+You MUST read and follow `00_rules.md` in the instructions directory before doing anything else. It is your system prompt and defines the two modes you may operate in:
+- **Running an agentic variation / replay** (default): the user describes a task/inputs to run — run the skill end-to-end and report the result.
+- **Healing a failed run**: your first message reports a failed deterministic `./run.sh` (inputs, exit code, logs) — triage and complete the task from where it broke.
 
-CRITICAL: Do NOT read all instruction files at once. Focus only on the active task file, complete its requirements, and only read the next file once the current file's success criteria are fully met.
+Decide your mode from the first message and follow the matching section of `00_rules.md`.
 
 Existing skill files:
 {json.dumps(existing_skill_files, indent=2)}

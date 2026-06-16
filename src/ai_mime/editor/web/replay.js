@@ -174,8 +174,8 @@
     } catch (e) {
       const msg = e && e.message ? e.message : String(e);
       const isCompileError = msg.includes("compile_workflow_schema") || msg.includes("schema_compiler") || msg.includes("Traceback");
-      const displayMsg = isCompileError 
-        ? "The workflow schema failed to compile. Please check the reflection logs." 
+      const displayMsg = isCompileError
+        ? "The workflow schema failed to compile. Please check the reflection logs."
         : escapeHtml(msg);
       el.paramFields.innerHTML = `
         <div class="empty">
@@ -1137,14 +1137,14 @@
 
   function loadRunDetailsFromMarkdown(md) {
     const parsed = parseRunMarkdown(md);
-    
+
     resetOlderOutputs();
     el.olderRunDetailCard.hidden = false;
     selectTab("older-logs", el.olderRunDetailCard);
-    
+
     el.olderRunStatus.textContent = parsed.status === "success" ? "Succeeded" : (parsed.status === "failed" ? "Failed" : "Unknown");
     el.olderRunStatus.dataset.state = parsed.status;
-    
+
     if (parsed.command) {
       appendOlderLog(`$ ${parsed.command}`);
     }
@@ -1161,7 +1161,7 @@
         parsed.stderr.split("\n").forEach(line => appendOlderLog(line, "stderr"));
       }
     }
-    
+
     if (parsed.input) {
       appendOlderOutput("Input Parameters", parsed.input);
     }
