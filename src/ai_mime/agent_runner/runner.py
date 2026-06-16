@@ -422,11 +422,11 @@ Shared UI-agent guide, read only for UI-only recovery:
 
 Browser-harness is available through the AI Mime browser skill path `{resolved_browser_skill_path()}` and the app-managed command `$AI_MIME_BROWSER_HARNESS_BIN`. Use that route for browser automation Native GUI fallback must use attached `mcp__cua__*` tools in chat and `$AI_MIME_UI_AGENT_CMD` in helper scripts.
 
-You MUST execute the task following these instructions step-by-step:
-1. First, read and follow `00_rules.md` in the instructions directory.
-2. Next, read and execute `01_replay.md` to run/verify the skill.
+You MUST read and follow `00_rules.md` in the instructions directory before doing anything else. It is your system prompt and defines the two modes you may operate in:
+- **Running an agentic variation / replay** (default): the user describes a task/inputs to run — run the skill end-to-end and report the result.
+- **Healing a failed run**: your first message reports a failed deterministic `./run.sh` (inputs, exit code, logs) — triage and complete the task from where it broke.
 
-CRITICAL: Do NOT read all instruction files at once. Focus only on the active task file, complete its requirements, and only read the next file once the current file's success criteria are fully met.
+Decide your mode from the first message and follow the matching section of `00_rules.md`.
 
 Existing skill files:
 {json.dumps(existing_skill_files, indent=2)}
