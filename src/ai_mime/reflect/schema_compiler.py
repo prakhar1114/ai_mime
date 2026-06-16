@@ -1298,11 +1298,11 @@ def compile_workflow_schema(
         )
     ):
         logger.info("Schema compile: found existing schema.json; skipping Pass A/B/finalization.")
-        _progress("reflect_progress", phase="pass_a_complete", label="Pass A", progress=33)
-        _progress("reflect_progress", phase="pass_b_complete", label="Pass B", progress=66)
-        _progress("reflect_progress", phase="optimized_plan_started", label="Optimized plan", progress=82)
+        _progress("reflect_progress", phase="pass_a_complete", label="Going through screenshots", progress=33)
+        _progress("reflect_progress", phase="pass_b_complete", label="Understanding the Task", progress=66)
+        _progress("reflect_progress", phase="optimized_plan_started", label="Planning the Task", progress=82)
         optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=existing_schema)
-        _progress("reflect_progress", phase="optimized_plan_complete", label="Optimized plan", progress=100)
+        _progress("reflect_progress", phase="optimized_plan_complete", label="Planning the Task", progress=100)
         return existing_schema
 
     # Pass A: must be complete before Pass B.
@@ -1333,15 +1333,15 @@ def compile_workflow_schema(
         step_cards = existing_step_cards
         debug_log(f"Pass A: found existing step_cards.json with {len(step_cards)} steps; skipping.")
         logger.info("Pass A: found existing step_cards.json; skipping.")
-        _progress("reflect_progress", phase="pass_a_complete", label="Pass A", progress=33)
+        _progress("reflect_progress", phase="pass_a_complete", label="Going through screenshots", progress=33)
     else:
-        _progress("reflect_progress", phase="pass_a_started", label="Pass A", progress=10)
+        _progress("reflect_progress", phase="pass_a_started", label="Going through screenshots", progress=10)
         debug_log("Pass A: starting step card generation...")
         step_cards = run_pass_a_step_cards(workflow_dir=workflow_dir_p)
         write_step_cards(workflow_dir_p, step_cards)
         debug_log(f"Pass A complete: {len(step_cards)} steps")
         logger.info("Pass A complete: step_cards.json (%d steps)", len(step_cards))
-        _progress("reflect_progress", phase="pass_a_complete", label="Pass A", progress=33)
+        _progress("reflect_progress", phase="pass_a_complete", label="Going through screenshots", progress=33)
 
     # Validate that we have actionable steps before proceeding
     if not step_cards:
@@ -1361,9 +1361,9 @@ def compile_workflow_schema(
         debug_log("Pass B: found existing plan_creation; skipping.")
         logger.info("Pass B: found existing plan_creation checkpoint; skipping.")
         plan_creation: dict[str, Any] = dict(existing_plan_creation)
-        _progress("reflect_progress", phase="pass_b_complete", label="Pass B", progress=66)
+        _progress("reflect_progress", phase="pass_b_complete", label="Understanding the Task", progress=66)
     else:
-        _progress("reflect_progress", phase="pass_b_started", label="Pass B", progress=45)
+        _progress("reflect_progress", phase="pass_b_started", label="Understanding the Task", progress=45)
         debug_log("Pass B: starting task compilation...")
         task_compiler_out = run_pass_b_task_compiler(workflow_dir=workflow_dir_p, step_cards=step_cards)
 
@@ -1371,7 +1371,7 @@ def compile_workflow_schema(
         write_plan_creation(workflow_dir_p, plan_creation)
         debug_log("Pass B complete")
         logger.info("Pass B complete: wrote plan_creation.json")
-        _progress("reflect_progress", phase="pass_b_complete", label="Pass B", progress=66)
+        _progress("reflect_progress", phase="pass_b_complete", label="Understanding the Task", progress=66)
 
     # Build final schema by merging plan_creation + step_cards into a v2 plan.subtasks format.
     final_schema: dict[str, Any] = {
@@ -1504,9 +1504,9 @@ def compile_workflow_schema(
     update_dependencies(final_schema)
 
     write_schema(workflow_dir_p, final_schema)
-    _progress("reflect_progress", phase="optimized_plan_started", label="Optimized plan", progress=82)
+    _progress("reflect_progress", phase="optimized_plan_started", label="Planning the Task", progress=82)
     optimized_plan = create_optimized_plan(workflow_dir=workflow_dir_p, schema=final_schema)
-    _progress("reflect_progress", phase="optimized_plan_complete", label="Optimized plan", progress=100)
+    _progress("reflect_progress", phase="optimized_plan_complete", label="Planning the Task", progress=100)
 
     debug_log(f"Schema compilation complete: {workflow_dir_p / 'schema.json'}")
     logger.info("Wrote schema.json")

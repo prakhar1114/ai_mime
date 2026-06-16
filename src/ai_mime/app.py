@@ -211,6 +211,8 @@ class RecorderApp(rumps.App):
                     handled = True
                     mode = cmd.get("mode") or "general"
                     task_id = cmd.get("task_id") or ""
+                    status = cmd.get("status")
+                    needs_input = cmd.get("needs_input", False)
                     if self._conversation_overlay is not None:
                         try:
                             self._conversation_overlay.close()
@@ -218,7 +220,10 @@ class RecorderApp(rumps.App):
                             pass
                     try:
                         from ai_mime.overlay.conversation_overlay import ConversationOverlay
-                        self._conversation_overlay = ConversationOverlay(port=self.port, task_id=task_id, mode=mode)
+                        self._conversation_overlay = ConversationOverlay(
+                            port=self.port, task_id=task_id, mode=mode,
+                            status=status, needs_input=needs_input
+                        )
                         self._conversation_overlay.show()
                     except Exception as e:
                         log(f"Failed to create ConversationOverlay: {e}", exc_info=True)
@@ -229,9 +234,20 @@ class RecorderApp(rumps.App):
                             if "text" in cmd:
                                 self._conversation_overlay.update_text(cmd["text"])
                             if "tool" in cmd:
-                                self._conversation_overlay.update_tool(cmd["tool"])
+                                self._conversation_overlay.update_tool(cmd["tool"], cmd.get("tool_input"))
+                            if "permission_request" in cmd:
+                                self._conversation_overlay.update_permission(cmd["permission_request"])
                         except Exception as e:
                             log(f"Failed to update ConversationOverlay: {e}", exc_info=True)
+                elif cmd.get("type") == "update_agent_status":
+                    handled = True
+                    if self._conversation_overlay is not None:
+                        try:
+                            status_str = cmd.get("status", "")
+                            needs_input = cmd.get("needs_input", False)
+                            self._conversation_overlay.update_status(status_str, needs_input)
+                        except Exception as e:
+                            log(f"Failed to update ConversationOverlay status: {e}", exc_info=True)
                 elif cmd.get("type") == "hide_conversation_overlay":
                     handled = True
                     if self._conversation_overlay is not None:

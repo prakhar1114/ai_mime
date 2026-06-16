@@ -52,6 +52,13 @@ If optimized_plan.json chose a smarter path different from the original recordin
 - Send short progress updates at meaningful milestones or blockers, in plain language a non-technical user can understand. Explain decisions as outcomes: what input is needed, what output will be produced, what the automation will do at a high level, or what is blocking it.
 - If automation is blocked, explain the reason simply and offer concrete options or suggested changes. Avoid implementation jargon.
 
+## Status Reporting
+You MUST use the `set_status` tool to notify the user of your high-level progress. This is critical because the user may not be actively watching the chat window.
+- **new_major_phase**: When starting a new major phase (e.g. "Executing the plan", "Writing skill"), emit a short 2-3 word status using `set_status`.
+- **require_user_input**: When you require user input, emit a status summarizing the issue and set `needs_input=True`.
+- **user blocker**: When you are performing an action that will take over the user's screen or computer (like controlling the browser via `browser-harness` or using the UI agent), you MUST emit a status to warn them.
+- Do NOT emit a status for every single step or tool call (e.g. reading files, thinking).
+
 ## Task Transition Rule
 You must run tasks sequentially. Ensure you write intermediate states to the specified files (like `agent/confirmed_inputs.json`, `agent/learned_notes.md`, etc.). Always verify the success criteria of the current task before reading the instruction file for the next task.
 - Start with `01_phase_a_confirm_inputs.md`.

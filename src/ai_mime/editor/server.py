@@ -44,6 +44,8 @@ EDITOR_SERVER_PORT = 58838
 DEFAULT_MARKETPLACE_MANIFEST_URL = "https://market.aimime.cc/manifest.json"
 MARKETPLACE_MANIFEST_PATH_ENV = "AI_MIME_MARKETPLACE_MANIFEST_PATH"
 _MAX_MARKETPLACE_MANIFEST_BYTES = 2 * 1024 * 1024
+TASK_STATUSES: dict[str, dict[str, Any]] = {}
+OVERLAY_ENABLED = True
 
 
 def _kill_processes_on_tcp_port(port: int) -> None:
@@ -998,10 +1000,12 @@ class TaskRunner:
         workflows_root: Path,
         recordings_root: Path,
         app_state: Any | None = None,
+        app_command_queue: Any | None = None,
     ) -> None:
         self.workflows_root = workflows_root
         self.recordings_root = recordings_root
         self.app_state = app_state
+        self.app_command_queue = app_command_queue
         self._lock = threading.Lock()
         self._states: dict[str, dict[str, Any]] = {}
         self._reflect_processes: dict[str, tuple[Process, Queue]] = {}
@@ -1228,6 +1232,17 @@ class TaskRunner:
                     "error": None,
                     "progress": self._progress_from_event(evt, fallback_phase=phase),
                 }
+
+                label = str(evt.get("label") or "")
+                if label:
+                    if self.app_command_queue is not None:
+                        self.app_command_queue.put({
+                            "type": "update_agent_status",
+                            "status": label,
+                            "needs_input": False,
+                            "task_id": task_id,
+                        })
+                    TASK_STATUSES[task_id] = {"status": label, "needs_input": False}
                 _task_log(f"reflect progress: task_id={task_id} phase={phase} progress={self._states[task_id]['progress'].get('value')}")
             elif et == "reflect_compile_done":
                 self._states[task_id] = {
@@ -1307,6 +1322,7 @@ def create_app(
         workflows_root=workflows_root,
         recordings_root=recordings_root,
         app_state=app_state,
+        app_command_queue=app_command_queue,
     )
     agent_service = agent_chat_service or WorkspaceAgentChatService()
     task_agent_services: dict[str, WorkspaceAgentChatService] = {}
@@ -1414,39 +1430,87 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-
         async def _sse():
-            if app_command_queue is not None:
+            default_status = "Starting workflow..."
+            if service.mode == "build_skill_chat":
+                default_status = "Understanding Task Details"
+            elif service.mode == "replay_execution":
+                if message and "The deterministic replay script failed" in message:
+                    default_status = "Debugging Failure"
+                else:
+                    default_status = "Running Task"
+
+            if task_id:
+                TASK_STATUSES[task_id] = {"status": default_status, "needs_input": False}
+
+            if app_command_queue is not None and OVERLAY_ENABLED:
                 app_command_queue.put({
                     "type": "show_conversation_overlay",
                     "mode": service.mode,
                     "task_id": task_id or "",
+                    "status": default_status,
+                    "needs_input": False,
                 })
+                app_command_queue.put({
+                    "type": "update_agent_status",
+                    "status": default_status,
+                    "needs_input": False,
+                    "task_id": task_id or "",
+                })
+
+            # Yield default status immediately
+            yield f"data: {json.dumps({'event': 'agent_status', 'status': default_status, 'needs_input': False})}\n\n"
+
             message_accum = ""
             try:
                 async for event in event_iter:
-                    if app_command_queue is not None:
+                    if app_command_queue is not None and OVERLAY_ENABLED:
                         if event.get("event") == "text":
                             message_accum += event.get("text") or ""
-                            snippet = message_accum
-                            if len(snippet) > 500:
-                                snippet = "..." + snippet[-497:]
+                            lines = message_accum.splitlines(keepends=True)
+                            snippet = "".join(lines[-4:])
+                            if len(snippet) > 800:
+                                snippet = "..." + snippet[-797:]
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "text": snippet,
+                                "permission_request": None,
                             })
                         elif event.get("event") == "tool_use":
                             tool_name = event.get("name") or ""
+                            if tool_name in ("set_status", "mcp__cua__set_status"):
+                                tool_input = event.get("input") or {}
+                                status_str = tool_input.get("status", "")
+                                needs_input = tool_input.get("needs_input", False)
+                                app_command_queue.put({
+                                    "type": "update_agent_status",
+                                    "status": status_str,
+                                    "needs_input": needs_input,
+                                    "task_id": task_id or "",
+                                })
+                                if task_id:
+                                    TASK_STATUSES[task_id] = {"status": status_str, "needs_input": needs_input}
+                                yield f"data: {json.dumps({'event': 'agent_status', 'status': status_str, 'needs_input': needs_input})}\n\n"
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "tool": tool_name,
+                                "tool_input": event.get("input") or {},
+                                "permission_request": None,
+                            })
+                        elif event.get("event") == "tool_result":
+                            message_accum = ""
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "permission_request": None,
+                            })
+                        elif event.get("event") == "permission_request":
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "permission_request": event,
                             })
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
-            finally:
-                if app_command_queue is not None:
-                    app_command_queue.put({"type": "hide_conversation_overlay"})
 
         return StreamingResponse(
             _sse(),
@@ -1482,10 +1546,20 @@ def create_app(
         return task_runner.app_status()
 
     @app.post("/api/overlay/toggle")
-    def api_overlay_toggle():
-        if app_command_queue is not None:
-            app_command_queue.put({"type": "toggle_conversation_overlay"})
-        return {"ok": True}
+    def api_overlay_toggle(payload: dict[str, Any] = Body(default={})):
+        global OVERLAY_ENABLED
+        if "enabled" in payload:
+            OVERLAY_ENABLED = payload["enabled"]
+        else:
+            OVERLAY_ENABLED = not OVERLAY_ENABLED
+
+        if not OVERLAY_ENABLED and app_command_queue is not None:
+            app_command_queue.put({"type": "hide_conversation_overlay"})
+        return {"ok": True, "enabled": OVERLAY_ENABLED}
+
+    @app.get("/api/overlay/toggle")
+    def api_overlay_state():
+        return {"enabled": OVERLAY_ENABLED}
 
     @app.get("/api/settings/provider")
     def api_provider_settings():
@@ -1782,7 +1856,7 @@ def create_app(
         runs_dir = workflow_dir / "runs"
         if not runs_dir.exists() or not runs_dir.is_dir():
             return {"runs": []}
-        
+
         runs = []
         for run_dir in sorted(runs_dir.iterdir(), key=lambda x: x.name, reverse=True):
             if not run_dir.is_dir():
@@ -1790,11 +1864,11 @@ def create_app(
             data_path = run_dir / "data.md"
             if not data_path.exists():
                 continue
-            
+
             run_id = run_dir.name
             status = "unknown"
             started = ""
-            
+
             try:
                 content = data_path.read_text(encoding="utf-8")
                 # Parse Status
@@ -1807,7 +1881,7 @@ def create_app(
                     started = started_match.group(1).strip()
             except Exception:
                 pass
-                
+
             runs.append({
                 "run_id": run_id,
                 "status": status,
@@ -1840,7 +1914,10 @@ def create_app(
 
     @app.get("/api/tasks/{task_id}/status")
     def api_task_status(task_id: str):
-        return task_runner.get_status(task_id)
+        status = task_runner.get_status(task_id)
+        if task_id in TASK_STATUSES:
+            status["agent_status"] = TASK_STATUSES[task_id]
+        return status
 
     @app.get("/api/tasks/{task_id}/reflect/status")
     def api_task_reflect_status(task_id: str):
@@ -1992,7 +2069,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(e))
 
         async def _sse():
-            if app_command_queue is not None:
+            if app_command_queue is not None and OVERLAY_ENABLED:
                 app_command_queue.put({
                     "type": "show_conversation_overlay",
                     "mode": "build_skill_chat",
@@ -2001,7 +2078,7 @@ def create_app(
             message_accum = ""
             try:
                 async for event in event_iter:
-                    if app_command_queue is not None:
+                    if app_command_queue is not None and OVERLAY_ENABLED:
                         if event.get("event") == "text":
                             message_accum += event.get("text") or ""
                             snippet = message_accum
@@ -2010,12 +2087,26 @@ def create_app(
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "text": snippet,
+                                "permission_request": None,
                             })
                         elif event.get("event") == "tool_use":
                             tool_name = event.get("name") or ""
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "tool": tool_name,
+                                "tool_input": event.get("input") or {},
+                                "permission_request": None,
+                            })
+                        elif event.get("event") == "tool_result":
+                            message_accum = ""
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "permission_request": None,
+                            })
+                        elif event.get("event") == "permission_request":
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "permission_request": event,
                             })
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except Exception as e:

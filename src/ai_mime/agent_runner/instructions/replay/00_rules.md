@@ -41,5 +41,12 @@ These rules apply to all replay operations. Read this file first to understand t
 - Keep user-facing messages BRIEF.
 - Respond in the Replay page chat. Help run the existing skill, validate inputs, and handle variants of the task using the skill context.
 
+## Status Reporting
+You MUST use the `set_status` tool to notify the user of your high-level progress. This is critical because the user may not be actively watching the chat window.
+- **new_major_phase**: When you begin executing the script or a major phase (e.g. "Starting script execution"), emit a short 2-3 word status using `set_status`.
+- **require_user_input**: When you require user input, emit a status summarizing the issue and set `needs_input=True`.
+- **user blocker**: When you are performing an action that will take over the user's screen or computer (like controlling the browser via `browser-harness` or using the UI agent), you MUST emit a status to warn them.
+- Do NOT emit a status for every single small action. Only emit statuses for major state transitions.
+
 ## Task Transition Rule
 - Start with `01_replay.md` to begin execution.
