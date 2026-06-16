@@ -42,6 +42,13 @@ _GIT_READONLY_SUBCOMMANDS = {
 _FIND_DANGEROUS_FLAGS = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"}
 _REDIRECT_RE = re.compile(r"^(\d*)>>?(.*)$")
 
+# Commands exported via workflow_runtime_env that are safe to auto-allow.
+_BASH_ALLOWED_RUNTIME_ENV_COMMANDS = {
+    "$AI_MIME_BROWSER_HARNESS_BIN",
+    "$AI_MIME_UV_PATH",
+    "$AI_MIME_PYTHON_PATH",
+}
+
 
 def _has_write_redirect(tokens: list[str]) -> bool:
     """True if any token redirects output to a file (e.g. `>out`, `>> log`).
@@ -104,6 +111,8 @@ def bash_command_requires_approval(command: str) -> bool:
     text = (command or "").strip()
     if not text:
         return True
+    if any(text.lstrip('"\'').startswith(cmd) for cmd in _BASH_ALLOWED_RUNTIME_ENV_COMMANDS):
+        return False
     if "$(" in text or "`" in text:  # command substitution can hide commands
         return True
     try:

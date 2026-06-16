@@ -234,7 +234,9 @@ class RecorderApp(rumps.App):
                             if "text" in cmd:
                                 self._conversation_overlay.update_text(cmd["text"])
                             if "tool" in cmd:
-                                self._conversation_overlay.update_tool(cmd["tool"])
+                                self._conversation_overlay.update_tool(cmd["tool"], cmd.get("tool_input"))
+                            if "permission_request" in cmd:
+                                self._conversation_overlay.update_permission(cmd["permission_request"])
                         except Exception as e:
                             log(f"Failed to update ConversationOverlay: {e}", exc_info=True)
                 elif cmd.get("type") == "update_agent_status":

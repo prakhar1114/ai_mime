@@ -36,7 +36,7 @@ _MIN_EXPANDED_WIDTH = 280.0
 _MIN_EXPANDED_HEIGHT = 90.0
 _MAX_EXPANDED_HEIGHT = 280.0
 _SCREEN_MARGIN = 12.0
-_RIGHT_EDGE_MARGIN = 6.0
+_RIGHT_EDGE_MARGIN = 0.0
 _CONTENT_MARGIN = 10.0
 _MESSAGE_MAX_LINES = 4
 _TOOL_MAX_LINES = 2
@@ -76,6 +76,11 @@ class WebOverlayMessageHandler(AppKit.NSObject):  # type: ignore[misc]
                     self._overlay._clamp_expanded_frame(float(height))
                 elif action == "maximize":
                     self._overlay.maximize()
+                elif action == "permission_decision":
+                    request_id = body.get("request_id")
+                    decision = body.get("decision")
+                    if request_id and decision:
+                        self._overlay._handle_permission_decision(request_id, decision)
         except Exception as e:
             print(f"Error handling JS message: {e}")
 
@@ -275,10 +280,10 @@ class ConversationOverlay:
         except Exception:
             pass
 
-    def update_tool(self, tool_name: str) -> None:
+    def update_tool(self, tool_name: str, tool_input: dict = None) -> None:
         try:
             cleaned_tool = tool_name.strip() if tool_name else ""
-            self._push_state({"tool": cleaned_tool})
+            self._push_state({"tool": cleaned_tool, "tool_input": tool_input or {}})
         except Exception:
             pass
 
@@ -287,6 +292,36 @@ class ConversationOverlay:
             self._push_state({"status": status, "needs_input": needs_input})
         except Exception:
             pass
+
+    def update_permission(self, perm_req: dict) -> None:
+        try:
+            self._push_state({"permission_request": perm_req})
+            if self.is_minimized:
+                self.maximize()
+        except Exception:
+            pass
+
+    def _handle_permission_decision(self, request_id: str, decision: str) -> None:
+        def _post_decision():
+            try:
+                if self.mode == "build_skill_chat":
+                    path = f"/api/tasks/{urllib.parse.quote(self.task_id)}/skill-build/permission"
+                elif self.mode == "replay_execution":
+                    path = f"/api/tasks/{urllib.parse.quote(self.task_id)}/replay-agent/permission"
+                else:
+                    path = f"/api/tasks/{urllib.parse.quote(self.task_id)}/agent/permission" if self.task_id else "/api/agent/permission"
+
+                url = f"http://127.0.0.1:{self.port}{path}"
+                data = json.dumps({"request_id": request_id, "decision": decision}).encode("utf-8")
+                req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    resp.read()
+            except Exception as e:
+                print(f"Error submitting permission decision: {e}")
+
+        # Clear the prompt locally right away to feel snappy
+        self._push_state({"permission_request": None})
+        threading.Thread(target=_post_decision, daemon=True).start()
 
     def _handle_show_chat(self) -> None:
         try:

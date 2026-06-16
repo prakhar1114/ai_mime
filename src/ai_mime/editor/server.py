@@ -1473,10 +1473,11 @@ def create_app(
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "text": snippet,
+                                "permission_request": None,
                             })
                         elif event.get("event") == "tool_use":
                             tool_name = event.get("name") or ""
-                            if tool_name == "set_status":
+                            if tool_name in ("set_status", "mcp__cua__set_status"):
                                 tool_input = event.get("input") or {}
                                 status_str = tool_input.get("status", "")
                                 needs_input = tool_input.get("needs_input", False)
@@ -1492,6 +1493,19 @@ def create_app(
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "tool": tool_name,
+                                "tool_input": event.get("input") or {},
+                                "permission_request": None,
+                            })
+                        elif event.get("event") == "tool_result":
+                            message_accum = ""
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "permission_request": None,
+                            })
+                        elif event.get("event") == "permission_request":
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "permission_request": event,
                             })
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except Exception as e:
@@ -2065,12 +2079,26 @@ def create_app(
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "text": snippet,
+                                "permission_request": None,
                             })
                         elif event.get("event") == "tool_use":
                             tool_name = event.get("name") or ""
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "tool": tool_name,
+                                "tool_input": event.get("input") or {},
+                                "permission_request": None,
+                            })
+                        elif event.get("event") == "tool_result":
+                            message_accum = ""
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "permission_request": None,
+                            })
+                        elif event.get("event") == "permission_request":
+                            app_command_queue.put({
+                                "type": "update_conversation_overlay",
+                                "permission_request": event,
                             })
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except Exception as e:

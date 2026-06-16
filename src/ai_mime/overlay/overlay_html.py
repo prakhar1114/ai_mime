@@ -97,6 +97,11 @@ OVERLAY_HTML = """
     transition: all 0.2s ease;
   }
 
+  #detailed-content {
+    max-height: 140px;
+    overflow-y: auto;
+  }
+
   .message {
     line-height: 1.4;
     word-wrap: break-word;
@@ -166,6 +171,11 @@ OVERLAY_HTML = """
   <div class="header" id="header-area">
     <div class="dot" id="status-dot"></div>
     <div class="title" id="title-text">AI Agent</div>
+    <div onclick="sendAction('hide')" style="cursor: pointer; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 4px; transition: background 0.2s;" onmouseover="this.style.backgroundColor='rgba(127,127,127,0.2)'" onmouseout="this.style.backgroundColor='transparent'" title="Hide">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </svg>
+    </div>
   </div>
 
   <div class="content" id="content-area">
@@ -182,7 +192,6 @@ OVERLAY_HTML = """
   </div>
 
   <div class="actions" id="actions-area">
-    <button onclick="sendAction('hide')">Hide</button>
     <button onclick="sendAction('show_chat')">Show Chat</button>
     <button id="interrupt-btn" onclick="sendAction('interrupt')">Interrupt</button>
   </div>
@@ -330,7 +339,13 @@ OVERLAY_HTML = """
         toolDiv.style.display = 'none';
       } else {
         toolDiv.style.display = 'block';
-        toolDiv.textContent = state.tool === 'Thinking...' ? 'Thinking...' : 'Running Tool: ' + state.tool;
+        let toolText = state.tool === 'Thinking...' ? 'Thinking...' : 'Running Tool: ' + state.tool;
+        if (state.tool_input && Object.keys(state.tool_input).length > 0) {
+           const inputStr = JSON.stringify(state.tool_input);
+           const shortInput = inputStr.length > 100 ? inputStr.substring(0, 97) + '...' : inputStr;
+           toolText += ' <span style="opacity: 0.6; font-size: 10px;">' + shortInput.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>';
+        }
+        toolDiv.innerHTML = toolText;
       }
     }
 
@@ -347,6 +362,60 @@ OVERLAY_HTML = """
       } else {
         dot.style.backgroundColor = 'var(--accent)'; // Green
         dot.style.boxShadow = '0 0 8px var(--accent)';
+      }
+    }
+
+    if (state.permission_request !== undefined) {
+      const p = state.permission_request;
+      let permArea = document.getElementById('permission-area');
+      if (!permArea) {
+        permArea = document.createElement('div');
+        permArea.id = 'permission-area';
+        permArea.style.marginTop = '8px';
+        permArea.style.paddingTop = '8px';
+        permArea.style.borderTop = '1px solid var(--border-color)';
+        const detailedContent = document.getElementById('detailed-content');
+        detailedContent.appendChild(permArea);
+      }
+      
+      if (!p) {
+        permArea.style.display = 'none';
+      } else {
+        permArea.style.display = 'block';
+        const msgDiv = document.getElementById('message-text');
+        if (msgDiv) msgDiv.style.display = 'none';
+        const toolDiv = document.getElementById('tool-text');
+        if (toolDiv) toolDiv.style.display = 'none';
+        const toolName = p.tool_name || 'Tool';
+        const reqId = p.request_id;
+        const inputData = p.input || {};
+        const cmd = inputData.command || inputData.cmd || '';
+        const snippet = cmd ? cmd : JSON.stringify(inputData);
+        // Clean up markdown/backticks in snippet if present
+        const cleanSnippet = snippet.replace(/^```[a-z]*\\n/, '').replace(/\\n```$/, '').replace(/^`|`$/g, '');
+        const snippetHtml = cleanSnippet ? `<pre style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; max-height: 100px; overflow-y: auto; background: rgba(127, 127, 127, 0.2); padding: 6px; margin-top: 6px; border-radius: 4px; white-space: pre-wrap; word-break: break-all;">${cleanSnippet.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>` : '';
+        
+        permArea.innerHTML = `
+          <div style="font-weight: 600; font-size: 11px; margin-bottom: 4px;">${toolName} wants to run</div>
+          ${snippetHtml}
+          <div style="display: flex; gap: 6px; margin-top: 8px;">
+            <button onclick="sendAction('permission_decision', {request_id: '${reqId}', decision: 'allow'})" style="background: var(--accent); color: white;">Allow once</button>
+            <button onclick="sendAction('permission_decision', {request_id: '${reqId}', decision: 'allow_always'})" style="background: var(--accent); color: white;">Always</button>
+            <button onclick="sendAction('permission_decision', {request_id: '${reqId}', decision: 'deny'})" style="background: rgba(255, 59, 48, 0.8); color: white;">Deny</button>
+          </div>
+        `;
+        
+        if (!isDetailedView) {
+            toggleDetails();
+        } else {
+            setTimeout(() => {
+                lastHeight = 0;
+                const height = document.documentElement.scrollHeight;
+                if (window.webkit && window.webkit.messageHandlers.overlay) {
+                    window.webkit.messageHandlers.overlay.postMessage({ type: 'resize', height: height });
+                }
+            }, 10);
+        }
       }
     }
 
