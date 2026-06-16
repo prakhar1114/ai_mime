@@ -26,6 +26,9 @@ from ai_mime.overlay.ui_common import (
     title_label,
     sys_font,
 )
+import os
+import subprocess
+from ai_mime.app_data import get_managed_browser_harness_path, workflow_runtime_env
 
 
 _EXPANDED_WIDTH = 380.0
@@ -110,17 +113,17 @@ class ConversationOverlay:
         except Exception:
             pass
         uc = WebKit.WKUserContentController.alloc().init()
-        
+
         self._action_handler = WebOverlayMessageHandler.alloc().init()
         self._action_handler._overlay = self
-        
+
         uc.addScriptMessageHandler_name_(self._action_handler, "overlay")
         config.setUserContentController_(uc)
-        
+
         self._webview = WebKit.WKWebView.alloc().initWithFrame_configuration_(
             AppKit.NSMakeRect(0, 0, self.width, self.height), config
         )
-        
+
         try:
             self._webview.setAutoresizingMask_(
                 int(getattr(AppKit, "NSViewWidthSizable", 2)) | int(getattr(AppKit, "NSViewHeightSizable", 16))
@@ -327,66 +330,48 @@ def focus_browser_tab(port: int, path_suffix: str) -> None:
         parsed = urllib.parse.urlparse(url)
         target_path = parsed.path
 
+        bh_path = get_managed_browser_harness_path()
+        env = os.environ.copy()
+        env.update(workflow_runtime_env())
+
+        script = f"""
+import sys
+for t in list_tabs():
+    if {repr(target_path)} in t.get("url", ""):
+        cdp("Target.activateTarget", targetId=t["targetId"])
+        sys.exit(0)
+sys.exit(1)
+"""
         found = False
-        for browser in ["Google Chrome", "Brave Browser", "Safari"]:
-            # Check if browser app is running first, to avoid launching it if closed
-            check_running = f'tell application "System Events" to return (count of (every process whose name is "{browser}")) > 0'
-            script_check = Foundation.NSAppleScript.alloc().initWithSource_(check_running)
-            success_check, _ = script_check.executeAndReturnError_(None) if script_check else (None, None)
-            is_running = bool(success_check.booleanValue()) if success_check else False
-            if not is_running:
-                continue
+        try:
+            result = subprocess.run(
+                [str(bh_path), "-c", script],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+            )
+            found = (result.returncode == 0)
+        except subprocess.TimeoutExpired:
+            print("browser-harness timed out")
+        except Exception as e:
+            print(f"browser-harness error: {e}")
 
-            if browser in ("Google Chrome", "Brave Browser"):
-                script_text = f'''
-                tell application "{browser}"
-                    set found to false
-                    repeat with w in windows
-                        set tabIndex to 1
-                        repeat with t in tabs of w
-                            if URL of t contains "{target_path}" then
-                                set active tab index of w to tabIndex
-                                set index of w to 1
-                                activate
-                                set found to true
-                                exit repeat
-                            end if
-                            set tabIndex to tabIndex + 1
-                        end repeat
-                        if found then exit repeat
-                    end repeat
-                    return found
-                end tell
-                '''
-            else:  # Safari
-                script_text = f'''
-                tell application "Safari"
-                    set found to false
-                    repeat with w in windows
-                        set tabIndex to 1
-                        repeat with t in tabs of w
-                            if URL of t contains "{target_path}" then
-                                set current tab of w to t
-                                set index of w to 1
-                                activate
-                                set found to true
-                                exit repeat
-                            end if
-                            set tabIndex to tabIndex + 1
-                        end repeat
-                        if found then exit repeat
-                    end repeat
-                    return found
-                end tell
-                '''
-
-            script = Foundation.NSAppleScript.alloc().initWithSource_(script_text)
-            success, _ = script.executeAndReturnError_(None) if script else (None, None)
-            if success and success.booleanValue():
-                found = True
-                break
-
-        if not found:
+        if found:
+            activate_script = '''
+            tell application "System Events"
+                if exists (process "Google Chrome") then
+                    set frontmost of process "Google Chrome" to true
+                end if
+                if exists (process "Brave Browser") then
+                    set frontmost of process "Brave Browser" to true
+                end if
+            end tell
+            '''
+            script_obj = Foundation.NSAppleScript.alloc().initWithSource_(activate_script)
+            if script_obj:
+                script_obj.executeAndReturnError_(None)
+        else:
             webbrowser.open(url)
     except Exception as e:
         print(f"Error focusing browser tab: {e}")
