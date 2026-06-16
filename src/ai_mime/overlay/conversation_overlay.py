@@ -67,6 +67,8 @@ class WebOverlayMessageHandler(AppKit.NSObject):  # type: ignore[misc]
                 action = body.get("type")
                 if action == "hide":
                     self._overlay.minimize()
+                elif action == "close":
+                    self._overlay.close()
                 elif action == "show_chat":
                     self._overlay._handle_show_chat()
                 elif action == "interrupt":
@@ -233,14 +235,14 @@ class ConversationOverlay:
 
             self._push_state({"mode": "minimized"})
 
-            self._panel.setMinSize_(AppKit.NSMakeSize(32.0, 64.0))
-            self._panel.setMaxSize_(AppKit.NSMakeSize(32.0, 64.0))
+            self._panel.setMinSize_(AppKit.NSMakeSize(32.0, 32.0))
+            self._panel.setMaxSize_(AppKit.NSMakeSize(32.0, 32.0))
 
             style = AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel
             self._panel.setStyleMask_(style)
 
             sx, sy, sw, sh = active_screen_visible_frame()
-            mini_w, mini_h = 32.0, 64.0
+            mini_w, mini_h = 32.0, 32.0
             x = float(sx + sw - mini_w - _RIGHT_EDGE_MARGIN)
             y = float(sy + (sh - mini_h) / 2.0)
 
@@ -332,6 +334,7 @@ class ConversationOverlay:
             else:
                 path_suffix = f"/agent"
             focus_browser_tab(self.port, path_suffix)
+            self.close()
         except Exception as e:
             print(f"Error focusing chat in browser: {e}")
 

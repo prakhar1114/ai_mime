@@ -748,9 +748,25 @@
   el.modelSelect.addEventListener("change", updateModelSelectWidth);
 
   if (el.toggleOverlayBtn) {
+    (async () => {
+      try {
+        const res = await request("/api/overlay/toggle", { method: "GET" });
+        el.toggleOverlayBtn.textContent = res.enabled ? "Toggle HUD (On)" : "Toggle HUD (Off)";
+      } catch (e) {
+        console.error("Failed to load overlay state:", e);
+      }
+    })();
+
     el.toggleOverlayBtn.addEventListener("click", async () => {
       try {
-        await request("/api/overlay/toggle", { method: "POST" });
+        const currentText = el.toggleOverlayBtn.textContent;
+        const nextState = currentText === "Toggle HUD (Off)";
+        const res = await request("/api/overlay/toggle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: nextState })
+        });
+        el.toggleOverlayBtn.textContent = res.enabled ? "Toggle HUD (On)" : "Toggle HUD (Off)";
       } catch (e) {
         setError(e.message || String(e));
       }

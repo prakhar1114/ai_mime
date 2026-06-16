@@ -45,6 +45,7 @@ DEFAULT_MARKETPLACE_MANIFEST_URL = "https://market.aimime.cc/manifest.json"
 MARKETPLACE_MANIFEST_PATH_ENV = "AI_MIME_MARKETPLACE_MANIFEST_PATH"
 _MAX_MARKETPLACE_MANIFEST_BYTES = 2 * 1024 * 1024
 TASK_STATUSES: dict[str, dict[str, Any]] = {}
+OVERLAY_ENABLED = True
 
 
 def _kill_processes_on_tcp_port(port: int) -> None:
@@ -1442,7 +1443,7 @@ def create_app(
             if task_id:
                 TASK_STATUSES[task_id] = {"status": default_status, "needs_input": False}
 
-            if app_command_queue is not None:
+            if app_command_queue is not None and OVERLAY_ENABLED:
                 app_command_queue.put({
                     "type": "show_conversation_overlay",
                     "mode": service.mode,
@@ -1463,7 +1464,7 @@ def create_app(
             message_accum = ""
             try:
                 async for event in event_iter:
-                    if app_command_queue is not None:
+                    if app_command_queue is not None and OVERLAY_ENABLED:
                         if event.get("event") == "text":
                             message_accum += event.get("text") or ""
                             lines = message_accum.splitlines(keepends=True)
@@ -1510,9 +1511,6 @@ def create_app(
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
-            finally:
-                if app_command_queue is not None:
-                    app_command_queue.put({"type": "hide_conversation_overlay"})
 
         return StreamingResponse(
             _sse(),
@@ -1548,10 +1546,20 @@ def create_app(
         return task_runner.app_status()
 
     @app.post("/api/overlay/toggle")
-    def api_overlay_toggle():
-        if app_command_queue is not None:
-            app_command_queue.put({"type": "toggle_conversation_overlay"})
-        return {"ok": True}
+    def api_overlay_toggle(payload: dict[str, Any] = Body(default={})):
+        global OVERLAY_ENABLED
+        if "enabled" in payload:
+            OVERLAY_ENABLED = payload["enabled"]
+        else:
+            OVERLAY_ENABLED = not OVERLAY_ENABLED
+
+        if not OVERLAY_ENABLED and app_command_queue is not None:
+            app_command_queue.put({"type": "hide_conversation_overlay"})
+        return {"ok": True, "enabled": OVERLAY_ENABLED}
+
+    @app.get("/api/overlay/toggle")
+    def api_overlay_state():
+        return {"enabled": OVERLAY_ENABLED}
 
     @app.get("/api/settings/provider")
     def api_provider_settings():
@@ -2061,7 +2069,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(e))
 
         async def _sse():
-            if app_command_queue is not None:
+            if app_command_queue is not None and OVERLAY_ENABLED:
                 app_command_queue.put({
                     "type": "show_conversation_overlay",
                     "mode": "build_skill_chat",
@@ -2070,7 +2078,7 @@ def create_app(
             message_accum = ""
             try:
                 async for event in event_iter:
-                    if app_command_queue is not None:
+                    if app_command_queue is not None and OVERLAY_ENABLED:
                         if event.get("event") == "text":
                             message_accum += event.get("text") or ""
                             snippet = message_accum

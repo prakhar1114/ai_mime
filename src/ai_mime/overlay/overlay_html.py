@@ -59,6 +59,38 @@ OVERLAY_HTML = """
     /* This allows the container to naturally push its height, which we will read in JS */
   }
 
+  /* macOS Controls */
+  .mac-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .mac-btn {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .mac-btn svg {
+    opacity: 0;
+    transition: opacity 0.1s;
+    color: rgba(0, 0, 0, 0.6);
+  }
+  .mac-controls:hover .mac-btn svg {
+    opacity: 1;
+  }
+  .mac-close {
+    background-color: #FF5F56;
+    border: 0.5px solid #E0443E;
+  }
+  .mac-minimize {
+    background-color: #FFBD2E;
+    border: 0.5px solid #DEA123;
+  }
+
   /* Header */
   .header {
     display: flex;
@@ -171,10 +203,13 @@ OVERLAY_HTML = """
   <div class="header" id="header-area">
     <div class="dot" id="status-dot"></div>
     <div class="title" id="title-text">AI Agent</div>
-    <div onclick="sendAction('hide')" style="cursor: pointer; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 4px; transition: background 0.2s;" onmouseover="this.style.backgroundColor='rgba(127,127,127,0.2)'" onmouseout="this.style.backgroundColor='transparent'" title="Hide">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="5" y1="12" x2="19" y2="12"></line>
-      </svg>
+    <div class="mac-controls" id="window-controls">
+      <div class="mac-btn mac-minimize" onclick="sendAction('hide')" title="Minimize">
+        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"></line></svg>
+      </div>
+      <div class="mac-btn mac-close" onclick="sendAction('close')" title="Close">
+        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg>
+      </div>
     </div>
   </div>
 
@@ -274,14 +309,17 @@ OVERLAY_HTML = """
     if (state.mode !== undefined) {
       if (state.mode === 'minimized') {
         isMinimized = true;
+        document.body.style.padding = '0px';
         document.getElementById('content-area').style.display = 'none';
         document.getElementById('actions-area').style.display = 'none';
         document.getElementById('title-text').style.display = 'none';
+        const wc = document.getElementById('window-controls');
+        if (wc) wc.style.display = 'none';
         
         // Style as a small vertical pill
         const container = document.getElementById('main-container');
         container.style.width = '32px';
-        container.style.height = '64px';
+        container.style.height = '32px';
         container.style.padding = '0';
         container.style.borderRadius = '16px';
         container.style.display = 'flex';
@@ -294,13 +332,16 @@ OVERLAY_HTML = """
         
         // Notify small resize for minimized pill
         if (window.webkit && window.webkit.messageHandlers.overlay) {
-          window.webkit.messageHandlers.overlay.postMessage({ type: 'resize', height: 64 });
+          window.webkit.messageHandlers.overlay.postMessage({ type: 'resize', height: 32 });
         }
-      } else {
+      } else if (state.mode === 'maximized') {
         isMinimized = false;
+        document.body.style.padding = '10px';
         document.getElementById('content-area').style.display = 'flex';
         document.getElementById('actions-area').style.display = 'flex';
         document.getElementById('title-text').style.display = 'block';
+        const wc = document.getElementById('window-controls');
+        if (wc) wc.style.display = 'flex';
         
         const container = document.getElementById('main-container');
         container.style.width = 'auto';
