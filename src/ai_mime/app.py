@@ -214,10 +214,18 @@ class RecorderApp(rumps.App):
                     status = cmd.get("status")
                     needs_input = cmd.get("needs_input", False)
                     if self._conversation_overlay is not None:
-                        try:
-                            self._conversation_overlay.close()
-                        except Exception:
-                            pass
+                        if not self._conversation_overlay._panel.isVisible():
+                            self._conversation_overlay = None
+                        elif getattr(self._conversation_overlay, "task_id", None) == task_id and getattr(self._conversation_overlay, "mode", None) == mode:
+                            if status is not None:
+                                self._conversation_overlay.update_status(status, needs_input)
+                            continue
+                        else:
+                            try:
+                                self._conversation_overlay.close()
+                            except Exception:
+                                pass
+                            self._conversation_overlay = None
                     try:
                         from ai_mime.overlay.conversation_overlay import ConversationOverlay
                         self._conversation_overlay = ConversationOverlay(

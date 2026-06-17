@@ -2213,6 +2213,19 @@ def create_app(
                             })
                         elif event.get("event") == "tool_use":
                             tool_name = event.get("name") or ""
+                            if tool_name in ("set_status", "mcp__cua__set_status"):
+                                tool_input = event.get("input") or {}
+                                status_str = tool_input.get("status", "")
+                                needs_input = tool_input.get("needs_input", False)
+                                app_command_queue.put({
+                                    "type": "update_agent_status",
+                                    "status": status_str,
+                                    "needs_input": needs_input,
+                                    "task_id": task_id or "",
+                                })
+                                if task_id:
+                                    TASK_STATUSES[task_id] = {"status": status_str, "needs_input": needs_input}
+                                yield f"data: {json.dumps({'event': 'agent_status', 'status': status_str, 'needs_input': needs_input})}\n\n"
                             app_command_queue.put({
                                 "type": "update_conversation_overlay",
                                 "tool": tool_name,
@@ -2233,9 +2246,6 @@ def create_app(
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
-            finally:
-                if app_command_queue is not None:
-                    app_command_queue.put({"type": "hide_conversation_overlay"})
 
         return StreamingResponse(
             _sse(),
