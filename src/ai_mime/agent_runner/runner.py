@@ -29,6 +29,7 @@ from ai_mime.app_data import (
     get_workflows_dir,
     workflow_runtime_env,
 )
+from ai_mime import credentials_store
 from ai_mime.debug_log import log as debug_log
 
 
@@ -124,6 +125,40 @@ def _skill_dir_for(workflow_dir: Path, schema: dict) -> Path:
     return workflow_dir / "skills" / _skill_name_for(schema, workflow_dir)
 
 
+def _find_built_skill_dir(workflow_dir: Path) -> Path | None:
+    """Discover an already-built skill directory under ``workflow_dir/skills``.
+
+    The build agent chooses its own folder name (build mode grants write to the
+    whole ``skills/`` dir), so for direct builds the name is NOT derivable from
+    the schema — ``schema.json`` is empty and the dir name has nothing to do
+    with the timestamped workflow dir name. Detect a real skill dir by the
+    presence of SKILL.md; if several exist, pick the most recently modified
+    (the one just built/refined)."""
+    skills_root = Path(workflow_dir) / "skills"
+    if not skills_root.is_dir():
+        return None
+    candidates = [
+        p for p in skills_root.iterdir() if p.is_dir() and (p / "SKILL.md").is_file()
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def resolve_skill_dir(workflow_dir: Path, schema: dict) -> Path:
+    """Resolve the skill directory for a workflow.
+
+    Prefer the schema-derived name when that directory already exists (covers
+    reflected recordings whose ``schema.task_name`` matches the built folder).
+    Otherwise fall back to discovering the skill the agent actually created —
+    required for direct builds, where the agent names the folder itself."""
+    computed = _skill_dir_for(workflow_dir, schema)
+    if computed.exists():
+        return computed
+    found = _find_built_skill_dir(workflow_dir)
+    return found if found is not None else computed
+
+
 def _skill_dir_for_request(request: AgentRunRequest) -> Path:
     schema: dict = {}
     if request.schema_path and request.schema_path.exists():
@@ -131,7 +166,7 @@ def _skill_dir_for_request(request: AgentRunRequest) -> Path:
             schema = _read_json(request.schema_path)
         except Exception:
             schema = {}
-    return _skill_dir_for(request.workflow_dir, schema)
+    return resolve_skill_dir(request.workflow_dir, schema)
 
 
 
@@ -212,7 +247,7 @@ def build_agent_run_request(
         ]
     )
     if mode == "replay_execution":
-        skill_dir = _skill_dir_for(workflow_dir_p, schema)
+        skill_dir = resolve_skill_dir(workflow_dir_p, schema)
         writable_roots = _unique_paths(
             [
                 agent_dir,
@@ -573,6 +608,17 @@ def validate_skill_package(skill_dir: str | Path, schema: dict, optimized_plan: 
     if not os.access(run_sh, os.X_OK):
         raise ValueError("run.sh is not executable — `chmod +x run.sh` in the build agent before signalling.")
 
+    # Credential leak guard: the shipped manifest must never contain real secrets.
+    if credentials_store.manifest_path(skill_dir_p).is_file():
+        leaks = credentials_store.manifest_real_values(skill_dir_p)
+        if leaks:
+            raise ValueError(
+                "credentials.template.json contains real values (must be <FILL IN: ...> placeholders): "
+                + ", ".join(sorted(leaks))
+            )
+    if (skill_dir_p / "credentials.local.json").is_file():
+        raise ValueError("credentials.local.json must not be inside the skill package — keep build values in the workflow's agent/ dir.")
+
     example_path = skill_dir_p / "inputs" / "inputs.example.json"
     template_path = skill_dir_p / "inputs" / "inputs.template.json"
     try:
@@ -695,7 +741,7 @@ def run_skill_e2e_test(
             proc = subprocess.run(
                 cmd,
                 cwd=str(skill_dir_p),
-                env={**os.environ, **workflow_runtime_env(runtime_root)},
+                env={**os.environ, **workflow_runtime_env(runtime_root, credentials_mode="build")},
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

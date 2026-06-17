@@ -6,6 +6,10 @@ __pycache__/
 # Environments
 .env
 
+# Credential store (dev mode writes this into the repo root)
+credentials.json
+credentials.json.tmp
+
 recordings/
 workflows/
 .venv/

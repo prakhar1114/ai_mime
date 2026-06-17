@@ -16,6 +16,7 @@ from ai_mime.agent_runner.models import (
     resolved_browser_skill_path,
 )
 from ai_mime.app_data import workflow_runtime_env
+from ai_mime.credentials_store import credentials_mode_for
 from ai_mime.codex_support import codex_subprocess_env, find_codex_executable
 from ai_mime.debug_log import log as debug_log
 
@@ -604,7 +605,12 @@ class CodexCliRuntime(AgentRuntime):
     def _env_for(self, request: AgentRunRequest | None = None) -> dict[str, str]:
         env = dict(os.environ)
         if request is not None:
-            env.update(workflow_runtime_env(request.workflow_dir))
+            env.update(
+                workflow_runtime_env(
+                    request.workflow_dir,
+                    credentials_mode=credentials_mode_for(request.mode),
+                )
+            )
         env = codex_subprocess_env(env, codex_exe=self._codex_executable())
         no_proxy = env.get("NO_PROXY") or env.get("no_proxy") or ""
         required_no_proxy = ["127.0.0.1", "localhost", "::1"]

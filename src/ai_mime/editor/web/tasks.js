@@ -5,6 +5,7 @@
     startRecordingBtn: document.getElementById("startRecordingBtn"),
     directBuildBtn: document.getElementById("directBuildBtn"),
     uploadSkillBtn: document.getElementById("uploadSkillBtn"),
+    importZipBtn: document.getElementById("importZipBtn"),
     exploreMarketplaceBtn: document.getElementById("exploreMarketplaceBtn"),
     agentModeBtn: document.getElementById("agentModeBtn"),
     openWorkflowsBtn: document.getElementById("openWorkflowsBtn"),
@@ -80,6 +81,7 @@
             reflectItems.push(`<button class="menu-item" data-action="continue-improve">Continue Improving Skill</button>`);
             reflectItems.push(`<button class="menu-item" data-action="edit-skill">Edit Skill (New Session)</button>`);
             reflectItems.push(`<button class="menu-item" data-action="run-skill">Run</button>`);
+            reflectItems.push(`<button class="menu-item" data-action="export-skill">Export Skill</button>`);
           } else {
             reflectItems.push(`<button class="menu-item" data-action="continue-improve">Build Skill</button>`);
           }
@@ -204,6 +206,9 @@
       } else if (action === "run-skill") {
         window.location.href = `/replay/${encoded}`;
         return;
+      } else if (action === "export-skill") {
+        window.location.href = `/api/tasks/${encoded}/export`;
+        return;
       } else if (action === "replay") {
         window.location.href = `/replay/${encoded}`;
         return;
@@ -237,6 +242,18 @@
     const removed = Array.isArray(data.removed_preview) && data.removed_preview.length
       ? `<details class="import-details"><summary>${data.removed_preview.length} generated files will be removed</summary><ul>${data.removed_preview.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></details>`
       : `<div class="modal-desc">No generated files need to be removed.</div>`;
+    const fields = Array.isArray(data.credentials_fields) ? data.credentials_fields : [];
+    const credsHtml = fields.length
+      ? `<div class="modal-section-title">Credentials</div>
+         <div class="modal-desc">This skill needs your own credentials to run.</div>
+         ${fields.map((f, i) => `
+           <label class="provider-key">
+             <span>${escapeHtml(f.service)} — ${escapeHtml(f.description || f.key)}</span>
+             <input type="password" class="cred-input" data-cred-index="${i}"
+               data-cred-service="${escapeHtml(f.service)}" data-cred-key="${escapeHtml(f.key)}"
+               value="${escapeHtml(f.value || "")}" placeholder="${escapeHtml(f.key)}">
+           </label>`).join("")}`
+      : "";
     return `
       <div class="import-summary">
         <div><strong>Type</strong><span>${escapeHtml(data.detected_type || "Unknown")}</span></div>
@@ -244,6 +261,7 @@
         <div><strong>Skill</strong><span>${escapeHtml(data.skill_name || "")}</span></div>
         <div><strong>Status</strong><span>${data.valid ? "Valid" : "Invalid"}</span></div>
       </div>
+      ${credsHtml}
       <div class="modal-section-title">Warnings</div>
       ${warnings}
       <div class="modal-section-title">Cleanup</div>
@@ -251,14 +269,30 @@
     `;
   }
 
-  async function installImportedSkill(stagingId, button, message) {
+  function collectCredentials(overlay) {
+    const creds = {};
+    overlay.querySelectorAll(".cred-input").forEach((input) => {
+      const service = input.dataset.credService;
+      const key = input.dataset.credKey;
+      if (!service || !key) return;
+      (creds[service] = creds[service] || {})[key] = input.value;
+    });
+    return creds;
+  }
+
+  function credentialsComplete(overlay) {
+    const inputs = overlay.querySelectorAll(".cred-input");
+    return Array.from(inputs).every((input) => input.value.trim() !== "");
+  }
+
+  async function installImportedSkill(stagingId, button, message, credentials) {
     button.disabled = true;
     message.textContent = "Installing...";
     try {
       const data = await request("/api/import/install", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ staging_id: stagingId }),
+        body: JSON.stringify({ staging_id: stagingId, credentials: credentials || {} }),
       });
       const taskId = data && data.task_id;
       if (!taskId) throw new Error("Import installed without a task id.");
@@ -320,8 +354,17 @@
       })
       .then((data) => {
         body.innerHTML = renderImportPreviewHtml(data || {});
-        installBtn.disabled = !(data && data.valid && data.staging_id);
-        installBtn.addEventListener("click", () => installImportedSkill(data.staging_id, installBtn, message));
+        const baseValid = !!(data && data.valid && data.staging_id);
+        const refreshInstallEnabled = () => {
+          installBtn.disabled = !(baseValid && credentialsComplete(overlay));
+        };
+        refreshInstallEnabled();
+        overlay.querySelectorAll(".cred-input").forEach((input) => {
+          input.addEventListener("input", refreshInstallEnabled);
+        });
+        installBtn.addEventListener("click", () =>
+          installImportedSkill(data.staging_id, installBtn, message, collectCredentials(overlay))
+        );
       })
       .catch((e) => {
         body.innerHTML = `<div class="modal-desc">The selected folder could not be imported.</div>`;
@@ -329,11 +372,15 @@
       });
   }
 
-  function openUploadSkillPicker() {
+  function openUploadSkillPicker(zip = false) {
     const input = document.createElement("input");
     input.type = "file";
-    input.multiple = true;
-    input.webkitdirectory = true;
+    if (zip) {
+      input.accept = ".zip,application/zip";
+    } else {
+      input.multiple = true;
+      input.webkitdirectory = true;
+    }
     input.addEventListener("change", () => {
       if (input.files && input.files.length) showImportModal(input.files);
     });
@@ -505,7 +552,8 @@
 
   el.providerBtn.addEventListener("click", openProviderModal);
   el.directBuildBtn.addEventListener("click", openDirectBuildModal);
-  el.uploadSkillBtn.addEventListener("click", openUploadSkillPicker);
+  el.uploadSkillBtn.addEventListener("click", () => openUploadSkillPicker(false));
+  if (el.importZipBtn) el.importZipBtn.addEventListener("click", () => openUploadSkillPicker(true));
   el.exploreMarketplaceBtn.addEventListener("click", () => {
     window.location.href = "/marketplace";
   });

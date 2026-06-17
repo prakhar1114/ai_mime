@@ -38,6 +38,7 @@ from ai_mime.agent_runner import (
     validate_skill_package,
 )
 from ai_mime.app_data import is_frozen, workflow_runtime_env
+from ai_mime import credentials_store
 from ai_mime.provider_settings import provider_settings_status, save_provider_settings
 
 EDITOR_SERVER_PORT = 58838
@@ -252,6 +253,10 @@ _IMPORT_SKIP_FILES = {
     "step_cards.json",
     "plan_creation.json",
     "manifest.jsonl",
+    # Real credential values must never travel with a shared skill. The manifest
+    # (credentials.template.json) is kept; only value files are stripped.
+    "credentials.local.json",
+    "credentials.json",
 }
 _IMPORT_SKIP_SUFFIXES = {
     ".pyc",
@@ -277,6 +282,49 @@ def _safe_upload_relpath(filename: str) -> Path:
     if not parts or any(part == ".." for part in parts):
         raise ValueError(f"Unsafe upload path: {filename}")
     return Path(*parts)
+
+
+def _extract_zip_safely(zip_path: Path, dest_dir: Path) -> None:
+    """Extract a zip into dest_dir, rejecting path-traversal (zip-slip) and
+    absolute/symlink entries."""
+    dest_root = dest_dir.resolve()
+    total = 0
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            name = info.filename
+            if not name or name.endswith("/"):
+                continue
+            if name.startswith("/") or "\\" in name:
+                raise ValueError(f"Unsafe zip entry: {name}")
+            parts = [p for p in name.split("/") if p not in {"", "."}]
+            if not parts or any(p == ".." for p in parts):
+                raise ValueError(f"Unsafe zip entry: {name}")
+            target = (dest_root / Path(*parts)).resolve()
+            if dest_root not in target.parents and target != dest_root:
+                raise ValueError(f"Zip entry escapes destination: {name}")
+            total += info.file_size
+            if total > _MAX_IMPORT_TOTAL_BYTES:
+                raise ValueError("Zip archive is too large")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, target.open("wb") as out:
+                shutil.copyfileobj(src, out)
+
+
+def _maybe_extract_single_zip(original_dir: Path) -> None:
+    """If the upload is a single .zip file, replace it with its extracted tree."""
+    entries = [p for p in original_dir.iterdir() if p.name != "__MACOSX"]
+    if len(entries) != 1 or not entries[0].is_file():
+        return
+    only = entries[0]
+    if only.suffix.lower() != ".zip":
+        return
+    extract_dir = original_dir.parent / "unzipped"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    _extract_zip_safely(only, extract_dir)
+    only.unlink()
+    for child in extract_dir.iterdir():
+        shutil.move(str(child), str(original_dir / child.name))
+    shutil.rmtree(extract_dir, ignore_errors=True)
 
 
 def _strip_common_upload_root(stage_dir: Path) -> Path:
@@ -494,11 +542,16 @@ def _create_import_preview(stage_dir: Path) -> dict[str, Any]:
     if isinstance(workflow_meta.get("name"), str) and workflow_meta["name"].strip():
         display_name = workflow_meta["name"].strip()
 
+    # parse_manifest already raises a descriptive ValueError on a bad manifest,
+    # which the preview endpoint surfaces as a 400.
+    credentials_fields = credentials_store.install_fields(clean_skill_dir)
+
     return {
         "detected_type": detected_type,
         "display_name": display_name,
         "skill_name": skill_name,
         "skill_dir": str(clean_skill_dir),
+        "credentials_fields": credentials_fields,
         "removed_preview": removed[:200],
         "warnings": (
             ["More than 200 generated or irrelevant files were omitted from this preview."]
@@ -509,7 +562,11 @@ def _create_import_preview(stage_dir: Path) -> dict[str, Any]:
     }
 
 
-def _install_import_stage(stage_info: dict[str, Any], workflows_root: Path) -> dict[str, Any]:
+def _install_import_stage(
+    stage_info: dict[str, Any],
+    workflows_root: Path,
+    credentials: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     stage_dir = Path(str(stage_info.get("stage_dir") or ""))
     clean_root = stage_dir / "clean"
     detected_type = str(stage_info.get("detected_type") or "")
@@ -523,6 +580,7 @@ def _install_import_stage(stage_info: dict[str, Any], workflows_root: Path) -> d
     if workflow_dir.exists():
         raise FileExistsError(f"Workflow already exists: {workflow_dir}")
 
+    installed_skill_dir: Path | None = None
     try:
         if detected_type == "skill":
             skill_slug = _slugify_task_name(str(stage_info.get("skill_name") or display_name), fallback="imported-skill")
@@ -541,6 +599,7 @@ def _install_import_stage(stage_info: dict[str, Any], workflows_root: Path) -> d
             skill_dst = workflow_dir / "skills" / skill_slug
             shutil.copytree(clean_root, skill_dst)
             _chmod_run_sh(skill_dst)
+            installed_skill_dir = skill_dst
         elif detected_type == "workflow":
             shutil.copytree(clean_root, workflow_dir)
             meta = _read_json(workflow_dir / "metadata.json")
@@ -559,14 +618,52 @@ def _install_import_stage(stage_info: dict[str, Any], workflows_root: Path) -> d
             if skill_dir is None:
                 raise ValueError("Installed workflow does not contain a valid skill package")
             _chmod_run_sh(skill_dir)
+            installed_skill_dir = skill_dir
         else:
             raise ValueError("Unknown staged import type")
+
+        # Persist the user's entered credentials into the global store, scoped to
+        # the installed skill's manifest so other services are untouched.
+        if installed_skill_dir is not None and credentials_store.has_manifest(installed_skill_dir):
+            manifest = credentials_store.parse_manifest(installed_skill_dir)
+            credentials_store.scoped_merge(credentials or {}, manifest)
+            missing = credentials_store.missing_required(installed_skill_dir)
+            if missing:
+                raise ValueError(
+                    "Missing required credentials: " + ", ".join(sorted(missing))
+                )
     except Exception:
         if workflow_dir.exists():
             shutil.rmtree(workflow_dir, ignore_errors=True)
         raise
 
     return {"task_id": task_id, "workflow_dir": str(workflow_dir)}
+
+
+def _build_skill_export_zip(workflow_dir: Path) -> tuple[str, bytes]:
+    """Build a shareable zip of a workflow's skill, stripped of secrets, venv,
+    and generated artifacts. Returns (filename, zip_bytes)."""
+    skill_dir = _find_workflow_skill_dir(workflow_dir)
+    if skill_dir is None:
+        raise ValueError("This workflow does not contain a built skill yet.")
+    skill_name = _parse_skill_frontmatter_fields(skill_dir).get("name") or skill_dir.name
+    arc_root = _slugify_task_name(skill_name, fallback="skill") or "skill"
+    with tempfile.TemporaryDirectory(prefix="ai-mime-export-") as td:
+        clean_root = Path(td) / "clean"
+        # Reuses the same strip rules as import so what we export equals what we
+        # would accept. credentials.template.json is kept; value files are not.
+        _copy_import_clean(src=skill_dir, dst=clean_root, is_workflow=False, skill_dir=skill_dir)
+        _remove_generated_import_artifacts(clean_root)
+        # Never ship a machine-specific virtualenv.
+        venv_dir = clean_root / ".venv"
+        if venv_dir.exists():
+            shutil.rmtree(venv_dir, ignore_errors=True)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in sorted(clean_root.rglob("*")):
+                if path.is_file():
+                    zf.write(path, arcname=str(Path(arc_root) / path.relative_to(clean_root)))
+        return f"{arc_root}.zip", buf.getvalue()
 
 
 def _resolve_marketplace_url(base_url: str, value: Any, *, field: str) -> str:
@@ -1737,6 +1834,7 @@ def create_app(
             if not seen:
                 raise ValueError("Uploaded folder is empty")
 
+            _maybe_extract_single_zip(original_dir)
             preview = _create_import_preview(stage_dir)
             preview["staging_id"] = staging_id
             import_staging[staging_id] = {
@@ -1764,8 +1862,11 @@ def create_app(
         stage_info = import_staging.get(staging_id)
         if not stage_info:
             raise HTTPException(status_code=404, detail="Import preview not found or expired")
+        credentials = payload.get("credentials")
+        if credentials is not None and not isinstance(credentials, dict):
+            raise HTTPException(status_code=400, detail="credentials must be an object")
         try:
-            result = _install_import_stage(stage_info, task_runner.workflows_root)
+            result = _install_import_stage(stage_info, task_runner.workflows_root, credentials=credentials)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
@@ -1775,6 +1876,27 @@ def create_app(
             if removed is not None:
                 shutil.rmtree(Path(str(removed.get("stage_dir") or "")), ignore_errors=True)
         return result
+
+    @app.get("/api/tasks/{task_id}/export")
+    def api_export_skill(task_id: str):
+        workflow_dir = (task_runner.workflows_root / task_id).resolve()
+        try:
+            task_runner._assert_under_root(workflow_dir, task_runner.workflows_root)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid task id")
+        if not workflow_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Task not found")
+        try:
+            filename, payload = _build_skill_export_zip(workflow_dir)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to export skill: {e}")
+        return StreamingResponse(
+            io.BytesIO(payload),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/api/marketplace/manifest")
     def api_marketplace_manifest():
@@ -2310,7 +2432,7 @@ def create_app(
                     proc = subprocess.Popen(
                         cmd,
                         cwd=str(skill_dir),
-                        env={**os.environ, **workflow_runtime_env(workflow_dir)},
+                        env={**os.environ, **workflow_runtime_env(workflow_dir, credentials_mode="run")},
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,

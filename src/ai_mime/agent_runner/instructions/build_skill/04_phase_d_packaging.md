@@ -40,7 +40,7 @@ You can refer to the complete example skill package reference at `instructions/e
 
 3. Free-form `references/`. Beyond `fallback_plan.md`, write whatever notes help a future runner — domain notes, per-subtask notes, selectors, payload shapes. You decide based on what was actually useful in Phase B. Don't force everything into one `learned_notes.md`.
 
-4. Do NOT copy `schema.json` or `optimized_plan.json` into the skill. They're builder-only artifacts.
+4. Do NOT copy `schema.json` or `optimized_plan.json` into the skill. They're builder-only artifacts. If the skill needs user secrets, ship `credentials.template.json` (placeholders only — see `credentials.md`) and keep real values out of the package.
 
    Reproducibility: any external tool / MCP server / API you relied on during the build must also be reachable when `run.sh` runs on the end user's machine. Browser-harness is available in the AI Mime workflow runtime as `$AI_MIME_BROWSER_HARNESS_BIN`; use `$AI_MIME_BROWSER_SKILL_PATH` for harness resource files. If Python packages are needed, list them in `requirements.txt`, create `.venv`, install them with `"$AI_MIME_UV_PATH"` during skill build, and document that `run.sh` will use the existing `.venv`. Do NOT assume the end user has anything pre-installed beyond `bash`, macOS system tools, `$AI_MIME_UV_PATH`, `$AI_MIME_BROWSER_HARNESS_BIN`, `$AI_MIME_PYTHON_PATH`, and an already-created `.venv` when needed.
 

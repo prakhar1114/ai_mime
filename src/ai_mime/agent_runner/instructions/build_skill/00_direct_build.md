@@ -16,6 +16,7 @@ live exploration, `agent/confirmed_inputs.json`, and `agent/learned_notes.md`.
    - Any selectors, commands, URLs, payload shapes, UI-agent recipes, or edge cases discovered during exploration.
    - Side effects and how to clear them before reruns.
 5. If you need to learn how to perform the task, explore using the tools from `00_rules.md`. Prefer deterministic script, CLI, API, file, and browser-harness approaches before native UI automation.
+   - If the task needs user-specific secrets (API keys, tokens, account emails/domains — e.g. Jira), read `credentials.md` and set up the credential manifest + build-time values.
 6. If the task cannot be made into a reliable skill, write the terminal signal with `skill_unbuildable` as described in `04_phase_d_packaging.md`.
 
 ## Success Criteria / Gating
