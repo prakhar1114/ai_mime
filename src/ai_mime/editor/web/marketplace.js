@@ -100,7 +100,7 @@
     render();
     const updatedRow = rowForItem(itemId);
     const updatedMessage = updatedRow ? updatedRow.querySelector("[data-message]") : message;
-    if (updatedMessage) updatedMessage.textContent = "Downloading and validating workflow...";
+    if (updatedMessage) updatedMessage.textContent = "Downloading and validating skill...";
     try {
       await request("/api/marketplace/install", {
         method: "POST",
