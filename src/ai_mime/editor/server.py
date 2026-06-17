@@ -647,6 +647,11 @@ def _install_import_stage(
                     "Missing required credentials: " + ", ".join(sorted(missing))
                 )
 
+        # Build the skill's .venv from its requirements.txt (no-op when absent).
+        # A failure here is fatal: the except below rolls back the workflow dir.
+        if installed_skill_dir is not None:
+            _setup_skill_venv(workflow_dir, installed_skill_dir)
+
         # Write the machine-local .env so the installed skill is runnable
         # directly from Claude Code/Codex on this machine, and (if enabled)
         # expose it to Claude Code / Codex via a symlink.
@@ -933,7 +938,7 @@ def _tail_process_output(value: str | None) -> str:
     return value[-_MARKETPLACE_VENV_LOG_TAIL_CHARS:]
 
 
-def _run_marketplace_venv_command(cmd: list[str], *, cwd: Path, env: dict[str, str], label: str) -> None:
+def _run_venv_command(cmd: list[str], *, cwd: Path, env: dict[str, str], label: str) -> None:
     try:
         proc = subprocess.run(
             cmd,
@@ -947,22 +952,22 @@ def _run_marketplace_venv_command(cmd: list[str], *, cwd: Path, env: dict[str, s
         )
     except subprocess.TimeoutExpired as e:
         output = _tail_process_output(e.stdout if isinstance(e.stdout, str) else "")
-        detail = f"Marketplace dependency setup timed out during {label}."
+        detail = f"Skill dependency setup timed out during {label}."
         if output:
             detail += f"\n\n{output}"
         raise ValueError(detail) from e
     except Exception as e:
-        raise ValueError(f"Marketplace dependency setup failed to start during {label}: {e}") from e
+        raise ValueError(f"Skill dependency setup failed to start during {label}: {e}") from e
 
     if proc.returncode != 0:
         output = _tail_process_output(proc.stdout)
-        detail = f"Marketplace dependency setup failed during {label} with exit code {proc.returncode}."
+        detail = f"Skill dependency setup failed during {label} with exit code {proc.returncode}."
         if output:
             detail += f"\n\n{output}"
         raise ValueError(detail)
 
 
-def _setup_marketplace_skill_venv(workflow_dir: Path, skill_dir: Path) -> None:
+def _setup_skill_venv(workflow_dir: Path, skill_dir: Path) -> None:
     requirements = skill_dir / "requirements.txt"
     if not requirements.is_file():
         return
@@ -975,16 +980,16 @@ def _setup_marketplace_skill_venv(workflow_dir: Path, skill_dir: Path) -> None:
     uv_path = runtime_env.get("AI_MIME_UV_PATH")
     python_path = runtime_env.get("AI_MIME_PYTHON_PATH")
     if not uv_path or not python_path:
-        raise ValueError("Marketplace dependency setup requires AI_MIME_UV_PATH and AI_MIME_PYTHON_PATH")
+        raise ValueError("Skill dependency setup requires AI_MIME_UV_PATH and AI_MIME_PYTHON_PATH")
     env = {**os.environ, **runtime_env}
 
-    _run_marketplace_venv_command(
+    _run_venv_command(
         [uv_path, "venv", ".venv", "--python", python_path],
         cwd=skill_dir,
         env=env,
         label="virtualenv creation",
     )
-    _run_marketplace_venv_command(
+    _run_venv_command(
         [uv_path, "pip", "install", "-r", "requirements.txt", "--python", ".venv/bin/python"],
         cwd=skill_dir,
         env=env,
@@ -993,7 +998,7 @@ def _setup_marketplace_skill_venv(workflow_dir: Path, skill_dir: Path) -> None:
 
     venv_python = skill_dir / ".venv" / "bin" / "python"
     if not venv_python.is_file() or not os.access(venv_python, os.X_OK):
-        raise ValueError("Marketplace dependency setup did not create an executable .venv/bin/python")
+        raise ValueError("Skill dependency setup did not create an executable .venv/bin/python")
 
 
 def _snapshot_asset_files(assets_dir: Path) -> dict[str, tuple[int, int]]:
@@ -1951,8 +1956,11 @@ def create_app(
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Failed to load marketplace manifest: {e}")
 
-    @app.post("/api/marketplace/install")
-    def api_marketplace_install(payload: dict[str, Any] = Body(...)):
+    @app.post("/api/marketplace/stage")
+    def api_marketplace_stage(payload: dict[str, Any] = Body(...)):
+        # Stage a marketplace item the same way an uploaded .zip is staged, so it
+        # flows through the shared /api/import/install path (credentials + .venv +
+        # .env). Returns a staging_id + preview (incl. credentials_fields).
         item_id = payload.get("item_id")
         if not isinstance(item_id, str) or not item_id.strip():
             raise HTTPException(status_code=400, detail="item_id must be a non-empty string")
@@ -1961,28 +1969,18 @@ def create_app(
             item = next((row for row in manifest["items"] if row["id"] == item_id.strip()), None)
             if item is None:
                 raise HTTPException(status_code=404, detail="Marketplace item not found")
+            staging_id = uuid.uuid4().hex
             stage_info = _create_marketplace_import_stage(item)
-            try:
-                result = _install_import_stage(stage_info, task_runner.workflows_root)
-                workflow_dir = Path(str(result.get("workflow_dir") or ""))
-                skill_dir = _find_workflow_skill_dir(workflow_dir)
-                if skill_dir is None:
-                    raise ValueError("Installed marketplace workflow does not contain a valid skill package")
-                try:
-                    _setup_marketplace_skill_venv(workflow_dir, skill_dir)
-                except Exception:
-                    if workflow_dir.exists():
-                        shutil.rmtree(workflow_dir, ignore_errors=True)
-                    raise
-                return result
-            finally:
-                shutil.rmtree(Path(str(stage_info.get("stage_dir") or "")), ignore_errors=True)
+            preview = {k: v for k, v in stage_info.items() if k != "stage_dir"}
+            preview["staging_id"] = staging_id
+            import_staging[staging_id] = {**stage_info, "staging_id": staging_id}
+            return preview
         except HTTPException:
             raise
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to install marketplace item: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to stage marketplace item: {e}")
 
     @app.post("/api/app/quit")
     def api_quit_app():

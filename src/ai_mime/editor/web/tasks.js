@@ -4,8 +4,7 @@
     providerBtn: document.getElementById("providerBtn"),
     startRecordingBtn: document.getElementById("startRecordingBtn"),
     directBuildBtn: document.getElementById("directBuildBtn"),
-    uploadSkillBtn: document.getElementById("uploadSkillBtn"),
-    importZipBtn: document.getElementById("importZipBtn"),
+    importSkillBtn: document.getElementById("importSkillBtn"),
     exploreMarketplaceBtn: document.getElementById("exploreMarketplaceBtn"),
     agentModeBtn: document.getElementById("agentModeBtn"),
     openWorkflowsBtn: document.getElementById("openWorkflowsBtn"),
@@ -417,6 +416,42 @@
       });
   }
 
+  function openImportSkillChooser() {
+    const existing = document.querySelector(".import-chooser-modal");
+    if (existing) existing.remove();
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay import-chooser-modal";
+    overlay.innerHTML = `
+      <div class="modal-card" role="dialog" aria-modal="true" aria-label="Import skill">
+        <div class="modal-header">
+          <div class="modal-title">Import Skill</div>
+          <div class="modal-desc">Import a skill from a .zip file or a skill/workflow folder.</div>
+        </div>
+        <div class="modal-actions row">
+          <button class="modal-btn primary" id="importChooseZipBtn">Choose .zip…</button>
+          <button class="modal-btn primary" id="importChooseFolderBtn">Choose folder…</button>
+        </div>
+        <div class="modal-actions row">
+          <button class="modal-btn secondary" id="cancelImportChooserBtn">Cancel</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) close();
+    });
+    overlay.querySelector("#cancelImportChooserBtn").addEventListener("click", close);
+    overlay.querySelector("#importChooseZipBtn").addEventListener("click", () => {
+      close();
+      openUploadSkillPicker(true);
+    });
+    overlay.querySelector("#importChooseFolderBtn").addEventListener("click", () => {
+      close();
+      openUploadSkillPicker(false);
+    });
+  }
+
   function openUploadSkillPicker(zip = false) {
     const input = document.createElement("input");
     input.type = "file";
@@ -597,12 +632,11 @@
 
   el.providerBtn.addEventListener("click", openProviderModal);
   el.directBuildBtn.addEventListener("click", openDirectBuildModal);
-  el.uploadSkillBtn.addEventListener("click", () => openUploadSkillPicker(false));
-  if (el.importZipBtn) el.importZipBtn.addEventListener("click", () => openUploadSkillPicker(true));
+  if (el.importSkillBtn) el.importSkillBtn.addEventListener("click", openImportSkillChooser);
   el.exploreMarketplaceBtn.addEventListener("click", () => {
     window.location.href = "/marketplace";
   });
-  el.agentModeBtn.addEventListener("click", () => {
+  if (el.agentModeBtn) el.agentModeBtn.addEventListener("click", () => {
     window.location.href = "/agent";
   });
   el.openWorkflowsBtn.addEventListener("click", async () => {

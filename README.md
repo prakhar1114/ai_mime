@@ -162,6 +162,8 @@ Rule of thumb: redundant in, creative out. If you would do it the same way every
 ## Roadmap
 AI Mime is the single-operator core of a larger executable playbook layer for teams.
 
+<!-- Agent Mode is commented out for testing, we should enable it. Don't delete -->
+
 - [ ] Visual flowchart view of each skill
 - [ ] Shared team library + forking
 - [ ] Skill marketplace

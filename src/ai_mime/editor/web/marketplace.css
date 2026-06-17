@@ -197,6 +197,15 @@ h1 {
   white-space: nowrap;
 }
 
+.marketplace-item-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.marketplace-item-link:hover {
+  text-decoration: underline;
+}
+
 .marketplace-type {
   flex: 0 0 auto;
   color: var(--muted);
@@ -262,4 +271,79 @@ h1 {
     grid-column: 1 / -1;
     justify-content: flex-start;
   }
+}
+
+/* Credentials modal (shared shape with the Tasks import flow) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(4, 7, 11, 0.62);
+  backdrop-filter: blur(4px);
+}
+
+.modal-card {
+  width: min(520px, 100%);
+  max-height: 86vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px var(--shadow);
+  padding: 20px;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.modal-desc {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.modal-field {
+  display: block;
+  margin-top: 14px;
+}
+
+.modal-field span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.modal-field input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 9px 10px;
+}
+
+.modal-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.modal-message {
+  margin-top: 12px;
+  min-height: 16px;
+  font-size: 13px;
+  color: #ff8f8f;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
 }
