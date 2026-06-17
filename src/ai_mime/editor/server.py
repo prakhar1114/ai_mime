@@ -1894,7 +1894,7 @@ def create_app(
             raise HTTPException(status_code=500, detail=f"Failed to export skill: {e}")
         return StreamingResponse(
             io.BytesIO(payload),
-            media_type="application/zip",
+            media_type="application/octet-stream",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
