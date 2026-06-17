@@ -25,6 +25,10 @@ You can refer to the complete example skill package reference at `instructions/e
        #!/usr/bin/env bash
        set -euo pipefail
        HERE="$(cd "$(dirname "$0")" && pwd)"
+       # ai-mime-env: load standalone env when not already provided by AI Mime
+       if [[ -z "${AI_MIME_PYTHON_PATH:-}" && -f "$HERE/.env" ]]; then
+         set -a; . "$HERE/.env"; set +a
+       fi
        INPUTS="${1:-$HERE/inputs/inputs.example.json}"
        PYTHON="${AI_MIME_PYTHON_PATH:?AI_MIME_PYTHON_PATH is required}"
        if [[ -x "$HERE/.venv/bin/python" ]]; then
@@ -40,7 +44,11 @@ You can refer to the complete example skill package reference at `instructions/e
 
 3. Free-form `references/`. Beyond `fallback_plan.md`, write whatever notes help a future runner — domain notes, per-subtask notes, selectors, payload shapes. You decide based on what was actually useful in Phase B. Don't force everything into one `learned_notes.md`.
 
+   If the skill drives native macOS apps via `$AI_MIME_UI_AGENT_CMD` (computer-use), add a `## Preconditions` line stating that the AI Mime app must be running — it hosts the computer-use server and holds the screen-recording/accessibility permissions — plus any "app X logged in" requirement. Browser-harness steps (`$AI_MIME_BROWSER_HARNESS_BIN`) do NOT need the app running.
+
 4. Do NOT copy `schema.json` or `optimized_plan.json` into the skill. They're builder-only artifacts. If the skill needs user secrets, ship `credentials.template.json` (placeholders only — see `credentials.md`) and keep real values out of the package.
+
+   Never author `.env` or `.credentials.runtime.json` by hand — AI Mime generates them after build for standalone runs.
 
    Reproducibility: any external tool / MCP server / API you relied on during the build must also be reachable when `run.sh` runs on the end user's machine. Browser-harness is available in the AI Mime workflow runtime as `$AI_MIME_BROWSER_HARNESS_BIN`; use `$AI_MIME_BROWSER_SKILL_PATH` for harness resource files. If Python packages are needed, list them in `requirements.txt`, create `.venv`, install them with `"$AI_MIME_UV_PATH"` during skill build, and document that `run.sh` will use the existing `.venv`. Do NOT assume the end user has anything pre-installed beyond `bash`, macOS system tools, `$AI_MIME_UV_PATH`, `$AI_MIME_BROWSER_HARNESS_BIN`, `$AI_MIME_PYTHON_PATH`, and an already-created `.venv` when needed.
 
