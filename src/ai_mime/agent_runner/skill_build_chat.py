@@ -14,7 +14,7 @@ from ai_mime.agent_runner.runner import (
     run_skill_e2e_test,
     validate_skill_package,
 )
-from ai_mime import credentials_store
+from ai_mime import app_data, credentials_store
 from ai_mime.debug_log import log as debug_log
 
 logger = logging.getLogger(__name__)
@@ -186,6 +186,14 @@ class WorkflowSkillBuildService(BaseAgentChatService):
                 _log(f"Merged build-time credentials into global store from {local_values}")
         except Exception as e:
             _log(f"Skipped credential auto-merge: {e}")
+
+        # Write the machine-local .env so the freshly built skill is runnable
+        # directly from Claude Code/Codex without a reinstall.
+        try:
+            app_data.write_skill_env_file(skill_dir)
+            _log(f"Wrote standalone .env for {skill_dir}")
+        except Exception as e:
+            _log(f"Skipped standalone .env write: {e}")
 
         self._terminal_status = "skill_ready"
         return {

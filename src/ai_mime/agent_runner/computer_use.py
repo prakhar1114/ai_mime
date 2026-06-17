@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from ai_mime.agent_runner.adapters.registry import get_agent_runtime
-from ai_mime.agent_runner.mcp import cua_mcp_servers
+from ai_mime.agent_runner.mcp import CUA_MCP_URL, cua_mcp_servers
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.debug_log import log as debug_log
 from ai_mime.user_config import load_user_config
@@ -251,6 +251,21 @@ def _load_schema_arg(raw: str | None) -> dict[str, Any] | None:
     return schema
 
 
+def _cua_server_reachable(timeout: float = 1.5) -> bool:
+    """True if the cua computer-use server is accepting connections."""
+    import socket
+    import urllib.parse
+
+    parsed = urllib.parse.urlparse(CUA_MCP_URL)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 80
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint. Narration streams to stderr; with --json, stdout is one JSON line.
 
@@ -273,6 +288,23 @@ def main(argv: list[str] | None = None) -> int:
     task = " ".join(args.task).strip()
     if not task:
         parser.error('a task is required, e.g. "open Safari"')
+
+    if not _cua_server_reachable():
+        msg = (
+            "AI Mime must be running — it hosts the computer-use server "
+            f"({CUA_MCP_URL}) and holds the macOS screen-recording/accessibility "
+            "permissions. Launch the AI Mime app, then re-run this skill."
+        )
+        if args.json:
+            print(
+                json.dumps(
+                    {"status": "failed", "summary": msg, "result_json": None, "logs": [], "error": msg}
+                ),
+                flush=True,
+            )
+        else:
+            print("STATUS: failed | ERROR:", msg, file=sys.stderr)
+        return 1
 
     result = run_computer_use_task(task, response_schema=_load_schema_arg(args.schema))
     if args.json:

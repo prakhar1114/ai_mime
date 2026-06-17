@@ -37,7 +37,7 @@ from ai_mime.agent_runner import (
     WorkspaceAgentChatService,
     validate_skill_package,
 )
-from ai_mime.app_data import is_frozen, workflow_runtime_env
+from ai_mime.app_data import is_frozen, workflow_runtime_env, write_skill_env_file
 from ai_mime import credentials_store
 from ai_mime.provider_settings import provider_settings_status, save_provider_settings
 
@@ -399,7 +399,11 @@ def _should_skip_import_rel(rel: Path, *, is_workflow: bool, inside_skill: bool,
     name = rel.name
     if name in _IMPORT_SKIP_FILES:
         return True
-    if name.startswith(".") and name not in {".env"}:
+    if name.startswith("."):
+        # Strip all dotfiles, including a generated ``.env`` /
+        # ``.credentials.runtime.json``. These are machine-local artifacts
+        # regenerated on install; keeping a foreign ``.env`` would let an
+        # imported skill inject env into ``run.sh`` via ``source``.
         return True
     suffix = rel.suffix.lower()
     if suffix in _IMPORT_SKIP_SUFFIXES:
@@ -632,6 +636,12 @@ def _install_import_stage(
                 raise ValueError(
                     "Missing required credentials: " + ", ".join(sorted(missing))
                 )
+
+        # Write the machine-local .env so the installed skill is runnable
+        # directly from Claude Code/Codex on this machine.
+        if installed_skill_dir is not None:
+            with contextlib.suppress(Exception):
+                write_skill_env_file(installed_skill_dir)
     except Exception:
         if workflow_dir.exists():
             shutil.rmtree(workflow_dir, ignore_errors=True)

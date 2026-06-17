@@ -156,6 +156,8 @@ fi
 # ---------------------------------------------------------------------------
 if $SKIP_NOTARIZE; then
   echo "==> Notarization skipped (--skip-notarize)."
+  echo "==> Cleaning up intermediate build artifacts …"
+  rm -rf "$APP_BUNDLE" "$REPO_ROOT/dist/ai_mime"
   echo "==> Done.  DMG at: $DMG_PATH"
   exit 0
 fi
@@ -182,5 +184,8 @@ xcrun notarytool submit "$DMG_PATH" \
 
 echo "==> Stapling notarization ticket …"
 xcrun stapler staple "$DMG_PATH"
+
+echo "==> Cleaning up intermediate build artifacts …"
+rm -rf "$APP_BUNDLE" "$REPO_ROOT/dist/ai_mime"
 
 echo "==> Done.  Notarized DMG at: $DMG_PATH"
