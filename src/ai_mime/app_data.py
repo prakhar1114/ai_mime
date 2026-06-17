@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from llm_resolver.config import DEFAULT_USER_CONFIG as _DEFAULT_USER_CONFIG
+from ai_mime.credentials_store import resolve_credentials_path
 
 _BROWSER_HARNESS_REL = "harness/browser-harness"
 _LLM_RESOLVER_REL = "packages/llm-resolver"
@@ -212,8 +213,17 @@ def get_python_path(workflow_dir: str | os.PathLike[str] | None = None) -> Path:
     return Path("python3")
 
 
-def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> dict[str, str]:
-    """Environment entries exported to generated workflow scripts."""
+def workflow_runtime_env(
+    workflow_dir: str | os.PathLike[str] | None = None,
+    *,
+    credentials_mode: str | None = None,
+) -> dict[str, str]:
+    """Environment entries exported to generated workflow scripts.
+
+    ``credentials_mode`` selects how ``AI_MIME_CREDENTIALS_PATH`` resolves:
+    ``"build"`` (build agent writes the values file), ``"run"`` (project from the
+    global store), or None (auto). See ``credentials_store.resolve_credentials_path``.
+    """
     python_path = str(get_python_path(workflow_dir))
     env = {
         "AI_MIME_UV_PATH": str(get_uv_path()),
@@ -228,6 +238,12 @@ def workflow_runtime_env(workflow_dir: str | os.PathLike[str] | None = None) -> 
         "AI_MIME_BROWSER_SKILL_NAME": os.environ.get("AI_MIME_BROWSER_SKILL_NAME") or "browser",
         "AI_MIME_BROWSER_SKILL_PATH": os.environ.get("AI_MIME_BROWSER_SKILL_PATH") or str(get_bundled_browser_harness_dir()),
     }
+    # Scoped credentials file for generated skill scripts. Only set when the
+    # target skill actually declares credentials.
+    creds_path = resolve_credentials_path(workflow_dir, credentials_mode)
+    if creds_path:
+        env["AI_MIME_CREDENTIALS_PATH"] = creds_path
+
     if is_frozen():
         # uv isolation (tool/cache dirs, no user config) and the sanitized PATH only
         # apply in the packaged app. In dev, APP_DATA_DIR is the repo root, so

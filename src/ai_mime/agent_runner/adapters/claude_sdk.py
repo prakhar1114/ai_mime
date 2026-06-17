@@ -37,6 +37,7 @@ from ai_mime.agent_runner.bash_safety import (
 )
 from ai_mime.agent_runner.models import AgentRunRequest, AgentRunResult
 from ai_mime.app_data import is_frozen, workflow_runtime_env
+from ai_mime.credentials_store import credentials_mode_for
 from ai_mime.debug_log import log as debug_log
 
 DEFAULT_ALLOWED_TOOLS = [
@@ -424,7 +425,12 @@ def _options_kwargs_for(
     # merges this over the inherited os.environ, so these win. This is what makes
     # the bash guard's `$AI_MIME_*` replacements actually resolve — for both
     # ClaudeAgentSdkAdapter.run and the interactive stream_chat paths.
-    kwargs["env"] = dict(workflow_runtime_env(request.workflow_dir))
+    kwargs["env"] = dict(
+        workflow_runtime_env(
+            request.workflow_dir,
+            credentials_mode=credentials_mode_for(request.mode),
+        )
+    )
 
     sandbox_hook = _build_filesystem_sandbox_hook(request)
     bash_guard_hook = _build_packaged_bash_guard_hook()

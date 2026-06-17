@@ -298,7 +298,7 @@ class ConversationOverlay:
     def update_permission(self, perm_req: dict) -> None:
         try:
             self._push_state({"permission_request": perm_req})
-            if self.is_minimized:
+            if perm_req and self.is_minimized:
                 self.maximize()
         except Exception:
             pass

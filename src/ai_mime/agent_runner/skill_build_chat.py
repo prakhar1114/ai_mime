@@ -9,11 +9,12 @@ from ai_mime.agent_runner.base_chat import BaseAgentChatService, AgentBusyError,
 from ai_mime.agent_runner.models import AgentRunRequest
 from ai_mime.agent_runner.runner import (
     BUILD_SIGNAL_FILENAME,
-    _skill_dir_for,
     build_agent_run_request,
+    resolve_skill_dir,
     run_skill_e2e_test,
     validate_skill_package,
 )
+from ai_mime import credentials_store
 from ai_mime.debug_log import log as debug_log
 
 logger = logging.getLogger(__name__)
@@ -145,7 +146,7 @@ class WorkflowSkillBuildService(BaseAgentChatService):
                 pass
             return {"event": "skill_check_failed", "error": f"Could not load schema/plan: {e}"}
 
-        skill_dir = _skill_dir_for(self.workflow_dir, schema)
+        skill_dir = resolve_skill_dir(self.workflow_dir, schema)
         try:
             validate_skill_package(skill_dir, schema, plan)
         except Exception as e:
@@ -175,6 +176,16 @@ class WorkflowSkillBuildService(BaseAgentChatService):
                 "logs": e2e.summary,
                 "skill_dir": str(skill_dir),
             }
+
+        # Auto-merge the developer's build-time credentials into the global store,
+        # scoped to the skill's manifest so other services are never touched.
+        try:
+            local_values = self.workflow_dir / "agent" / "credentials.local.json"
+            if credentials_store.has_manifest(skill_dir) and local_values.is_file():
+                credentials_store.merge_local_values_file(local_values, skill_dir)
+                _log(f"Merged build-time credentials into global store from {local_values}")
+        except Exception as e:
+            _log(f"Skipped credential auto-merge: {e}")
 
         self._terminal_status = "skill_ready"
         return {
@@ -209,7 +220,7 @@ class WorkflowSkillBuildService(BaseAgentChatService):
             schema = _read_json(schema_path) if schema_path.exists() else {}
         except Exception:
             schema = {}
-        return _skill_dir_for(self.workflow_dir, schema)
+        return resolve_skill_dir(self.workflow_dir, schema)
 
     @staticmethod
     def _has_runnable_skill(skill_dir: Path) -> bool:

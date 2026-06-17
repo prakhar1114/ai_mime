@@ -263,11 +263,15 @@ OVERLAY_HTML = """
   // Observe body changes
   resizeObserver.observe(document.body);
 
-  function sendAction(action) {
+  function sendAction(action, payload) {
+    const msg = { type: action };
+    if (payload) {
+      Object.assign(msg, payload);
+    }
     if (window.webkit && window.webkit.messageHandlers.overlay) {
-      window.webkit.messageHandlers.overlay.postMessage({ type: action });
+      window.webkit.messageHandlers.overlay.postMessage(msg);
     } else {
-      console.log('Action triggered:', action);
+      console.log('Action triggered:', action, payload);
     }
   }
 

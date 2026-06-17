@@ -42,6 +42,11 @@ If the first message does not clearly match healing, assume you are in **Mode A*
 - Use `$AI_MIME_BROWSER_HARNESS_BIN` instead of bare `browser-harness`.
 - The skill's `run.sh` will resolve and use the existing `.venv` if one exists.
 
+## Credentials
+- If the skill needs user secrets (API keys, tokens, account emails/domains), the app injects them at `$AI_MIME_CREDENTIALS_PATH` — a scoped, read-only JSON file keyed by service (e.g. `{"jira": {"email": ..., "api_token": ..., "domain": ...}}`). The skill declares what it needs in `credentials.template.json`.
+- `scripts/run.py` reads credentials only from `$AI_MIME_CREDENTIALS_PATH`. When healing, preserve this pattern: never hardcode a secret, never read the global store, and never write real values into any skill file (including `credentials.template.json`, which must keep `<FILL IN: ...>` placeholders).
+- A missing/empty value at `$AI_MIME_CREDENTIALS_PATH` (or a `KeyError`/auth failure tracing back to it) means the user hasn't entered their credentials — this is a **user-config issue, not a skill defect**. Ask the user to add the credentials rather than editing the script.
+
 ## Skill Directory Path
 - The skill lives in `skills/<skill_name>/` under the workflow directory. The exact absolute path is given to you in the prompt above — use it verbatim.
 - Any targeted edits allowed during triage must be made directly within this skill directory.
@@ -77,7 +82,7 @@ You enter here either because a `./run.sh` you launched in Mode A failed, or bec
 
 1. **Read the full package**: Now read the complete skill package before deciding what to do — `SKILL.md`, `run.sh`, `scripts/run.py`, `inputs/inputs.example.json`, `inputs/inputs.template.json`, every file under `references/`, and especially `references/fallback_plan.md`.
 2. **Triage before editing**: Classify the failure from the logs as one of:
-   - **environment / user-state** — closed tabs, missing windows, changed focus, logged-out browser state, interrupted app state. This is recovery work, NOT skill repair.
+   - **environment / user-state** — closed tabs, missing windows, changed focus, logged-out browser state, interrupted app state, or missing/invalid credentials at `$AI_MIME_CREDENTIALS_PATH`. This is recovery / user-config work, NOT skill repair.
    - **input** — bad, missing, or malformed inputs. Fix the inputs and rerun.
    - **transient UI** — a one-off disruption. Restore state and retry.
    - **skill defect** — the package itself is stale, incomplete, or wrong (only after repeated, deterministic evidence).
