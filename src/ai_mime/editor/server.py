@@ -39,7 +39,17 @@ from ai_mime.agent_runner import (
 )
 from ai_mime.app_data import is_frozen, workflow_runtime_env, write_skill_env_file
 from ai_mime import credentials_store
-from ai_mime.provider_settings import provider_settings_status, save_provider_settings
+from ai_mime.provider_settings import (
+    provider_settings_status,
+    read_autoinstall_skills,
+    save_provider_settings,
+    write_autoinstall_skills,
+)
+from ai_mime.skill_links import (
+    link_skill,
+    sync_all_skill_links,
+    unlink_skill_for_workflow,
+)
 
 EDITOR_SERVER_PORT = 58838
 DEFAULT_MARKETPLACE_MANIFEST_URL = "https://market.aimime.cc/manifest.json"
@@ -638,10 +648,14 @@ def _install_import_stage(
                 )
 
         # Write the machine-local .env so the installed skill is runnable
-        # directly from Claude Code/Codex on this machine.
+        # directly from Claude Code/Codex on this machine, and (if enabled)
+        # expose it to Claude Code / Codex via a symlink.
         if installed_skill_dir is not None:
             with contextlib.suppress(Exception):
                 write_skill_env_file(installed_skill_dir)
+            if read_autoinstall_skills():
+                with contextlib.suppress(Exception):
+                    link_skill(installed_skill_dir)
     except Exception:
         if workflow_dir.exists():
             shutil.rmtree(workflow_dir, ignore_errors=True)
@@ -1186,6 +1200,11 @@ class TaskRunner:
             self._assert_under_root(recording_dir, self.recordings_root)
             existed = False
             self._states[task_id] = {"status": "deleting", "phase": "deleting", "error": None}
+            # Remove any Claude Code / Codex symlinks pointing into this
+            # workflow before the directory is deleted (independent of the
+            # auto-install toggle, so links never dangle).
+            with contextlib.suppress(Exception):
+                unlink_skill_for_workflow(workflow_dir)
             for path in (workflow_dir, recording_dir):
                 if path.exists():
                     existed = True
@@ -1667,6 +1686,21 @@ def create_app(
     @app.get("/api/overlay/toggle")
     def api_overlay_state():
         return {"enabled": OVERLAY_ENABLED}
+
+    @app.get("/api/settings/autoinstall")
+    def api_autoinstall_settings():
+        return {"enabled": read_autoinstall_skills()}
+
+    @app.post("/api/settings/autoinstall")
+    def api_update_autoinstall_settings(payload: dict[str, Any] = Body(...)):
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail="enabled must be a boolean")
+        write_autoinstall_skills(enabled)
+        # Bulk-sync so the toggle takes effect immediately: link every skill on,
+        # remove every AI-Mime link off.
+        counts = sync_all_skill_links(enabled)
+        return {"enabled": enabled, **counts}
 
     @app.get("/api/settings/provider")
     def api_provider_settings():

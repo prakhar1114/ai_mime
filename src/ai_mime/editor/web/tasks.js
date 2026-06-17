@@ -9,6 +9,7 @@
     exploreMarketplaceBtn: document.getElementById("exploreMarketplaceBtn"),
     agentModeBtn: document.getElementById("agentModeBtn"),
     openWorkflowsBtn: document.getElementById("openWorkflowsBtn"),
+    autoinstallBtn: document.getElementById("autoinstallBtn"),
     quitAppBtn: document.getElementById("quitAppBtn"),
     syncState: document.getElementById("syncState"),
   };
@@ -16,6 +17,7 @@
   let tasks = [];
   let appStatus = {};
   let providerSettings = null;
+  let autoinstallEnabled = null;
   let busy = false;
   let openMenuTaskId = null;
 
@@ -156,6 +158,49 @@
       providerSettings = null;
     }
     renderProviderButton();
+  }
+
+  function renderAutoinstallButton() {
+    if (!el.autoinstallBtn) return;
+    if (autoinstallEnabled === null) {
+      el.autoinstallBtn.textContent = "Auto-install skills";
+      el.autoinstallBtn.classList.remove("primary");
+      return;
+    }
+    el.autoinstallBtn.textContent = autoinstallEnabled
+      ? "Auto-install skills: On"
+      : "Auto-install skills: Off";
+    el.autoinstallBtn.classList.toggle("primary", autoinstallEnabled);
+  }
+
+  async function loadAutoinstallSettings() {
+    try {
+      const data = await request("/api/settings/autoinstall");
+      autoinstallEnabled = !!(data && data.enabled);
+    } catch {
+      autoinstallEnabled = null;
+    }
+    renderAutoinstallButton();
+  }
+
+  async function toggleAutoinstall() {
+    if (autoinstallEnabled === null) await loadAutoinstallSettings();
+    const next = !autoinstallEnabled;
+    el.autoinstallBtn.disabled = true;
+    el.autoinstallBtn.textContent = next ? "Linking skills..." : "Removing links...";
+    try {
+      const data = await request("/api/settings/autoinstall", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      autoinstallEnabled = !!(data && data.enabled);
+    } catch (e) {
+      alert(e.message || String(e));
+    } finally {
+      el.autoinstallBtn.disabled = false;
+      renderAutoinstallButton();
+    }
   }
 
   async function loadTasks() {
@@ -567,6 +612,7 @@
       alert(e.message || String(e));
     }
   });
+  if (el.autoinstallBtn) el.autoinstallBtn.addEventListener("click", toggleAutoinstall);
   el.quitAppBtn.addEventListener("click", async () => {
     if (!confirm("Are you sure you want to quit the application and close all processes?")) return;
     try {
@@ -593,6 +639,7 @@
     }
   });
   loadProviderSettings();
+  loadAutoinstallSettings();
   loadTasks();
   window.setInterval(loadTasks, 1600);
 })();

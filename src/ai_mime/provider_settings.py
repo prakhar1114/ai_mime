@@ -78,6 +78,24 @@ def write_bash_requires_approval(value: bool, config_path: Path | None = None) -
     return bool(value)
 
 
+def read_autoinstall_skills(config_path: Path | None = None) -> bool:
+    """Whether built/installed skills are auto-linked into Claude Code / Codex
+    (persisted in user_config.yml). Defaults to True."""
+    value = _read_user_config(config_path).get("autoinstall_skills")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "off")
+    return True
+
+
+def write_autoinstall_skills(value: bool, config_path: Path | None = None) -> bool:
+    data = _read_user_config(config_path)
+    data["autoinstall_skills"] = bool(value)
+    _write_user_config(data, config_path)
+    return bool(value)
+
+
 def _read_dotenv_value(key: str, env_path: Path | None = None) -> str | None:
     path = env_path or get_env_path()
     try:
