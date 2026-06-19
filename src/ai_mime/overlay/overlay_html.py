@@ -8,8 +8,8 @@ OVERLAY_HTML = """
 <meta charset="utf-8">
 <style>
   :root {
-    --bg-color: rgba(30, 30, 30, 0.4);
-    --border-color: rgba(255, 255, 255, 0.1);
+    --bg-color: rgba(30, 30, 30, 0.85);
+    --border-color: rgba(255, 255, 255, 0.2);
     --text-primary: #ffffff;
     --text-secondary: rgba(255, 255, 255, 0.6);
     --btn-bg: rgba(255, 255, 255, 0.1);
@@ -20,8 +20,8 @@ OVERLAY_HTML = """
 
   @media (prefers-color-scheme: light) {
     :root {
-      --bg-color: rgba(255, 255, 255, 0.4);
-      --border-color: rgba(0, 0, 0, 0.1);
+      --bg-color: rgba(255, 255, 255, 0.85);
+      --border-color: rgba(0, 0, 0, 0.2);
       --text-primary: #000000;
       --text-secondary: rgba(0, 0, 0, 0.6);
       --btn-bg: rgba(0, 0, 0, 0.05);
@@ -50,8 +50,9 @@ OVERLAY_HTML = """
     background-color: var(--bg-color);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
-    border: 1px solid var(--border-color);
+    border: none;
     border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     padding: 12px;
     display: flex;
     flex-direction: column;
@@ -332,6 +333,7 @@ OVERLAY_HTML = """
         // Keep the background and glassmorphism intact
         container.style.border = '1px solid var(--border-color)';
         container.style.backgroundColor = 'var(--bg-color)';
+        container.style.boxShadow = 'none';
         container.style.backdropFilter = 'blur(20px)';
         
         // Notify small resize for minimized pill
@@ -340,7 +342,7 @@ OVERLAY_HTML = """
         }
       } else if (state.mode === 'maximized') {
         isMinimized = false;
-        document.body.style.padding = '10px';
+        document.body.style.padding = '16px';
         document.getElementById('content-area').style.display = 'flex';
         document.getElementById('actions-area').style.display = 'flex';
         document.getElementById('title-text').style.display = 'block';
@@ -355,8 +357,9 @@ OVERLAY_HTML = """
         container.style.display = 'flex';
         container.style.alignItems = 'stretch';
         container.style.justifyContent = 'flex-start';
-        container.style.border = '1px solid var(--border-color)';
+        container.style.border = 'none';
         container.style.backgroundColor = 'var(--bg-color)';
+        container.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
         container.style.backdropFilter = 'blur(20px)';
         
         lastHeight = 0; // force resize event

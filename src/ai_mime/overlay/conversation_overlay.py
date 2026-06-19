@@ -110,6 +110,7 @@ class ConversationOverlay:
             self._apply_expanded_size_limits()
             self._panel.setOpaque_(False)
             self._panel.setBackgroundColor_(AppKit.NSColor.clearColor())
+            self._panel.setHasShadow_(False)
         except Exception:
             pass
 
