@@ -21,6 +21,7 @@ from ai_mime.debug_log import log as debug_log
 _SKILL_TARGETS: tuple[tuple[Path, Path], ...] = (
     (Path.home() / ".claude", Path.home() / ".claude" / "skills"),
     (Path.home() / ".codex", Path.home() / ".codex" / "skills"),
+    (Path.home() / ".gemini", Path.home() / ".gemini" / "config" / "skills"),
 )
 
 _FRONTMATTER_NAME_RE = re.compile(r"^\s*name\s*:\s*(.+?)\s*$", re.MULTILINE)
