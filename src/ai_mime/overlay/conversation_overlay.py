@@ -416,127 +416,114 @@ sys.exit(1)
         print(f"Error focusing browser tab: {e}")
 
 
-class AutomationIndicatorView(AppKit.NSView):  # type: ignore[misc]
-    def initWithFrame_(self, frame):
-        self = objc.super(AutomationIndicatorView, self).initWithFrame_(frame)
-        if self:
-            self._owner = None
-            self._state = "running"  # "running", "success", "failed"
-
-            # Large Spinning Progress Indicator (64x64, centered in 72x72)
-            self._spinner = AppKit.NSProgressIndicator.alloc().initWithFrame_(
-                AppKit.NSMakeRect(4.0, 4.0, 64.0, 64.0)
-            )
-            self._spinner.setStyle_(AppKit.NSProgressIndicatorStyleSpinning)
-            try:
-                self._spinner.setControlSize_(AppKit.NSControlSizeLarge)
-            except Exception:
-                pass
-            self._spinner.startAnimation_(None)
-            self.addSubview_(self._spinner)
-        return self
-
-    def setStatus_(self, status: str):
-        self._state = status
-        if status in ("success", "failed"):
-            self._spinner.stopAnimation_(None)
-            self._spinner.setHidden_(True)
-        self.setNeedsDisplay_(True)
-
-    def drawRect_(self, rect):
-        AppKit.NSColor.clearColor().set()
-        AppKit.NSRectFill(self.bounds())
-
-        if self._state == "success":
-            # Draw a green checkmark/tick centered in 72x72
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(0.15, 0.8, 0.25, 1.0).set()
-            path = AppKit.NSBezierPath.bezierPath()
-            path.setLineWidth_(6.0)
-            path.setLineCapStyle_(AppKit.NSLineCapStyleRound)
-            path.moveToPoint_(AppKit.NSMakePoint(18.0, 32.0))
-            path.lineToPoint_(AppKit.NSMakePoint(30.0, 20.0))
-            path.lineToPoint_(AppKit.NSMakePoint(54.0, 52.0))
-            path.stroke()
-        elif self._state == "failed":
-            # Draw a red cross/error indicator centered in 72x72
-            AppKit.NSColor.colorWithRed_green_blue_alpha_(0.9, 0.25, 0.2, 1.0).set()
-            path = AppKit.NSBezierPath.bezierPath()
-            path.setLineWidth_(6.0)
-            path.setLineCapStyle_(AppKit.NSLineCapStyleRound)
-            # Line 1
-            path.moveToPoint_(AppKit.NSMakePoint(20.0, 20.0))
-            path.lineToPoint_(AppKit.NSMakePoint(52.0, 52.0))
-            # Line 2
-            path.moveToPoint_(AppKit.NSMakePoint(52.0, 20.0))
-            path.lineToPoint_(AppKit.NSMakePoint(20.0, 52.0))
-            path.stroke()
-
-    def mouseDown_(self, event):
-        try:
-            if self._owner:
-                self._owner.on_clicked()
-        except Exception:
-            pass
-        objc.super(AutomationIndicatorView, self).mouseDown_(event)
-
-
-class AutomationOverlayActionHandler(AppKit.NSObject):  # type: ignore[misc]
+class AutomationOverlayTimerHandler(AppKit.NSObject):  # type: ignore[misc]
     def autoClose_(self, timer):  # noqa: N802 - ObjC selector
         try:
             self._overlay.close()  # type: ignore[attr-defined]
         except Exception:
             pass
 
+class AutomationOverlayMessageHandler(AppKit.NSObject):  # type: ignore[misc]
+    def setOverlay_(self, overlay):
+        self._overlay = overlay
+
+    def userContentController_didReceiveScriptMessage_(self, controller, message):
+        try:
+            body = message.body()
+            if hasattr(body, "get"):
+                msg_type = body.get("type")
+                if msg_type == "hide":
+                    self._overlay.hide()
+                elif msg_type == "minimize":
+                    self._overlay.minimize()
+                elif msg_type == "maximize":
+                    self._overlay.maximize()
+                elif msg_type == "interrupt":
+                    self._overlay._handle_interrupt()
+                elif msg_type == "show_chat":
+                    self._overlay._handle_show_chat()
+                elif msg_type == "resize":
+                    height = body.get("height")
+                    if isinstance(height, (int, float)):
+                        self._overlay._handle_resize(height)
+        except Exception as e:
+            print(f"Error handling JS message: {e}")
 
 class AutomationOverlay:
-    """
-    Compact, non-resizable circular HUD indicating automation/replay execution is running.
-    Clicking it opens/focuses the replay task page in the browser.
-    """
-
-    def __init__(self, port: int, task_id: str) -> None:
+    def __init__(self, port: int, task_id: str, app_command_queue: Any = None):
         self.port = port
         self.task_id = task_id
-        self.is_minimized = True  # Mock minimized so background view acts as click trigger
+        self.is_minimized = False
+        self._last_state: dict[str, Any] = {"status": "running", "mode": "maximized"}
+        self._timer_handler = AutomationOverlayTimerHandler.alloc().init()
+        self._timer_handler._overlay = self
+
+        # We need to create the panel on the main thread, or we can just initialize it here
+        # since it's already instantiated in the main thread (poll_dashboard_command_queue is on main thread)
+        self.initUI()
+
+    def initUI(self) -> None:
+        try:
+            from .automation_overlay_html import AUTOMATION_OVERLAY_HTML
+        except ImportError:
+            AUTOMATION_OVERLAY_HTML = "<html><body>Error loading HTML</body></html>"
 
         sx, sy, sw, sh = active_screen_visible_frame()
-        self.width = 72.0
-        self.height = 72.0
-        x = float(sx + sw - self.width)
-        y = float(sy + (sh - self.height) / 2.0)
-        rect = AppKit.NSMakeRect(x, y, self.width, self.height)
+        self.width = 320.0
+        self.height = 160.0
+        self.base_x = float(sx + sw - self.width - 20.0)
+        self.base_y = float(sy + (sh - self.height) / 2.0)
+        rect = AppKit.NSMakeRect(self.base_x, self.base_y, self.width, self.height)
 
         self._panel = make_overlay_panel(rect, nonactivating=True)
         style = AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel
         self._panel.setStyleMask_(style)
-
-        # Content View
-        self._content = InteractiveHUDView.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 0, self.width, self.height)
+        self._panel.setLevel_(int(getattr(AppKit, "NSMainMenuWindowLevel", 24)) + 2)
+        self._panel.setCollectionBehavior_(
+            int(getattr(AppKit, "NSWindowCollectionBehaviorCanJoinAllSpaces", 1)) |
+            int(getattr(AppKit, "NSWindowCollectionBehaviorFullScreenAuxiliary", 256))
         )
-        self._content._owner = self
-        self._panel.setContentView_(self._content)
+        self._panel.setOpaque_(False)
+        self._panel.setBackgroundColor_(AppKit.NSColor.clearColor())
+        self._panel.setHasShadow_(False)
+        self._panel.setMovableByWindowBackground_(True)
 
-        # Indicator View
-        self._indicator = AutomationIndicatorView.alloc().initWithFrame_(
-            AppKit.NSMakeRect(0, 0, self.width, self.height)
+        config = WebKit.WKWebViewConfiguration.alloc().init()
+        config.preferences().setValue_forKey_(True, "developerExtrasEnabled")
+
+        user_content = WebKit.WKUserContentController.alloc().init()
+        self._message_handler = AutomationOverlayMessageHandler.alloc().init()
+        self._message_handler.setOverlay_(self)
+        user_content.addScriptMessageHandler_name_(self._message_handler, "overlay")
+        config.setUserContentController_(user_content)
+
+        self._webview = WebKit.WKWebView.alloc().initWithFrame_configuration_(
+            self._panel.contentView().bounds(), config
         )
-        self._indicator._owner = self
-        self._content.addSubview_(self._indicator)
+        self._webview.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+        self._webview.setValue_forKey_(False, "drawsBackground")
+        self._panel.contentView().addSubview_(self._webview)
 
-        self._action_handler = AutomationOverlayActionHandler.alloc().init()
-        self._action_handler._overlay = self
+        state_json = json.dumps(json.dumps(self._last_state))
+        injected_html = AUTOMATION_OVERLAY_HTML.replace("</body>", f"<script>updateOverlayState({state_json});</script></body>")
 
+        self._webview.loadHTMLString_baseURL_(injected_html, None)
         self.show()
+
+    def _push_state(self, state_dict: dict) -> None:
+        try:
+            self._last_state.update(state_dict)
+            state_json = json.dumps(self._last_state)
+            script = f"updateOverlayState({json.dumps(state_json)});"
+            self._webview.evaluateJavaScript_completionHandler_(script, None)
+        except Exception as e:
+            print(f"Error evaluating JS: {e}")
 
     def show(self) -> None:
         try:
             self._panel.orderFrontRegardless()
         except Exception:
-            try:
-                self._panel.makeKeyAndOrderFront_(None)
-            except Exception:
-                pass
+            pass
 
     def hide(self) -> None:
         try:
@@ -550,25 +537,117 @@ class AutomationOverlay:
         except Exception:
             pass
 
+    def minimize(self) -> None:
+        if self.is_minimized:
+            return
+        self.is_minimized = True
+        self._push_state({"mode": "minimized"})
+
+        current_frame = self._panel.frame()
+        self._expanded_size = current_frame.size
+
+        sx, sy, sw, sh = active_screen_visible_frame()
+        mini_w, mini_h = 32.0, 32.0
+        x = float(sx + sw - mini_w - 20.0)
+        y = float(sy + (sh - mini_h) / 2.0)
+
+        self._panel.setFrame_display_animate_(AppKit.NSMakeRect(x, y, mini_w, mini_h), True, True)
+
+    def maximize(self) -> None:
+        if not self.is_minimized:
+            return
+        self.is_minimized = False
+        self._push_state({"mode": "maximized"})
+
+        sx, sy, sw, sh = active_screen_visible_frame()
+        h = float(self._expanded_size.height if hasattr(self, "_expanded_size") else self.height)
+        w = float(self._expanded_size.width if hasattr(self, "_expanded_size") else self.width)
+
+        x = float(sx + sw - w - 20.0)
+        y = float(sy + (sh - h) / 2.0)
+
+        self._panel.setFrame_display_animate_(AppKit.NSMakeRect(x, y, w, h), True, True)
+
     def update_status(self, status: str) -> None:
         try:
-            self._indicator.setStatus_(status)
+            self._push_state({"status": status})
             if status in ("success", "failed"):
                 AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                    2.0,
-                    self._action_handler,
+                    3.0,
+                    self._timer_handler,
                     "autoClose:",
                     None,
                     False,
                 )
+                if status == "failed":
+                    self._handle_show_chat()
         except Exception as e:
             print(f"Error updating automation status: {e}")
 
-    def on_clicked(self) -> None:
+    def update_text(self, text: str) -> None:
+        try:
+            cleaned = text.strip() if text else ""
+            if not cleaned:
+                return
+
+            try:
+                data = json.loads(cleaned)
+                if isinstance(data, dict) and "message" in data:
+                    cleaned = str(data["message"]).strip()
+            except Exception:
+                pass
+
+            if cleaned:
+                self._push_state({"message": cleaned})
+        except Exception:
+            pass
+
+    def _handle_interrupt(self) -> None:
+        try:
+            self._push_state({"message": "Stopping automation...", "stop_disabled": True})
+        except Exception:
+            pass
+
+        def _post_kill():
+            try:
+                path = f"/api/tasks/{urllib.parse.quote(self.task_id)}/skill/kill"
+                url = f"http://127.0.0.1:{self.port}{path}"
+                req = urllib.request.Request(url, method="POST")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    resp.read()
+            except Exception as e:
+                print(f"Error killing automation: {e}")
+            try:
+                path_suffix = f"/replay/{urllib.parse.quote(self.task_id)}"
+                focus_browser_tab(self.port, path_suffix)
+            except Exception as e:
+                pass
+            try:
+                self.close()
+            except Exception:
+                pass
+
+        threading.Thread(target=_post_kill, daemon=True).start()
+
+    def _handle_show_chat(self) -> None:
         try:
             path_suffix = f"/replay/{urllib.parse.quote(self.task_id)}"
             focus_browser_tab(self.port, path_suffix)
-            # Dismiss overlay once clicked
             self.close()
         except Exception as e:
-            print(f"Error in automation click handler: {e}")
+            print(f"Error focusing chat in browser: {e}")
+
+    def _handle_resize(self, height: float) -> None:
+        if self.is_minimized:
+            return
+        try:
+            frame = self._panel.frame()
+            current_w = frame.size.width
+            current_h = frame.size.height
+            new_h = max(32.0, min(height, 400.0))
+            if abs(current_h - new_h) > 1.0:
+                new_y = frame.origin.y + (current_h - new_h) / 2.0
+                new_rect = AppKit.NSMakeRect(frame.origin.x, new_y, current_w, new_h)
+                self._panel.setFrame_display_animate_(new_rect, True, False)
+        except Exception as e:
+            print(f"Error resizing AutomationOverlay: {e}")

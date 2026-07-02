@@ -205,7 +205,7 @@ OVERLAY_HTML = """
     <div class="dot" id="status-dot"></div>
     <div class="title" id="title-text">AI Agent</div>
     <div class="mac-controls" id="window-controls">
-      <div class="mac-btn mac-minimize" onclick="sendAction('hide')" title="Minimize">
+      <div class="mac-btn mac-minimize" onclick="sendAction('minimize')" title="Minimize">
         <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"></line></svg>
       </div>
       <div class="mac-btn mac-close" onclick="sendAction('close')" title="Close">
