@@ -245,8 +245,7 @@ _REQUIRED_IMPORT_SKILL_FILES = (
     "run.sh",
     "scripts/run.py",
     "inputs/inputs.example.json",
-    "inputs/inputs.template.json",
-    "references/fallback_plan.md",
+    "inputs/inputs.template.json"
 )
 _IMPORT_SKIP_DIRS = {
     "__pycache__",
@@ -2030,14 +2029,14 @@ def create_app(
                 skill_dir=skill_dir
             )
             _remove_generated_import_artifacts(clean_root)
-            
+
             # Clean virtual environments from staging
             for stale_venv in list(clean_root.rglob(".venv")):
                 if stale_venv.is_dir():
                     shutil.rmtree(stale_venv, ignore_errors=True)
 
             staging_id = uuid.uuid4().hex
-            
+
             # Extract credentials fields
             clean_skill_dir = clean_root / "skills" / old_slug
             credentials_fields = credentials_store.install_fields(clean_skill_dir)
@@ -2085,8 +2084,8 @@ def create_app(
         new_snake = new_slug.replace("-", "_")
 
         # Validate that the names do not match (dashes, snake cases, exact match)
-        if (new_name.lower() == old_name.lower() or 
-            new_slug == old_slug or 
+        if (new_name.lower() == old_name.lower() or
+            new_slug == old_slug or
             new_snake == old_snake):
             raise HTTPException(status_code=400, detail="The new name must be different from the original name")
 
@@ -2113,7 +2112,7 @@ def create_app(
             display_name = _unique_workflow_display_name(task_runner.workflows_root, new_name)
             new_task_id = _workflow_id_for_import(display_name)
             dest_workflow_dir = (task_runner.workflows_root / new_task_id).resolve()
-            
+
             if dest_workflow_dir.exists():
                 raise HTTPException(status_code=400, detail=f"Workflow directory already exists: {new_task_id}")
 
@@ -2788,7 +2787,7 @@ def create_app(
                     is_killed = task_id in _killed_automations
                     if is_killed:
                         _killed_automations.discard(task_id)
-                        
+
                     yield _sse_event({
                         "event": "done",
                         "success": success,

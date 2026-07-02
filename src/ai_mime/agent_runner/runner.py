@@ -54,7 +54,6 @@ REQUIRED_SKILL_FILES = (
     "run.sh",
     "inputs/inputs.example.json",
     "inputs/inputs.template.json",
-    "references/fallback_plan.md",
 )
 INSTRUCTIONS_ROOT = Path(__file__).parent / "instructions"
 
