@@ -661,6 +661,7 @@ def _install_import_stage(
             if read_autoinstall_skills():
                 with contextlib.suppress(Exception):
                     link_skill(installed_skill_dir)
+            _project_skill_credentials_if_needed(workflow_dir, installed_skill_dir)
     except Exception:
         if workflow_dir.exists():
             shutil.rmtree(workflow_dir, ignore_errors=True)
@@ -693,6 +694,53 @@ def _build_skill_export_zip(workflow_dir: Path) -> tuple[str, bytes]:
                 if path.is_file():
                     zf.write(path, arcname=str(Path(arc_root) / path.relative_to(clean_root)))
         return f"{arc_root}.zip", buf.getvalue()
+
+
+def _replace_in_file(path: Path, replacements: list[tuple[str, str]]) -> None:
+    try:
+        content = path.read_text(encoding="utf-8")
+        original = content
+        for old, new in replacements:
+            if old:
+                content = content.replace(old, new)
+        if content != original:
+            path.write_text(content, encoding="utf-8")
+    except UnicodeDecodeError:
+        pass  # Skip binary files
+    except Exception:
+        pass
+
+
+def _rename_files_and_directories(
+    root_dir: Path,
+    old_slug: str,
+    new_slug: str,
+    old_snake: str,
+    new_snake: str,
+) -> None:
+    for root, dirs, files in os.walk(root_dir, topdown=False):
+        for name in files:
+            new_filename = name
+            if old_snake in name:
+                new_filename = new_filename.replace(old_snake, new_snake)
+            elif old_slug in name:
+                new_filename = new_filename.replace(old_slug, new_slug)
+            if new_filename != name:
+                os.rename(Path(root) / name, Path(root) / new_filename)
+        for name in dirs:
+            new_dirname = name
+            if old_snake in name:
+                new_dirname = new_dirname.replace(old_snake, new_snake)
+            elif old_slug in name:
+                new_dirname = new_dirname.replace(old_slug, new_slug)
+            if new_dirname != name:
+                os.rename(Path(root) / name, Path(root) / new_dirname)
+
+
+def _project_skill_credentials_if_needed(workflow_dir: Path, skill_dir: Path) -> None:
+    if credentials_store.has_manifest(skill_dir):
+        with contextlib.suppress(Exception):
+            credentials_store.resolve_credentials_path(workflow_dir, mode="run")
 
 
 def _resolve_marketplace_url(base_url: str, value: Any, *, field: str) -> str:
@@ -1460,6 +1508,7 @@ def create_app(
     replay_agent_services: dict[str, WorkspaceAgentChatService] = {}
     skill_build_services: dict[str, WorkflowSkillBuildService] = {}
     import_staging: dict[str, dict[str, Any]] = {}
+    duplicate_staging: dict[str, dict[str, Any]] = {}
 
     _running_automations: dict[str, subprocess.Popen[str]] = {}
 
@@ -1946,6 +1995,171 @@ def create_app(
             media_type="application/octet-stream",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    @app.post("/api/tasks/{task_id}/duplicate/stage")
+    def api_task_duplicate_stage(task_id: str):
+        _safe_task_id(task_id)
+        src_workflow_dir = (task_runner.workflows_root / task_id).resolve()
+        try:
+            task_runner._assert_under_root(src_workflow_dir, task_runner.workflows_root)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid task id")
+        if not src_workflow_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Find original skill dir
+        skill_dir = _find_skill_dir(src_workflow_dir)
+        if skill_dir is None:
+            raise HTTPException(status_code=400, detail="This task does not contain a built skill to duplicate")
+
+        # Resolve original names and slugs
+        meta = _read_json(src_workflow_dir / "metadata.json")
+        old_name = str(meta.get("name") or task_id).strip()
+        old_slug = skill_dir.name
+        old_snake = old_slug.replace("-", "_")
+
+        # Create staging directory to clean and copy
+        stage_dir = Path(tempfile.mkdtemp(prefix="ai-mime-duplicate-"))
+        try:
+            clean_root = stage_dir / "clean"
+            _copy_import_clean(
+                src=src_workflow_dir,
+                dst=clean_root,
+                is_workflow=True,
+                skill_dir=skill_dir
+            )
+            _remove_generated_import_artifacts(clean_root)
+            
+            # Clean virtual environments from staging
+            for stale_venv in list(clean_root.rglob(".venv")):
+                if stale_venv.is_dir():
+                    shutil.rmtree(stale_venv, ignore_errors=True)
+
+            staging_id = uuid.uuid4().hex
+            
+            # Extract credentials fields
+            clean_skill_dir = clean_root / "skills" / old_slug
+            credentials_fields = credentials_store.install_fields(clean_skill_dir)
+
+            duplicate_staging[staging_id] = {
+                "stage_dir": str(stage_dir),
+                "old_name": old_name,
+                "old_slug": old_slug,
+                "old_snake": old_snake,
+            }
+            return {
+                "staging_id": staging_id,
+                "credentials_fields": credentials_fields,
+                "display_name": old_name,
+                "valid": True,
+            }
+        except Exception as e:
+            shutil.rmtree(stage_dir, ignore_errors=True)
+            raise HTTPException(status_code=500, detail=f"Failed to stage duplication: {e}")
+
+    @app.post("/api/tasks/{task_id}/duplicate/install")
+    def api_task_duplicate_install(task_id: str, payload: dict[str, Any] = Body(...)):
+        _safe_task_id(task_id)
+        staging_id = payload.get("staging_id")
+        new_name = payload.get("new_name")
+        credentials = payload.get("credentials")
+
+        if not isinstance(staging_id, str) or not staging_id:
+            raise HTTPException(status_code=400, detail="staging_id must be a non-empty string")
+        if not isinstance(new_name, str) or not new_name.strip():
+            raise HTTPException(status_code=400, detail="new_name must be a non-empty string")
+        new_name = new_name.strip()
+
+        stage_info = duplicate_staging.get(staging_id)
+        if not stage_info:
+            raise HTTPException(status_code=404, detail="Duplication stage not found or expired")
+
+        stage_dir = Path(str(stage_info["stage_dir"]))
+        clean_root = stage_dir / "clean"
+        old_name = stage_info["old_name"]
+        old_slug = stage_info["old_slug"]
+        old_snake = stage_info["old_snake"]
+
+        new_slug = _slugify_task_name(new_name, fallback="duplicated-skill")
+        new_snake = new_slug.replace("-", "_")
+
+        # Validate that the names do not match (dashes, snake cases, exact match)
+        if (new_name.lower() == old_name.lower() or 
+            new_slug == old_slug or 
+            new_snake == old_snake):
+            raise HTTPException(status_code=400, detail="The new name must be different from the original name")
+
+        try:
+            # Perform content replacement of names
+            replacements = []
+            seen_olds = set()
+            for old, new in [
+                (old_snake, new_snake),
+                (old_slug, new_slug),
+                (old_name, new_name),
+            ]:
+                if old and old not in seen_olds:
+                    replacements.append((old, new))
+                    seen_olds.add(old)
+            for root, _, files in os.walk(clean_root):
+                for name in files:
+                    _replace_in_file(Path(root) / name, replacements)
+
+            # Perform bottom-up renaming of files and directories
+            _rename_files_and_directories(clean_root, old_slug, new_slug, old_snake, new_snake)
+
+            # Determine new task ID and final destination
+            display_name = _unique_workflow_display_name(task_runner.workflows_root, new_name)
+            new_task_id = _workflow_id_for_import(display_name)
+            dest_workflow_dir = (task_runner.workflows_root / new_task_id).resolve()
+            
+            if dest_workflow_dir.exists():
+                raise HTTPException(status_code=400, detail=f"Workflow directory already exists: {new_task_id}")
+
+            # Copy stage clean contents to destination
+            shutil.copytree(clean_root, dest_workflow_dir)
+
+            # Ensure the metadata has the unique display name
+            new_meta = _read_json(dest_workflow_dir / "metadata.json")
+            new_meta["name"] = display_name
+            new_meta["source"] = "duplicated_skill"
+            new_meta["created_at"] = _utc_timestamp()
+            new_meta.pop("imported_at", None)
+            _write_json(dest_workflow_dir / "metadata.json", new_meta)
+
+            new_skill_dir = dest_workflow_dir / "skills" / new_slug
+            _chmod_run_sh(new_skill_dir)
+
+            # Persist entered credentials in global store (scoped to the skill manifest)
+            if credentials_store.has_manifest(new_skill_dir):
+                manifest = credentials_store.parse_manifest(new_skill_dir)
+                credentials_store.scoped_merge(credentials or {}, manifest)
+                missing = credentials_store.missing_required(new_skill_dir)
+                if missing:
+                    raise ValueError("Missing required credentials: " + ", ".join(sorted(missing)))
+
+            # Set up venv and .env for the new skill
+            _setup_skill_venv(dest_workflow_dir, new_skill_dir)
+
+            with contextlib.suppress(Exception):
+                write_skill_env_file(new_skill_dir)
+            if read_autoinstall_skills():
+                with contextlib.suppress(Exception):
+                    link_skill(new_skill_dir)
+
+            # Project credentials immediately if the skill has a manifest
+            _project_skill_credentials_if_needed(dest_workflow_dir, new_skill_dir)
+
+            return {"task_id": new_task_id, "workflow_dir": str(dest_workflow_dir)}
+
+        except Exception as e:
+            if 'dest_workflow_dir' in locals() and dest_workflow_dir.exists():
+                shutil.rmtree(dest_workflow_dir, ignore_errors=True)
+            raise HTTPException(status_code=500, detail=f"Failed to duplicate skill: {e}")
+        finally:
+            removed = duplicate_staging.pop(staging_id, None)
+            if removed is not None:
+                shutil.rmtree(Path(str(removed["stage_dir"])), ignore_errors=True)
 
     @app.get("/api/marketplace/manifest")
     def api_marketplace_manifest():
