@@ -83,6 +83,7 @@
             reflectItems.push(`<button class="menu-item" data-action="edit-skill">Edit Skill (New Session)</button>`);
             reflectItems.push(`<button class="menu-item" data-action="run-skill">Run</button>`);
             reflectItems.push(`<button class="menu-item" data-action="export-skill">Export Skill</button>`);
+            reflectItems.push(`<button class="menu-item" data-action="duplicate-skill">Duplicate</button>`);
           } else {
             reflectItems.push(`<button class="menu-item" data-action="continue-improve">Build Skill</button>`);
           }
@@ -253,6 +254,9 @@
       } else if (action === "export-skill") {
         window.location.href = `/api/tasks/${encoded}/export`;
         return;
+      } else if (action === "duplicate-skill") {
+        openDuplicateModal(taskId, task.display_name || task.id);
+        return;
       } else if (action === "replay") {
         window.location.href = `/replay/${encoded}`;
         return;
@@ -277,6 +281,173 @@
   function closeImportModal() {
     const existing = document.querySelector(".modal-overlay.import-modal");
     if (existing) existing.remove();
+  }
+
+  function closeDuplicateModal() {
+    const existing = document.querySelector(".modal-overlay.duplicate-modal");
+    if (existing) existing.remove();
+  }
+
+  function openDuplicateModal(taskId, currentDisplayName) {
+    closeDuplicateModal();
+    const task = tasks.find((t) => t.id === taskId);
+    const oldSlug = task && task.skill_dir ? task.skill_dir.split('/').pop().split('\\').pop() : '';
+    const oldSnake = oldSlug.replace(/-/g, '_');
+    const oldNameNorm = currentDisplayName.toLowerCase().trim();
+
+    const slugify = (val) => val.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || "duplicated-skill";
+    const snakify = (val) => slugify(val).replace(/-/g, '_');
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay duplicate-modal";
+    overlay.innerHTML = `
+      <div class="modal-card duplicate-card" role="dialog" aria-modal="true" aria-label="Duplicate skill">
+        <div class="modal-header">
+          <div class="modal-title">Duplicate Skill</div>
+          <div class="modal-desc">Staging duplication...</div>
+        </div>
+        <div style="display: flex; justify-content: center; align-items: center; padding: 20px;">
+          <div class="loading-spinner"></div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const card = overlay.querySelector(".modal-card");
+
+    request(`/api/tasks/${encodeURIComponent(taskId)}/duplicate/stage`, { method: "POST" })
+      .then((data) => {
+        if (!data || !data.staging_id) {
+          throw new Error("Failed to retrieve staging ID.");
+        }
+        setupDuplicationForm(data);
+      })
+      .catch((err) => {
+        renderError(err.message || String(err));
+      });
+
+    function renderError(errorMsg) {
+      card.innerHTML = `
+        <div class="modal-header">
+          <div class="modal-title">Duplicate Skill</div>
+          <div class="modal-desc" style="color: var(--text-muted);">Failed to stage duplication.</div>
+        </div>
+        <div class="provider-message" style="margin: 15px 0; color: #ff4d4f; font-weight: 500;">
+          ${escapeHtml(errorMsg)}
+        </div>
+        <div class="modal-actions row">
+          <button class="modal-btn secondary" id="closeDuplicateBtn">Close</button>
+        </div>
+      `;
+      card.querySelector("#closeDuplicateBtn").addEventListener("click", closeDuplicateModal);
+    }
+
+    function setupDuplicationForm(data) {
+      const fields = Array.isArray(data.credentials_fields) ? data.credentials_fields : [];
+      const credsHtml = fields.length
+        ? `<div class="modal-section-title" style="margin-top: 15px; font-weight: 600;">Credentials</div>
+           <div class="modal-desc" style="margin-bottom: 10px;">This skill needs credentials to run. They will be saved to your agent.</div>
+           ${fields.map((f, i) => `
+             <label class="provider-key">
+               <span>${escapeHtml(f.service)} — ${escapeHtml(f.description || f.key)}</span>
+               <input type="password" class="cred-input" data-cred-index="${i}"
+                 data-cred-service="${escapeHtml(f.service)}" data-cred-key="${escapeHtml(f.key)}"
+                 value="${escapeHtml(f.value || "")}" placeholder="${escapeHtml(f.key)}">
+             </label>`).join("")}`
+        : "";
+
+      card.innerHTML = `
+        <div class="modal-header">
+          <div class="modal-title">Duplicate Skill</div>
+          <div class="modal-desc">Create a copy of this skill with a new name. Caches, runs, and credentials will be cleared.</div>
+        </div>
+        <label class="provider-key">
+          <span>New Name</span>
+          <input type="text" id="duplicateName" value="${escapeHtml(currentDisplayName)} Copy" placeholder="e.g. My Duplicated Skill">
+        </label>
+        ${credsHtml}
+        <div class="provider-message" id="duplicateMessage"></div>
+        <div class="modal-actions row">
+          <button class="modal-btn secondary" id="cancelDuplicateBtn">Cancel</button>
+          <button class="modal-btn primary" id="confirmDuplicateBtn" disabled>Duplicate</button>
+        </div>
+      `;
+
+      const nameInput = card.querySelector("#duplicateName");
+      const message = card.querySelector("#duplicateMessage");
+      const confirmBtn = card.querySelector("#confirmDuplicateBtn");
+
+      const validate = () => {
+        const val = nameInput.value.trim();
+        if (!val) {
+          message.textContent = "New name is mandatory.";
+          confirmBtn.disabled = true;
+          return false;
+        }
+        
+        const newNorm = val.toLowerCase().trim();
+        const newSlug = slugify(val);
+        const newSnake = snakify(val);
+
+        if (newNorm === oldNameNorm || newSlug === oldSlug || newSnake === oldSnake) {
+          message.textContent = "The new name must not match the original name, slug, or snake case.";
+          confirmBtn.disabled = true;
+          return false;
+        }
+
+        // Validate that credentials inputs are not empty if they are required
+        const credInputs = card.querySelectorAll(".cred-input");
+        const credsCompleted = Array.from(credInputs).every((input) => input.value.trim() !== "");
+        if (!credsCompleted) {
+          message.textContent = "Please fill in all required credentials.";
+          confirmBtn.disabled = true;
+          return false;
+        }
+
+        message.textContent = "";
+        confirmBtn.disabled = false;
+        return true;
+      };
+
+      const submit = async () => {
+        if (!validate()) return;
+        const name = nameInput.value.trim();
+        const credentials = collectCredentials(card);
+        confirmBtn.disabled = true;
+        message.textContent = "Duplicating skill...";
+        try {
+          await request(`/api/tasks/${encodeURIComponent(taskId)}/duplicate/install`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              staging_id: data.staging_id,
+              new_name: name,
+              credentials: credentials,
+            }),
+          });
+          closeDuplicateModal();
+          await loadTasks();
+        } catch (e) {
+          message.textContent = e.message || String(e);
+          confirmBtn.disabled = false;
+        }
+      };
+
+      nameInput.addEventListener("input", validate);
+      card.querySelectorAll(".cred-input").forEach((input) => {
+        input.addEventListener("input", validate);
+      });
+      confirmBtn.addEventListener("click", submit);
+      card.querySelector("#cancelDuplicateBtn").addEventListener("click", closeDuplicateModal);
+
+      validate();
+      nameInput.focus();
+      nameInput.select();
+    }
+
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) closeDuplicateModal();
+    });
   }
 
   function renderImportPreviewHtml(data) {

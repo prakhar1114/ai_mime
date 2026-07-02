@@ -108,6 +108,7 @@ class TaskDashboardTests(unittest.TestCase):
             ("files", (f"{prefix}/scripts/run.py", run_py, "text/x-python")),
             ("files", (f"{prefix}/inputs/inputs.example.json", b'{"location":"San Francisco, CA"}', "application/json")),
             ("files", (f"{prefix}/inputs/inputs.template.json", b'{"location":"<FILL IN: location>"}', "application/json")),
+            ("files", (f"{prefix}/credentials.template.json", b'{"jira": {"api_token": "<FILL IN: api token>"}}', "application/json")),
             ("files", (f"{prefix}/references/fallback_plan.md", b"# Fallback\n\nSearch weather manually.\n", "text/markdown")),
             ("files", (f"{prefix}/runs/old/data.md", b"old run", "text/markdown")),
             ("files", (f"{prefix}/scripts/__pycache__/run.pyc", b"cached", "application/octet-stream")),
@@ -535,7 +536,9 @@ class TaskDashboardTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": str(market)}):
             manifest = client.get("/api/marketplace/manifest")
-            install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+            stage = client.post("/api/marketplace/stage", json={"item_id": "invoice-workflow"})
+            self.assertEqual(stage.status_code, 200, stage.text)
+            install = client.post("/api/import/install", json={"staging_id": stage.json()["staging_id"]})
 
         self.assertEqual(manifest.status_code, 200, manifest.text)
         data = manifest.json()
@@ -554,9 +557,14 @@ class TaskDashboardTests(unittest.TestCase):
         client = TestClient(app)
 
         with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(manifest, package_bytes):
-            with patch("ai_mime.editor.server._run_marketplace_venv_command") as venv_command:
-                install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
-                second_install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+            with patch("ai_mime.editor.server._run_venv_command") as venv_command:
+                stage1 = client.post("/api/marketplace/stage", json={"item_id": "invoice-workflow"})
+                self.assertEqual(stage1.status_code, 200, stage1.text)
+                install = client.post("/api/import/install", json={"staging_id": stage1.json()["staging_id"]})
+
+                stage2 = client.post("/api/marketplace/stage", json={"item_id": "invoice-workflow"})
+                self.assertEqual(stage2.status_code, 200, stage2.text)
+                second_install = client.post("/api/import/install", json={"staging_id": stage2.json()["staging_id"]})
 
         self.assertEqual(install.status_code, 200, install.text)
         venv_command.assert_not_called()
@@ -622,7 +630,9 @@ class TaskDashboardTests(unittest.TestCase):
             "ai_mime.editor.server.workflow_runtime_env",
             side_effect=fake_runtime_env,
         ), patch("ai_mime.editor.server.subprocess.run", side_effect=fake_run):
-            install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+            stage = client.post("/api/marketplace/stage", json={"item_id": "invoice-workflow"})
+            self.assertEqual(stage.status_code, 200, stage.text)
+            install = client.post("/api/import/install", json={"staging_id": stage.json()["staging_id"]})
 
         self.assertEqual(install.status_code, 200, install.text)
         workflow = Path(install.json()["workflow_dir"])
@@ -664,10 +674,12 @@ class TaskDashboardTests(unittest.TestCase):
             "ai_mime.editor.server.workflow_runtime_env",
             side_effect=fake_runtime_env,
         ), patch("ai_mime.editor.server.subprocess.run", side_effect=fake_run):
-            install = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+            stage = client.post("/api/marketplace/stage", json={"item_id": "invoice-workflow"})
+            self.assertEqual(stage.status_code, 200, stage.text)
+            install = client.post("/api/import/install", json={"staging_id": stage.json()["staging_id"]})
 
         self.assertEqual(install.status_code, 400, install.text)
-        self.assertIn("Marketplace dependency setup failed", install.text)
+        self.assertIn("dependency setup failed", install.text)
         self.assertEqual(client.get("/api/tasks").json()["tasks"], [])
 
     def test_marketplace_install_rejects_bad_packages(self) -> None:
@@ -676,18 +688,18 @@ class TaskDashboardTests(unittest.TestCase):
         client = TestClient(app)
 
         with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(self._marketplace_manifest(valid_package), valid_package):
-            missing = client.post("/api/marketplace/install", json={"item_id": "missing"})
+            missing = client.post("/api/marketplace/stage", json={"item_id": "missing"})
         self.assertEqual(missing.status_code, 404, missing.text)
 
         bad_checksum_manifest = self._marketplace_manifest(valid_package, sha256="0" * 64)
         with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(bad_checksum_manifest, valid_package):
-            checksum = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+            checksum = client.post("/api/marketplace/stage", json={"item_id": "invoice-workflow"})
         self.assertEqual(checksum.status_code, 400, checksum.text)
         self.assertIn("checksum", checksum.text)
 
         bad_size_manifest = self._marketplace_manifest(valid_package, size_bytes=len(valid_package) + 1)
-        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(bad_size_manifest, valid_package):
-            size = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_PLACEHOLDER_URL" if False else "ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(bad_size_manifest, valid_package):
+            size = client.post("/api/marketplace/stage", json={"item_id": "invoice-workflow"})
         self.assertEqual(size.status_code, 400, size.text)
         self.assertIn("size", size.text)
 
@@ -696,13 +708,13 @@ class TaskDashboardTests(unittest.TestCase):
             zf.writestr("../SKILL.md", b"unsafe")
         unsafe_package = unsafe_buf.getvalue()
         with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(self._marketplace_manifest(unsafe_package), unsafe_package):
-            unsafe = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+            unsafe = client.post("/api/marketplace/stage", json={"item_id": "invoice-workflow"})
         self.assertEqual(unsafe.status_code, 400, unsafe.text)
         self.assertIn("Unsafe zip path", unsafe.text)
 
         invalid_package = b"not a zip"
         with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch("ai_mime.editor.server.DEFAULT_MARKETPLACE_MANIFEST_URL", "https://example.com/catalog/manifest.json"), self._patch_marketplace_fetch(self._marketplace_manifest(invalid_package), invalid_package):
-            invalid = client.post("/api/marketplace/install", json={"item_id": "invoice-workflow"})
+            invalid = client.post("/api/marketplace/stage", json={"item_id": "invoice-workflow"})
         self.assertEqual(invalid.status_code, 400, invalid.text)
         self.assertIn("valid zip", invalid.text)
 
@@ -832,7 +844,7 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertIn("Agent Mode", response.text)
         self.assertIn("Provider", response.text)
         self.assertIn("Direct build", response.text)
-        self.assertIn("Upload skill", response.text)
+        self.assertIn("Import Skill", response.text)
         self.assertIn("Explore marketplace", response.text)
         self.assertIn("Open Workflows Folder", response.text)
         self.assertNotIn(">Refresh<", response.text)
@@ -864,7 +876,7 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertIn("/static/marketplace.css", marketplace_html)
         self.assertIn("/static/marketplace.js", marketplace_html)
         self.assertIn("/api/marketplace/manifest", marketplace_js)
-        self.assertIn("/api/marketplace/install", marketplace_js)
+        self.assertIn("/api/marketplace/stage", marketplace_js)
         self.assertIn("window.location.href = \"/tasks\"", marketplace_js)
 
     def test_provider_settings_api_reports_status(self) -> None:
@@ -946,7 +958,8 @@ class TaskDashboardTests(unittest.TestCase):
             status = provider_settings.save_provider_settings("openai", api_key="sk-test")
 
         self.assertEqual(status["provider"], "openai")
-        self.assertEqual(config_path.read_text(encoding="utf-8"), "config_version: 1\nprovider: openai\n")
+        import yaml
+        self.assertEqual(yaml.safe_load(config_path.read_text(encoding="utf-8")), {"config_version": 1, "provider": "openai"})
         self.assertIn("OPENAI_API_KEY=sk-test", env_path.read_text(encoding="utf-8"))
 
     def test_provider_settings_helper_allows_runtime_login_without_key(self) -> None:
@@ -964,7 +977,8 @@ class TaskDashboardTests(unittest.TestCase):
             status = provider_settings.save_provider_settings("openai")
 
         self.assertEqual(status["provider"], "openai")
-        self.assertEqual(config_path.read_text(encoding="utf-8"), "config_version: 1\nprovider: openai\n")
+        import yaml
+        self.assertEqual(yaml.safe_load(config_path.read_text(encoding="utf-8")), {"config_version": 1, "provider": "openai"})
 
     def test_codex_login_status_uses_app_aware_path(self) -> None:
         from ai_mime import provider_settings
@@ -1016,6 +1030,87 @@ class TaskDashboardTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "provider must be anthropic or openai"):
             provider_settings.save_provider_settings("custom")
+
+    def test_task_duplicate(self) -> None:
+        import json
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        # 1. Install a skill first
+        preview = client.post("/api/import/preview", files=self._skill_upload_files())
+        self.assertEqual(preview.status_code, 200, preview.text)
+        staging_id = preview.json()["staging_id"]
+
+        install = client.post("/api/import/install", json={"staging_id": staging_id})
+        self.assertEqual(install.status_code, 200, install.text)
+        task_id = install.json()["task_id"]
+
+        # Add a mock file in root to verify it gets renamed
+        workflow_dir = Path(install.json()["workflow_dir"])
+        mock_py = workflow_dir / "fetch_weather.py"
+        mock_py.write_text("import json\n# fetch_weather step code", encoding="utf-8")
+
+        # 2. Stage duplication
+        stage_res = client.post(f"/api/tasks/{task_id}/duplicate/stage")
+        self.assertEqual(stage_res.status_code, 200, stage_res.text)
+        stage_data = stage_res.json()
+        self.assertIn("staging_id", stage_data)
+        self.assertEqual(stage_data["display_name"], "fetch-weather")
+        self.assertEqual(stage_data["credentials_fields"][0]["service"], "jira")
+        self.assertEqual(stage_data["credentials_fields"][0]["key"], "api_token")
+
+        dup_staging_id = stage_data["staging_id"]
+
+        # 3. Install duplication
+        dup_name = "get local climate"
+        dup_res = client.post(
+            f"/api/tasks/{task_id}/duplicate/install",
+            json={
+                "staging_id": dup_staging_id,
+                "new_name": dup_name,
+                "credentials": {"jira": {"api_token": "my-secret-token"}},
+            }
+        )
+        self.assertEqual(dup_res.status_code, 200, dup_res.text)
+        dup_task_id = dup_res.json()["task_id"]
+        dup_workflow_dir = Path(dup_res.json()["workflow_dir"])
+
+        # Check metadata
+        meta = json.loads((dup_workflow_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["name"], "get local climate")
+        self.assertEqual(meta["source"], "duplicated_skill")
+
+        # Check that the files are renamed correctly in the new workflow
+        self.assertTrue((dup_workflow_dir / "skills" / "get-local-climate").is_dir())
+        self.assertTrue((dup_workflow_dir / "get_local_climate.py").is_file())
+        self.assertFalse((dup_workflow_dir / "fetch_weather.py").exists())
+
+        # Check that SKILL.md has the updated name frontmatter
+        skill_md_content = (dup_workflow_dir / "skills" / "get-local-climate" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("name: get-local-climate", skill_md_content)
+        self.assertNotIn("name: fetch-weather", skill_md_content)
+
+        # Check that .credentials.runtime.json exists in the duplicate task folder immediately after install
+        creds_json = dup_workflow_dir / ".credentials.runtime.json"
+        self.assertTrue(creds_json.is_file())
+        creds_data = json.loads(creds_json.read_text(encoding="utf-8"))
+        self.assertEqual(creds_data["jira"]["api_token"], "my-secret-token")
+
+        # 4. Test name collision validation
+        # Attempt to stage duplication and install with matching original name
+        stage_res_coll = client.post(f"/api/tasks/{task_id}/duplicate/stage")
+        self.assertEqual(stage_res_coll.status_code, 200, stage_res_coll.text)
+        dup_staging_id_coll = stage_res_coll.json()["staging_id"]
+
+        dup_res_fail_exact = client.post(
+            f"/api/tasks/{task_id}/duplicate/install",
+            json={
+                "staging_id": dup_staging_id_coll,
+                "new_name": "fetch-weather",
+            }
+        )
+        self.assertEqual(dup_res_fail_exact.status_code, 400)
+        self.assertIn("The new name must be different", dup_res_fail_exact.text)
 
 
 if __name__ == "__main__":

@@ -105,9 +105,6 @@ class RecorderApp(rumps.App):
         self.workflows_button = rumps.MenuItem("Open Workflows Directory", callback=self._open_workflows_directory)
 
         # Options submenu (placed at the bottom, right above the default Quit item).
-        self.options_menu = rumps.MenuItem("Options")
-        self.dummy_toggle = rumps.MenuItem("Test Recording", callback=self._toggle_dummy_recording)
-        self.options_menu["Test Recording"] = self.dummy_toggle
         self.custom_quit_button = rumps.MenuItem("Quit", callback=self.quit_app)
 
         # Build the menu using rumps.Menu APIs (more robust across rumps versions than assigning a raw list).
@@ -136,8 +133,6 @@ class RecorderApp(rumps.App):
                 self.menu.add(self.tasks_button)
                 self.menu.add(self.workflows_button)
                 self.menu.add(None)
-                self.menu.add(self.options_menu)
-                self.menu.add(None)
                 self.menu.add(self.custom_quit_button)
                 return
             except Exception:
@@ -146,8 +141,6 @@ class RecorderApp(rumps.App):
                     self.start_button,
                     self.tasks_button,
                     self.workflows_button,
-                    None,
-                    self.options_menu,
                     None,
                     self.custom_quit_button,
                 ]
@@ -302,14 +295,6 @@ class RecorderApp(rumps.App):
                 log(f"Error handling dashboard command {cmd}: {e}", exc_info=True)
         if handled:
             self._publish_dashboard_state()
-
-    def _toggle_dummy_recording(self, _sender):
-        # rumps supports a checkmark state via .state (0/1) on macOS.
-        self.dummy_recording = not self.dummy_recording
-        try:
-            self.dummy_toggle.state = int(self.dummy_recording)
-        except Exception:
-            pass
 
     def _toggle_conversation_overlay(self, _sender=None):
         if self._conversation_overlay is not None:
@@ -672,7 +657,7 @@ class RecorderApp(rumps.App):
                 self.dashboard_process.join(timeout=1.0)
             except Exception:
                 pass
-        
+
         # Stop recording if active
         if self.is_recording:
             try:
@@ -690,7 +675,7 @@ class RecorderApp(rumps.App):
 
         # Kill all processes containing "mime"
         self._kill_mime_processes()
-        
+
         # Quit the rumps application
         rumps.quit_application()
 
@@ -700,7 +685,7 @@ class RecorderApp(rumps.App):
         import subprocess
 
         current_pid = os.getpid()
-        
+
         # 1. Gather all descendants of the current process
         descendants = set()
         try:
@@ -736,10 +721,10 @@ class RecorderApp(rumps.App):
                     pid = int(parts[0])
                 except ValueError:
                     continue
-                
+
                 cmd = parts[1]
                 cmd_lower = cmd.lower()
-                
+
                 # Exclude IDEs and helpers
                 if any(x in cmd_lower for x in ["cursor", "vscode", "helper", "extension-host", "grep"]):
                     continue
