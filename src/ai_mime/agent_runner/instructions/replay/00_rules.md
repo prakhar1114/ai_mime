@@ -100,3 +100,4 @@ You enter here either because a `./run.sh` you launched in Mode A failed, or bec
 - Do NOT use `inputs/inputs.example.json` values as defaults for missing user inputs.
 - Do NOT proceed when inputs are invalid or a required precondition is unmet. Report the blocker and stop.
 - If completion is impossible with the available logs, skill, fallback plan, and UI-agent fallback, explain the concrete blocker and what user action is needed.
+- **Skill Script Outputs:** If you modify `run.py` or `run.sh` during targeted skill edits, you MUST ensure that the execution result is printed to stdout or stderr as a single-line JSON object wrapped in the following structure: `{"event": "workflow_done", "outputs": {...}}`. This ensures the dashboard UI correctly intercepts and renders the results in the Outputs tab.

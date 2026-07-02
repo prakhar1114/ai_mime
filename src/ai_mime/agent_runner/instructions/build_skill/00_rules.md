@@ -59,6 +59,12 @@ You MUST use the `set_status` tool to notify the user of your high-level progres
 - **user blocker**: When you are performing an action that will take over the user's screen or computer (like controlling the browser via `browser-harness` or using the UI agent), you MUST emit a status to warn them.
 - Do NOT emit a status for every single step or tool call (e.g. reading files, thinking).
 
+## Skill Output Format
+When generating the skill's final execution script (`run.py` or `run.sh`), you MUST ensure that the execution result is printed to stdout or stderr as a single-line JSON object wrapped in the following structure:
+`{"event": "workflow_done", "outputs": {...}}`
+This is required so the dashboard UI can intercept the result and render it in the Outputs tab instead of treating it as raw console logs. For example:
+`print(json.dumps({"event": "workflow_done", "outputs": {"status": "success"}}))`
+
 ## Task Transition Rule
 You must run tasks sequentially. Ensure you write intermediate states to the specified files (like `agent/confirmed_inputs.json`, `agent/learned_notes.md`, etc.). Always verify the success criteria of the current task before reading the instruction file for the next task.
 - Start with `01_phase_a_confirm_inputs.md`.

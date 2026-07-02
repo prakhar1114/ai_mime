@@ -137,7 +137,10 @@ def main():
 
     # Signal successful completion of the overall workflow by printing result to stdout
     log("Successfully fetched weather data.")
-    print(json.dumps({"weather_summary": weather_summary}, ensure_ascii=False), flush=True)
+    print(json.dumps({
+        "event": "workflow_done",
+        "outputs": {"weather_summary": weather_summary}
+    }, ensure_ascii=False), flush=True)
 
 if __name__ == "__main__":
     main()
