@@ -223,6 +223,10 @@ AUTOMATION_OVERLAY_HTML = """
 
   resizeObserver.observe(document.body);
 
+  setInterval(() => {
+    sendAction('request_state');
+  }, 200);
+
   function sendAction(action, payload) {
     const msg = { type: action };
     if (payload) {
@@ -258,7 +262,7 @@ AUTOMATION_OVERLAY_HTML = """
 
   function updateOverlayState(stateStr) {
     const state = JSON.parse(stateStr);
-    
+
     if (state.mode !== undefined) {
       if (state.mode === 'minimized') {
         isMinimized = true;
@@ -268,7 +272,7 @@ AUTOMATION_OVERLAY_HTML = """
         document.getElementById('title-text').style.display = 'none';
         const wc = document.getElementById('window-controls');
         if (wc) wc.style.display = 'none';
-        
+
         const container = document.getElementById('main-container');
         container.style.width = '32px';
         container.style.height = '32px';
@@ -281,7 +285,7 @@ AUTOMATION_OVERLAY_HTML = """
         container.style.backgroundColor = 'var(--bg-color)';
         container.style.boxShadow = 'none';
         container.style.backdropFilter = 'blur(20px)';
-        
+
         if (window.webkit && window.webkit.messageHandlers.overlay) {
           window.webkit.messageHandlers.overlay.postMessage({ type: 'resize', height: 32 });
         }
@@ -293,7 +297,7 @@ AUTOMATION_OVERLAY_HTML = """
         document.getElementById('title-text').style.display = 'block';
         const wc = document.getElementById('window-controls');
         if (wc) wc.style.display = 'flex';
-        
+
         const container = document.getElementById('main-container');
         container.style.width = 'auto';
         container.style.height = 'auto';
@@ -306,8 +310,8 @@ AUTOMATION_OVERLAY_HTML = """
         container.style.backgroundColor = 'var(--bg-color)';
         container.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
         container.style.backdropFilter = 'blur(20px)';
-        
-        lastHeight = 0; 
+
+        lastHeight = 0;
         const height = document.documentElement.scrollHeight;
         if (window.webkit && window.webkit.messageHandlers.overlay) {
           window.webkit.messageHandlers.overlay.postMessage({ type: 'resize', height: height });

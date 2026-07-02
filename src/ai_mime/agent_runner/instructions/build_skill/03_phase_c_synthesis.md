@@ -28,6 +28,7 @@ In this phase, you will write the final deterministic python execution script, r
      Inside a browser-harness `-c` block ask_llm is preimported
      Branch deterministically on the returned dict. Document each call site in `SKILL.md`.
    - Emit progress logs continuously on stderr using simple print statements. Write all logs in clear, short, natural language suitable for an end-user overlay (e.g., "Searching for weather...", "Analyzing results...", "Opening a new tab..."). Exit non-zero on failure.
+     - **CRITICAL**: For your `scripts/run.py` which use `subprocess.run` to shell out to `browser-harness` or `ui_agent`, you MUST ensure inner scripts write their progress logs explicitly to standard error (e.g., `import sys; print("...", file=sys.stderr, flush=True)`). This allows the progress logs to bypass the `stdout` buffer and stream in real-time to the user's overlay.
 4. Clear any Phase-B side effects before testing. Print a one-line request to the user to confirm that `agent/side_effects.md` entries are cleared.
 5. Run the assembled script end-to-end against `agent/confirmed_inputs.json` (e.g. via `"$AI_MIME_PYTHON_PATH" scripts/run.py --inputs-json agent/confirmed_inputs.json`). Verify that the same end state Phase B reached is achieved.
 6. If it fails: diagnose, patch `scripts/run.py`, ask the user to clear new side effects, and re-run. Loop until it runs end-to-end cleanly.

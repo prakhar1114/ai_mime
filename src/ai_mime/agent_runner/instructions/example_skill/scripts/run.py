@@ -9,7 +9,12 @@ def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 def run_browser_harness_step(step_title, script_code):
-    """Reference helper showing how to shell out to browser-harness for browser automation."""
+    """Reference helper showing how to shell out to browser-harness for browser automation.
+    
+    IMPORTANT: Inner browser harness scripts should write their progress logs to sys.stderr 
+    (e.g., `import sys; print(msg, file=sys.stderr, flush=True)`) so they bypass the stdout buffer and 
+    stream directly to the UI overlay in real-time.
+    """
     log(step_title)
 
     harness_bin = os.environ.get("AI_MIME_BROWSER_HARNESS_BIN")
@@ -19,12 +24,12 @@ def run_browser_harness_step(step_title, script_code):
 
     cmd = [harness_bin, "-c", script_code]
     try:
-        # Run browser script in subprocess
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        # Parse return value or page info from stdout/stderr if needed
+        # Run browser script in subprocess. Only capture stdout; stderr streams directly to UI.
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, check=True)
+        # Parse return value or page info from stdout if needed
         log("Completed: " + step_title)
     except subprocess.CalledProcessError as e:
-        log(f"Error: Browser harness failed: {e.stderr or e}")
+        log(f"Error: Browser harness failed with exit code {e.returncode}")
         sys.exit(1)
 
 def run_ui_agent_step(step_title, task_prompt, response_schema=None):

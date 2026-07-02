@@ -78,6 +78,8 @@ class WebOverlayMessageHandler(AppKit.NSObject):  # type: ignore[misc]
                     self._overlay._clamp_expanded_frame(float(height))
                 elif action == "maximize":
                     self._overlay.maximize()
+                elif action == "request_state":
+                    self._overlay._handle_request_state()
                 elif action == "permission_decision":
                     request_id = body.get("request_id")
                     decision = body.get("decision")
@@ -99,6 +101,7 @@ class ConversationOverlay:
         self.width = self._expanded_width()
         self.height = 220.0
         self.is_minimized = False
+        self._pending_state = {}
 
         rect = self._expanded_frame(self.height)
         self._panel = make_overlay_panel(rect, nonactivating=True)
@@ -201,11 +204,19 @@ class ConversationOverlay:
         except Exception as e:
             print(f"Error in _clamp_expanded_frame: {e}")
 
+    def _handle_request_state(self) -> None:
+        if self._pending_state:
+            try:
+                state_json = json.dumps(self._pending_state)
+                script = f"updateOverlayState({json.dumps(state_json)});"
+                self._webview.evaluateJavaScript_completionHandler_(script, None)
+            except Exception as e:
+                print(f"Error evaluating JS: {e}")
+            self._pending_state = {}
+
     def _push_state(self, state_dict: dict) -> None:
         try:
-            state_json = json.dumps(state_dict)
-            script = f"updateOverlayState({json.dumps(state_json)});"
-            self._webview.evaluateJavaScript_completionHandler_(script, None)
+            self._pending_state.update(state_dict)
         except Exception as e:
             print(f"Error evaluating JS: {e}")
 
@@ -438,6 +449,8 @@ class AutomationOverlayMessageHandler(AppKit.NSObject):  # type: ignore[misc]
                     self._overlay.minimize()
                 elif msg_type == "maximize":
                     self._overlay.maximize()
+                elif msg_type == "request_state":
+                    self._overlay._handle_request_state()
                 elif msg_type == "interrupt":
                     self._overlay._handle_interrupt()
                 elif msg_type == "show_chat":
@@ -455,6 +468,7 @@ class AutomationOverlay:
         self.task_id = task_id
         self.is_minimized = False
         self._last_state: dict[str, Any] = {"status": "running", "mode": "maximized"}
+        self._pending_state: dict[str, Any] = {}
         self._timer_handler = AutomationOverlayTimerHandler.alloc().init()
         self._timer_handler._overlay = self
 
@@ -510,12 +524,20 @@ class AutomationOverlay:
         self._webview.loadHTMLString_baseURL_(injected_html, None)
         self.show()
 
+    def _handle_request_state(self) -> None:
+        if self._pending_state:
+            try:
+                state_json = json.dumps(self._pending_state)
+                script = f"updateOverlayState({json.dumps(state_json)});"
+                self._webview.evaluateJavaScript_completionHandler_(script, None)
+            except Exception as e:
+                print(f"Error evaluating JS: {e}")
+            self._pending_state = {}
+
     def _push_state(self, state_dict: dict) -> None:
         try:
             self._last_state.update(state_dict)
-            state_json = json.dumps(self._last_state)
-            script = f"updateOverlayState({json.dumps(state_json)});"
-            self._webview.evaluateJavaScript_completionHandler_(script, None)
+            self._pending_state.update(state_dict)
         except Exception as e:
             print(f"Error evaluating JS: {e}")
 
