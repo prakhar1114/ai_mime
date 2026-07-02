@@ -298,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json:
             print(
                 json.dumps(
-                    {"status": "failed", "summary": msg, "result_json": None, "logs": [], "error": msg}
+                    {"success": False, "summary": msg, "result_json": None, "logs": [], "error": msg}
                 ),
                 flush=True,
             )
@@ -311,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "status": result.status,
+                    "success": result.status == "success",
                     "summary": result.summary,
                     "result_json": result.result_json,
                     "logs": result.logs,

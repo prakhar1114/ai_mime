@@ -57,7 +57,7 @@ def run_ui_agent_step(step_title, task_prompt, response_schema=None):
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, check=True)
         result = json.loads(proc.stdout)
 
-        if result.get("status") == "success":
+        if result.get("success"):
             summary = result.get("summary", "")
             if summary:
                 log(f"Completed: {summary}")

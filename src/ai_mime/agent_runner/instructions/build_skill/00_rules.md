@@ -63,7 +63,7 @@ You MUST use the `set_status` tool to notify the user of your high-level progres
 When generating the skill's final execution script (`run.py` or `run.sh`), you MUST ensure that the execution result is printed to stdout or stderr as a single-line JSON object wrapped in the following structure:
 `{"event": "workflow_done", "outputs": {...}}`
 This is required so the dashboard UI can intercept the result and render it in the Outputs tab instead of treating it as raw console logs. For example:
-`print(json.dumps({"event": "workflow_done", "outputs": {"status": "success"}}))`
+`print(json.dumps({"event": "workflow_done", "outputs": {"success": True}}))`
 
 ## Task Transition Rule
 You must run tasks sequentially. Ensure you write intermediate states to the specified files (like `agent/confirmed_inputs.json`, `agent/learned_notes.md`, etc.). Always verify the success criteria of the current task before reading the instruction file for the next task.

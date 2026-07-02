@@ -81,16 +81,47 @@ This is the primary path. The user wants the task run now — treat running the 
 You enter here either because a `./run.sh` you launched in Mode A failed, or because your **first message** already reports a failed deterministic run (with inputs, exit code, and recent logs). The run is broken — do not just re-run it blindly.
 
 1. **Read the full package**: Now read the complete skill package before deciding what to do — `SKILL.md`, `run.sh`, `scripts/run.py`, `inputs/inputs.example.json`, `inputs/inputs.template.json`, every file under `references/`, and especially `references/fallback_plan.md`.
-2. **Validate inputs first**: Compare the failed run's inputs against the skill contract (`SKILL.md`, `inputs/inputs.template.json`). If any required input is missing, wrong type, or semantically invalid for the task, **stop** — report the specific problem and ask the user for corrected inputs. Do not guess, fabricate, or "fix" bad inputs yourself.
+2. **Validate inputs first**: Compare the failed run's inputs against the skill contract (`SKILL.md`, `inputs/inputs.template.json`). If any required input is structurally missing or wrong type, **stop** — report the problem and ask for corrected inputs. However, if inputs are structurally valid but fail downstream in the business logic (e.g., an item is not found in a search), do NOT just ask for new inputs. Proceed to triage this as an **unhandled edge case** to patch the script. Do not guess, fabricate, or "fix" bad inputs yourself.
 3. **Triage before editing**: If inputs are valid, classify the failure from the logs:
    - **environment / user-state** — closed tabs, missing windows, changed focus, logged-out session, missing credentials at `$AI_MIME_CREDENTIALS_PATH`. → Restore state or ask the user to fix config, then retry. Not a skill defect.
    - **transient UI** — one-off popup, overlay, slow load. → Dismiss, restore state, retry.
    - **precondition not met** — a `SKILL.md` precondition you cannot programmatically establish. → **Report and stop**: tell the user what's missing.
+   - **unhandled edge case (Business Logic only)** — a new, legitimate business-logic impossibility (e.g., an input/menu mismatch, "Dish not found", or a non-existent restaurant). If a script crashes because of a valid-looking input that is rejected by the business logic, the script itself is missing edge-case handling. Instead of just asking the user for new inputs, **propose to update the script** so it handles the edge case natively by emitting a JSON error (e.g. `{"success": false, "message": "Dish not found"}`) and **exiting cleanly (exit 0)**. This tells the caller the task failed without triggering the automation self-healing mode.
+     - **MANDATORY**: You MUST confirm the patch with the user before progressing to fix it. When proposing the fix, avoid confusing technical jargon. Your message must explicitly and clearly state:
+       1. **The planned approach**: Briefly explain that the script currently crashes on this expected edge case.
+       2. **The change**: Explain how you will patch the script (e.g., "I will update the script to catch this 'dish not found' error and exit gracefully").
+       3. **The future behavior**: Explain the benefit (e.g., "In the future, the script will no longer trigger this self-healing mode for missing dishes; it will simply return a clean 'dish not found' message to the caller").
+       4. Ask for their explicit approval to make this change.
+     - **CRITICAL WARNING**: NEVER patch DOM failures, timeouts, or missing elements this way. If a script fails because the UI changed, it *must* crash so the self-healing loop is triggered.
    - **skill defect** — the package is stale or wrong (only after repeated, deterministic evidence). → Targeted edits, then retry.
 4. **Complete (recoverable failures only)**: From the logs, script, and `references/fallback_plan.md`, choose the path: continue manually, restore UI state, rerun remaining work, or follow the fallback plan. Environmental and transient failures deserve a retry; input and precondition failures do not.
 5. **UI-agent fallback**: For UI-only recovery, read `../ui_agent/00_ui_agent.md` first, then use the skill's references to build a compact recovery recipe. Prefer script/browser approaches when clear.
 6. **Targeted skill edits**: Allowed ONLY with clear evidence the skill package itself is wrong. Do not rewrite `run.sh` or `scripts/run.py` after a single failure. Prioritize completing this run over rewriting the skill.
 7. **Notes**: Append durable findings to `agent/replay_notes.md` or `agent/domain_notes.md` — selectors, URLs, payload shapes, input gotchas.
+
+### Example: Patching a script for Graceful Edge-Case Escapes
+For expected business-logic failures (e.g., "Restaurant not found"), the script should exit cleanly to prevent the framework from triggering the self-healing triage loop, while still returning a failure payload to the caller.
+
+**Python Example:**
+```python
+import json
+import sys
+
+def surface_error_msg(msg: str) -> None:
+    print(json.dumps({
+        "event": "workflow_done",
+        "outputs": {
+            "success": False,
+            "message": msg
+        }
+    }, ensure_ascii=False), flush=True)
+
+# Inside your main logic, if you detect a new business logic edge case:
+if "No results found for" in web_page_text:
+    surface_error_msg(f"Invalid input: The restaurant '{restaurant_name}' could not be found.")
+    # Exit 0 prevents self-healing triage; the JSON 'status: failed' informs the caller.
+    sys.exit(0)  
+```
 
 ---
 
@@ -100,4 +131,4 @@ You enter here either because a `./run.sh` you launched in Mode A failed, or bec
 - Do NOT use `inputs/inputs.example.json` values as defaults for missing user inputs.
 - Do NOT proceed when inputs are invalid or a required precondition is unmet. Report the blocker and stop.
 - If completion is impossible with the available logs, skill, fallback plan, and UI-agent fallback, explain the concrete blocker and what user action is needed.
-- **Skill Script Outputs:** If you modify `run.py` or `run.sh` during targeted skill edits, you MUST ensure that the execution result is printed to stdout or stderr as a single-line JSON object wrapped in the following structure: `{"event": "workflow_done", "outputs": {...}}`. This ensures the dashboard UI correctly intercepts and renders the results in the Outputs tab.
+- **Skill Script Outputs:** If you modify `run.py` or `run.sh` during targeted skill edits (or when patching an edge case to exit gracefully), you MUST ensure that the execution result is printed to stdout or stderr as a single-line JSON object wrapped in the following structure: `{"event": "workflow_done", "outputs": {...}}`. This ensures the dashboard UI correctly intercepts and renders the results in the Outputs tab even when the script escapes early.

@@ -16,7 +16,7 @@ In this phase, you will write the final deterministic python execution script, r
        cmd = shlex.split(ui_agent_cmd) + [task_prompt, "--json"]
        proc = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, check=True)
        result = json.loads(proc.stdout)
-       # result is a dict containing {"status": "success"|"failed", "result_json": {...}, "summary": "..."}
+       # result is a dict containing {"success": True|False, "result_json": {...}, "summary": "..."}
        ```
 3. Code Contract:
    - Invocation: `"$AI_MIME_PYTHON_PATH" scripts/run.py --inputs-json /path/to/inputs.json` or `./run.sh /path/to/inputs.json`. Read all inputs up front, do not prompt for inputs.
