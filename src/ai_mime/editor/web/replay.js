@@ -698,6 +698,9 @@
         finishScriptRun("done");
       } else {
         const code = event.exit_code == null ? "unknown" : event.exit_code;
+        if (code === -9 || event.killed_by_user) {
+          state.killedByUser = true;
+        }
         state.lastExitCode = event.exit_code == null ? null : event.exit_code;
         if (typeof event.stdout_log === "string") state.stdoutLines = event.stdout_log.split("\n");
         if (typeof event.stderr_log === "string") state.stderrLines = event.stderr_log.split("\n");

@@ -1510,7 +1510,8 @@ def create_app(
     import_staging: dict[str, dict[str, Any]] = {}
     duplicate_staging: dict[str, dict[str, Any]] = {}
 
-    _running_automations: dict[str, subprocess.Popen[str]] = {}
+    _running_automations: dict[str, subprocess.Popen] = {}
+    _killed_automations: set[str] = set()
 
     app = FastAPI(title="AI Mime Task Dashboard", docs_url=None, redoc_url=None)
 
@@ -2744,9 +2745,13 @@ def create_app(
                         if source == "stdout":
                             stdout_lines.append(line)
                             log_lines.append(line)
+                            if app_command_queue is not None:
+                                app_command_queue.put({"type": "update_automation_overlay_log", "text": line})
                         else:
                             stderr_lines.append(line)
                             log_lines.append(f"[stderr] {line}")
+                            if app_command_queue is not None:
+                                app_command_queue.put({"type": "update_automation_overlay_log", "text": line})
                         yield _sse_event({"event": source, "line": line})
 
                         progress = _parse_skill_progress_event(line)
@@ -2780,10 +2785,15 @@ def create_app(
                             "status": "success" if success else "failed",
                         })
                         overlay_completed = True
+                    is_killed = task_id in _killed_automations
+                    if is_killed:
+                        _killed_automations.discard(task_id)
+                        
                     yield _sse_event({
                         "event": "done",
                         "success": success,
                         "exit_code": exit_code,
+                        "killed_by_user": is_killed,
                         "duration_ms": duration_ms,
                         "outputs": final_outputs,
                         "stdout_log": "\n".join(stdout_lines),
@@ -2835,6 +2845,7 @@ def create_app(
         proc = _running_automations.get(task_id)
         if not proc:
             return {"ok": False, "message": "No active skill run for this task"}
+        _killed_automations.add(task_id)
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except ProcessLookupError:

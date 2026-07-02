@@ -205,7 +205,7 @@ OVERLAY_HTML = """
     <div class="dot" id="status-dot"></div>
     <div class="title" id="title-text">AI Agent</div>
     <div class="mac-controls" id="window-controls">
-      <div class="mac-btn mac-minimize" onclick="sendAction('hide')" title="Minimize">
+      <div class="mac-btn mac-minimize" onclick="sendAction('minimize')" title="Minimize">
         <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="12" x2="20" y2="12"></line></svg>
       </div>
       <div class="mac-btn mac-close" onclick="sendAction('close')" title="Close">
@@ -264,6 +264,10 @@ OVERLAY_HTML = """
   // Observe body changes
   resizeObserver.observe(document.body);
 
+  setInterval(() => {
+    sendAction('request_state');
+  }, 200);
+
   function sendAction(action, payload) {
     const msg = { type: action };
     if (payload) {
@@ -285,12 +289,12 @@ OVERLAY_HTML = """
   function toggleDetails() {
       isDetailedView = !isDetailedView;
       document.getElementById('detailed-content').style.display = isDetailedView ? 'block' : 'none';
-      
+
       const chevron = document.getElementById('details-chevron');
       if (chevron) {
           chevron.style.transform = isDetailedView ? 'rotate(180deg)' : 'rotate(0deg)';
       }
-      
+
       // Force immediate height recalculation
       setTimeout(() => {
           lastHeight = 0;
@@ -306,11 +310,11 @@ OVERLAY_HTML = """
   // Exposed function for Python to call
   function updateOverlayState(stateStr) {
     const state = JSON.parse(stateStr);
-    
+
     if (state.title !== undefined) {
       document.getElementById('title-text').textContent = state.title;
     }
-    
+
     if (state.mode !== undefined) {
       if (state.mode === 'minimized') {
         isMinimized = true;
@@ -320,7 +324,7 @@ OVERLAY_HTML = """
         document.getElementById('title-text').style.display = 'none';
         const wc = document.getElementById('window-controls');
         if (wc) wc.style.display = 'none';
-        
+
         // Style as a small vertical pill
         const container = document.getElementById('main-container');
         container.style.width = '32px';
@@ -335,7 +339,7 @@ OVERLAY_HTML = """
         container.style.backgroundColor = 'var(--bg-color)';
         container.style.boxShadow = 'none';
         container.style.backdropFilter = 'blur(20px)';
-        
+
         // Notify small resize for minimized pill
         if (window.webkit && window.webkit.messageHandlers.overlay) {
           window.webkit.messageHandlers.overlay.postMessage({ type: 'resize', height: 32 });
@@ -348,7 +352,7 @@ OVERLAY_HTML = """
         document.getElementById('title-text').style.display = 'block';
         const wc = document.getElementById('window-controls');
         if (wc) wc.style.display = 'flex';
-        
+
         const container = document.getElementById('main-container');
         container.style.width = 'auto';
         container.style.height = 'auto';
@@ -361,7 +365,7 @@ OVERLAY_HTML = """
         container.style.backgroundColor = 'var(--bg-color)';
         container.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
         container.style.backdropFilter = 'blur(20px)';
-        
+
         lastHeight = 0; // force resize event
         // triggering a resize explicitly
         const height = document.documentElement.scrollHeight;
@@ -425,7 +429,7 @@ OVERLAY_HTML = """
         const detailedContent = document.getElementById('detailed-content');
         detailedContent.appendChild(permArea);
       }
-      
+
       if (!p) {
         permArea.style.display = 'none';
       } else {
@@ -442,7 +446,7 @@ OVERLAY_HTML = """
         // Clean up markdown/backticks in snippet if present
         const cleanSnippet = snippet.replace(/^```[a-z]*\\n/, '').replace(/\\n```$/, '').replace(/^`|`$/g, '');
         const snippetHtml = cleanSnippet ? `<pre style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; max-height: 100px; overflow-y: auto; background: rgba(127, 127, 127, 0.2); padding: 6px; margin-top: 6px; border-radius: 4px; white-space: pre-wrap; word-break: break-all;">${cleanSnippet.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>` : '';
-        
+
         permArea.innerHTML = `
           <div style="font-weight: 600; font-size: 11px; margin-bottom: 4px;">${toolName} wants to run</div>
           ${snippetHtml}
@@ -452,7 +456,7 @@ OVERLAY_HTML = """
             <button onclick="sendAction('permission_decision', {request_id: '${reqId}', decision: 'deny'})" style="background: rgba(255, 59, 48, 0.8); color: white;">Deny</button>
           </div>
         `;
-        
+
         if (!isDetailedView) {
             toggleDetails();
         } else {

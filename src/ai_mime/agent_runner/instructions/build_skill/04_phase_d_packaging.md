@@ -5,7 +5,9 @@ In this phase, you will write the markdown documentation, wrap execution in `run
 ## Instructions
 You can refer to the complete example skill package reference at `instructions/example_skill/` (which contains `SKILL.md`, `run.sh`, `scripts/run.py`, `requirements.txt`, `inputs/`, and `references/`) to see exactly how a standard skill is structured, documented, and packaged.
 
-1. Invoke the `skill-creator` skill to scaffold `SKILL.md`. It MUST have YAML frontmatter (non-empty `name`, `description`) and these sections (titles exact): `## Inputs`, `## Run`, `## Outputs`, `## Progress log format`, `## Fallback`, `## ask_llm decision points`, `## References`. It MAY include `## Preconditions` before `## Inputs` only for important user/session state the runner must set up first, such as "IRCTC is open with the user logged in", "Blinkit is logged in in the browser", or "Swiggy is logged in in the browser". Do not add generic preconditions.
+1. Invoke the `skill-creator` skill to scaffold `SKILL.md`. It MUST have YAML frontmatter (non-empty `name`, `description`) and these sections (titles exact) as required: `## Inputs`, `## Run`, `## Outputs`, `## Progress logs`, `## Fallback`, `## ask_llm decision points`, `## References`. It MAY include `## Preconditions` before `## Inputs` only for important user/session state the runner must set up first, such as "IRCTC is open with the user logged in", "Blinkit is logged in in the browser", or "Swiggy is logged in in the browser". Do not add generic preconditions.
+
+   `SKILL.md` `## Progress logs` must explicitly state that progress logs are written to stderr in clear, short, natural language suitable for an end-user overlay (e.g., "Searching for weather...", "Analyzing results...").
 
    `SKILL.md` `## Run` must document the Python runtime contract:
    - `run.sh` uses the first available interpreter in this order: skill `.venv/bin/python`, workflow `.venv/bin/python`, then required `$AI_MIME_PYTHON_PATH`.

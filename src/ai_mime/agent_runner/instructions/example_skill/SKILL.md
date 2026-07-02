@@ -30,12 +30,12 @@ Python runtime contract:
   - `temperature` (float): Current temperature.
   - `condition` (string): Weather condition description.
 
-## Progress log format
-The script outputs JSON log events on `stderr` to track execution progress.
-- `{"event": "step_start", "id": "fetch_weather", "title": "Fetching weather from API"}`
-- `{"event": "step_done", "id": "fetch_weather", "outputs": {"temperature": 18.5, "condition": "Sunny"}, "summary": "Successfully fetched weather data."}`
-- `{"event": "step_failed", "id": "fetch_weather", "error": "API timeout", "recoverable": false}`
-- `{"event": "workflow_done", "outputs": {"weather_summary": {"location": "San Francisco, CA", "temperature": 18.5, "condition": "Sunny"}}}`
+## Progress logs
+The script outputs progress logs on `stderr` to track execution progress.
+All logs must be written in clear, natural language suitable for an end-user overlay. Do not use structured JSON logs.
+- "Fetching weather from API..."
+- "It is sunny with 18.5 C"
+- "Error: API timeout"
 
 ## Fallback
 If the weather API fails or is unreachable, the execution falls back to performing a Google search for current weather and scraping the temperature using `browser_harness`. See `references/fallback_plan.md` for manual or automated fallback instructions.

@@ -282,6 +282,14 @@ class RecorderApp(rumps.App):
                             self._conversation_overlay.update_status(status)
                         except Exception as e:
                             log(f"Failed to update AutomationOverlay: {e}", exc_info=True)
+                elif cmd.get("type") == "update_automation_overlay_log":
+                    handled = True
+                    text = cmd.get("text") or ""
+                    if self._conversation_overlay is not None and hasattr(self._conversation_overlay, "update_text"):
+                        try:
+                            self._conversation_overlay.update_text(text)
+                        except Exception as e:
+                            log(f"Failed to update AutomationOverlay log: {e}", exc_info=True)
                 elif cmd.get("type") == "quit_app":
                     handled = True
                     self.quit_app()
