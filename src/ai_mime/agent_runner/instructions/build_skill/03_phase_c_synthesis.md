@@ -27,12 +27,7 @@ In this phase, you will write the final deterministic python execution script, r
      ```
      Inside a browser-harness `-c` block ask_llm is preimported
      Branch deterministically on the returned dict. Document each call site in `SKILL.md`.
-   - Emit progress logs continuously (step id + title) on stderr:
-     - `{"event":"step_start","id":"<step_id>","title":"…"}`
-     - `{"event":"step_done","id":"<step_id>","outputs":{…},"summary":"…"}`
-     - `{"event":"step_failed","id":"<step_id>","error":"…","recoverable":true|false}`
-     - `{"event":"workflow_done","outputs":{…}}`
-     Free-form human logs may be interleaved. Exit non-zero on `step_failed`.
+   - Emit progress logs continuously on stderr using simple print statements. Write all logs in clear, short, natural language suitable for an end-user overlay (e.g., "Searching for weather...", "Analyzing results...", "Opening a new tab..."). Exit non-zero on failure.
 4. Clear any Phase-B side effects before testing. Print a one-line request to the user to confirm that `agent/side_effects.md` entries are cleared.
 5. Run the assembled script end-to-end against `agent/confirmed_inputs.json` (e.g. via `"$AI_MIME_PYTHON_PATH" scripts/run.py --inputs-json agent/confirmed_inputs.json`). Verify that the same end state Phase B reached is achieved.
 6. If it fails: diagnose, patch `scripts/run.py`, ask the user to clear new side effects, and re-run. Loop until it runs end-to-end cleanly.
