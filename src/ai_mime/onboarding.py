@@ -448,13 +448,12 @@ class _OnboardingWizard(NSObject):
         self._continue_btn = None
         self._back_btn = None
         self._provider_popup = None
-        self._api_key_field = None
-        self._api_key_label = None
-        self._provider_status_label = None
-        self._test_btn = None
-        self._provider_detected = False
-        self._provider_verified = False
-        self._install_btn = None
+        self._provider_status_rows = {}
+        self._provider_instructions_label = None
+        self._test_status_btn = None
+        self._testing_provider = False
+        self._provider_progress = None
+        self._provider_progress_label = None
         self._installing = False
         self._install_progress = None
         self._install_progress_label = None
@@ -540,11 +539,11 @@ class _OnboardingWizard(NSObject):
         self._continue_btn = None
         self._back_btn = None
         self._provider_popup = None
-        self._api_key_field = None
-        self._api_key_label = None
-        self._provider_status_label = None
-        self._test_btn = None
-        self._install_btn = None
+        self._provider_progress = None
+        self._provider_progress_label = None
+        self._provider_status_rows = {}
+        self._provider_instructions_label = None
+        self._test_status_btn = None
         self._install_progress = None
         self._install_progress_label = None
         self._starting = False
@@ -793,71 +792,91 @@ class _OnboardingWizard(NSObject):
                         x=0, y=_H - 86, w=_W, h=34,
                         size=24, bold=True, align=_CENTER)
         self._add_label(
-            "Select your AI provider. You can use a local CLI installation\n"
-            "or configure an API key for Anthropic or OpenAI.",
-            x=0, y=_H - 145, w=_W, h=48,
-            size=15, align=_CENTER, color=NSColor.secondaryLabelColor(),
+            "Select your AI provider. We will verify the installation and login status.",
+            x=0, y=_H - 130, w=_W, h=36,
+            size=14, align=_CENTER, color=NSColor.secondaryLabelColor(),
         )
 
         # Provider Selector Label
         self._add_label(
             "AI Provider",
-            x=_M, y=_H - 188, w=_CW, h=18,
+            x=_M, y=_H - 168, w=_CW, h=18,
             size=12, bold=True, color=NSColor.secondaryLabelColor(),
         )
 
         # Provider Popup Button
         self._provider_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(_M, _H - 215, _CW, 26), False
+            NSMakeRect(_M, _H - 195, _CW, 26), False
         )
         self._provider_popup.addItemsWithTitles_(["Anthropic / Claude Code", "OpenAI / Codex"])
         self._provider_popup.setTarget_(self)
         self._provider_popup.setAction_("providerChanged:")
         self._content.addSubview_(self._provider_popup)
 
-        # API Key Label
-        self._api_key_label = self._add_label(
-            "Anthropic API key",
-            x=_M, y=_H - 260, w=_CW, h=18,
-            size=12, bold=True, color=NSColor.secondaryLabelColor(),
-        )
+        # Status Rows
+        self._add_provider_status_row("binary", "CLI Binary Installation", _H - 240)
+        self._add_provider_status_row("login", "Authentication Status", _H - 275)
 
-        # API Key Field
-        self._api_key_field = NSTextField.alloc().initWithFrame_(NSMakeRect(_M, _H - 300, _CW, 36))
-        self._api_key_field.setPlaceholderString_("sk-ant-...")
-        self._api_key_field.setFont_(NSFont.systemFontOfSize_(15))
-        self._content.addSubview_(self._api_key_field)
-
-        # Status Label
-        self._provider_status_label = self._add_label(
+        # Instructions Label
+        self._provider_instructions_label = self._add_label(
             "",
-            x=_M, y=_H - 345, w=_CW, h=40,
-            size=12, align=_CENTER, color=NSColor.secondaryLabelColor(),
+            x=_M, y=_H - 350, w=_CW, h=60,
+            size=12, align=_CENTER, color=NSColor.secondaryLabelColor()
         )
 
-        # Test & Save button
-        test_btn_w, test_btn_h = 160, 30
-        self._test_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect((_W - test_btn_w) / 2, _H - 390, test_btn_w, test_btn_h)
+        # Progress Indicator for installation
+        progress_w, progress_h = 260, 12
+        self._provider_progress = NSProgressIndicator.alloc().initWithFrame_(
+            NSMakeRect((_W - progress_w) / 2, 100, progress_w, progress_h)
         )
-        self._test_btn.setTitle_("Test & Save")
-        self._test_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        self._test_btn.setTarget_(self)
-        self._test_btn.setAction_("testProvider:")
-        self._test_btn.setBezelStyle_(1)
-        self._test_btn.setFont_(NSFont.systemFontOfSize_(12))
-        self._content.addSubview_(self._test_btn)
+        self._provider_progress.setStyle_(NSProgressIndicatorBarStyle)
+        self._provider_progress.setIndeterminate_(False)
+        self._provider_progress.setMinValue_(0.0)
+        self._provider_progress.setMaxValue_(100.0)
+        self._provider_progress.setDoubleValue_(0.0)
+        self._provider_progress.setHidden_(True)
+        self._content.addSubview_(self._provider_progress)
 
-        # Standard Continue button (disabled by default)
-        self._add_navigation_buttons(continue_enabled=False)
-
-        # Notification for key change
-        NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
-            self,
-            "apiKeyChanged:",
-            NSControlTextDidChangeNotification,
-            self._api_key_field,
+        self._provider_progress_label = self._add_label(
+            "",
+            x=_M, y=78, w=_CW, h=18,
+            size=11, align=_CENTER, color=NSColor.secondaryLabelColor()
         )
+
+        # Add Back button top-left
+        self._back_btn = NSButton.alloc().initWithFrame_(NSMakeRect(24, _H - 36, 60, 24))
+        self._back_btn.setTitle_("Back")
+        self._back_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        self._back_btn.setTarget_(self)
+        self._back_btn.setAction_("onBack:")
+        self._back_btn.setEnabled_(True)
+        self._back_btn.setBezelStyle_(1)
+        self._back_btn.setFont_(NSFont.systemFontOfSize_(11))
+        self._content.addSubview_(self._back_btn)
+
+        # Custom bottom buttons: Test and Test and Continue
+        btn_w, btn_h = 140, 40
+        gap = 16
+        total_w = 2 * btn_w + gap
+        start_x = (_W - total_w) / 2
+
+        self._test_status_btn = NSButton.alloc().initWithFrame_(NSMakeRect(start_x, 48, btn_w, btn_h))
+        self._test_status_btn.setTitle_("Test")
+        self._test_status_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        self._test_status_btn.setTarget_(self)
+        self._test_status_btn.setAction_("testProvider:")
+        self._test_status_btn.setBezelStyle_(1)
+        self._test_status_btn.setFont_(NSFont.systemFontOfSize_(13))
+        self._content.addSubview_(self._test_status_btn)
+
+        self._continue_btn = NSButton.alloc().initWithFrame_(NSMakeRect(start_x + btn_w + gap, 48, btn_w, btn_h))
+        self._continue_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        self._continue_btn.setTarget_(self)
+        self._continue_btn.setAction_("smartAction:")
+        self._continue_btn.setEnabled_(False)
+        self._continue_btn.setBezelStyle_(1)
+        self._continue_btn.setFont_(NSFont.systemFontOfSize_(13))
+        self._content.addSubview_(self._continue_btn)
 
         # Set default selection or loaded configuration
         from ai_mime.provider_settings import _read_provider
@@ -867,83 +886,220 @@ class _OnboardingWizard(NSObject):
         else:
             self._provider_popup.selectItemAtIndex_(0)
 
-        # Trigger initial UI sync and check
-        self._sync_provider_ui(is_initial=True)
+        # Trigger initial UI update
+        self._update_provider_status_ui()
 
-    def _sync_provider_ui(self, is_initial=False):
+    def _add_provider_status_row(self, key, title, y):
+        ind_d = 20
+        indicator = NSView.alloc().initWithFrame_(NSMakeRect(_M, y, ind_d, ind_d))
+        indicator.setWantsLayer_(True)
+        indicator.layer().setCornerRadius_(ind_d / 2)
+        indicator.layer().setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.78, 1.0).CGColor)
+        self._content.addSubview_(indicator)
+
+        check = NSTextField.alloc().initWithFrame_(NSMakeRect(_M, y + 1, ind_d, ind_d - 4))
+        check.setStringValue_("\u2713")
+        check.setBezeled_(False)
+        check.setDrawsBackground_(False)
+        check.setEditable_(False)
+        check.setSelectable_(False)
+        check.setFont_(NSFont.boldSystemFontOfSize_(12))
+        check.setAlignment_(_CENTER)
+        check.setTextColor_(NSColor.whiteColor())
+        check.setHidden_(True)
+        self._content.addSubview_(check)
+
+        text_x = _M + ind_d + 12
+        self._add_label(title, x=text_x, y=y + 1, w=200, h=18, size=13, bold=True)
+
+        status_lbl = self._add_label(
+            "Checking...",
+            x=_W - _M - 200, y=y + 1, w=200, h=18,
+            size=13, align=2, # NSTextAlignmentRight
+            color=NSColor.secondaryLabelColor()
+        )
+
+        self._provider_status_rows[key] = {
+            "indicator": indicator,
+            "check": check,
+            "status": status_lbl,
+            "is_ok": False,
+        }
+
+    def _set_status_row(self, key, ok, text):
+        row = self._provider_status_rows.get(key)
+        if row is None:
+            return
+        row["is_ok"] = ok
+        row["status"].setStringValue_(text)
+        if ok:
+            row["indicator"].layer().setBackgroundColor_(NSColor.systemGreenColor().CGColor)
+            row["check"].setHidden_(False)
+            row["status"].setTextColor_(NSColor.systemGreenColor())
+        else:
+            if text == "Checking..." or text == "Not Verified":
+                row["indicator"].layer().setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.78, 1.0).CGColor)
+                row["check"].setHidden_(True)
+                row["status"].setTextColor_(NSColor.secondaryLabelColor())
+            else:
+                row["indicator"].layer().setBackgroundColor_(NSColor.systemRedColor().CGColor)
+                row["check"].setHidden_(True)
+                row["status"].setTextColor_(NSColor.systemRedColor())
+
+    def _update_provider_status_ui(self):
         idx = self._provider_popup.indexOfSelectedItem()
         provider = "openai" if idx == 1 else "anthropic"
+        label_prefix = "Claude Code" if provider == "anthropic" else "Codex"
 
-        # Update labels and placeholders
-        if provider == "anthropic":
-            self._api_key_label.setStringValue_("Anthropic API key")
-            self._api_key_field.setPlaceholderString_("sk-ant-...")
+        from ai_mime.provider_settings import is_provider_installed, _provider_runtime_status
+
+        installed = is_provider_installed(provider)
+        if installed:
+            self._set_status_row("binary", True, "Installed")
+            logged_in, msg = _provider_runtime_status(provider)
+            if logged_in:
+                self._set_status_row("login", True, "Logged In")
+                if self._provider_instructions_label is not None:
+                    self._provider_instructions_label.setStringValue_(f"{label_prefix} found and logged in.")
+                    self._provider_instructions_label.setTextColor_(NSColor.systemGreenColor())
+                if self._continue_btn is not None:
+                    self._continue_btn.setTitle_("Continue")
+                    self._continue_btn.setEnabled_(True)
+            else:
+                self._set_status_row("login", False, "Not Logged In")
+                if self._provider_instructions_label is not None:
+                    self._provider_instructions_label.setTextColor_(NSColor.secondaryLabelColor())
+                    self._provider_instructions_label.setStringValue_(
+                        f"{label_prefix} found. Please complete login in Terminal, then click 'Test' to verify."
+                    )
+                if self._continue_btn is not None:
+                    self._continue_btn.setTitle_("Login")
+                    self._continue_btn.setEnabled_(True)
         else:
-            self._api_key_label.setStringValue_("OpenAI API key")
-            self._api_key_field.setPlaceholderString_("sk-...")
+            self._set_status_row("binary", False, "Not Installed")
+            self._set_status_row("login", False, "Not Verified")
+            if self._provider_instructions_label is not None:
+                self._provider_instructions_label.setTextColor_(NSColor.secondaryLabelColor())
+                self._provider_instructions_label.setStringValue_(
+                    f"CLI tool is not installed. Click 'Install' to automatically install and login."
+                )
+            if self._continue_btn is not None:
+                self._continue_btn.setTitle_("Install")
+                self._continue_btn.setEnabled_(True)
 
-        # Load existing API key from env if available (on initial load only)
-        if is_initial:
-            from ai_mime.provider_settings import _read_dotenv_value
-            existing_key = _read_dotenv_value("OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY")
-            if existing_key:
-                self._api_key_field.setStringValue_(existing_key)
-
-        # Perform quick local runtime detection
-        from ai_mime.provider_settings import _provider_runtime_status
-        detected, msg = _provider_runtime_status(provider)
-        self._provider_detected = detected
-
-        self._provider_status_label.setStringValue_(msg)
-        if detected:
-            self._provider_status_label.setTextColor_(NSColor.systemGreenColor())
-        else:
-            self._provider_status_label.setTextColor_(NSColor.secondaryLabelColor())
-
-        self._update_provider_continue()
-
-    def _update_provider_continue(self):
-        val = (self._api_key_field.stringValue() or "").strip() if self._api_key_field is not None else ""
-        is_enabled = self._provider_detected or self._provider_verified or len(val) > 0
-        if self._continue_btn is not None:
-            self._continue_btn.setEnabled_(is_enabled)
+    def _launch_terminal_login(self, provider):
+        import subprocess
+        cmd = "claude auth login" if provider == "anthropic" else "codex login"
+        applescript = f'''
+        tell application "Terminal"
+            activate
+            do script "{cmd}"
+        end tell
+        '''
+        try:
+            subprocess.run(["osascript", "-e", applescript])
+        except Exception:
+            pass
 
     # Cocoa selector providerChanged:
     def providerChanged_(self, sender):
-        self._provider_verified = False
-        self._sync_provider_ui(is_initial=False)
-
-    # Cocoa selector apiKeyChanged:
-    def apiKeyChanged_(self, notification):
-        self._provider_verified = False
-        self._update_provider_continue()
+        if self._continue_btn is not None:
+            self._continue_btn.setEnabled_(False)
+        self._update_provider_status_ui()
 
     # Cocoa selector testProvider:
     def testProvider_(self, sender):
+        # Test button only tests status and updates UI
+        self._update_provider_status_ui()
+
+    # Cocoa selector smartAction:
+    def smartAction_(self, sender):
+        if self._testing_provider:
+            return
+
         idx = self._provider_popup.indexOfSelectedItem()
         provider = "openai" if idx == 1 else "anthropic"
-        key = (self._api_key_field.stringValue() or "").strip() if self._api_key_field is not None else ""
 
-        self._test_btn.setEnabled_(False)
-        self._test_btn.setTitle_("Testing...")
+        from ai_mime.provider_settings import is_provider_installed, _provider_runtime_status
 
-        from ai_mime.provider_settings import save_provider_settings
-        try:
-            status = save_provider_settings(provider, api_key=key if key else None)
-            self._provider_verified = True
-            
-            prov_status = status["providers"][provider]
-            msg = prov_status["status"]
-            self._provider_status_label.setStringValue_(f"Success! {msg}")
-            self._provider_status_label.setTextColor_(NSColor.systemGreenColor())
-        except Exception as e:
-            self._provider_verified = False
-            self._provider_status_label.setStringValue_(f"Failed: {e}")
-            self._provider_status_label.setTextColor_(NSColor.systemRedColor())
+        installed = is_provider_installed(provider)
+        if not installed:
+            self._testing_provider = True
+            if self._test_status_btn is not None:
+                self._test_status_btn.setEnabled_(False)
+            if self._continue_btn is not None:
+                self._continue_btn.setEnabled_(False)
+                self._continue_btn.setTitle_("Installing...")
+            if self._provider_progress is not None:
+                self._provider_progress.setHidden_(False)
+                self._provider_progress.setDoubleValue_(10.0)
+            if self._provider_progress_label is not None:
+                self._provider_progress_label.setStringValue_("Starting installation...")
 
-        self._test_btn.setEnabled_(True)
-        self._test_btn.setTitle_("Test & Save")
-        self._update_provider_continue()
+            thread = threading.Thread(target=self._install_provider_worker, daemon=True)
+            thread.start()
+        else:
+            logged_in, msg = _provider_runtime_status(provider)
+            if not logged_in:
+                self._launch_terminal_login(provider)
+                self._update_provider_status_ui()
+            else:
+                self.onContinue_(sender)
+
+    def _install_provider_worker(self):
+        idx = self._provider_popup.indexOfSelectedItem()
+        provider = "openai" if idx == 1 else "anthropic"
+
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "setProviderProgressFromWorker:",
+            ("Downloading and running installer...", 40),
+            False,
+        )
+
+        from ai_mime.provider_settings import install_provider_cli
+        ok, msg = install_provider_cli(provider)
+
+        payload = (ok, msg)
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "finishProviderInstallFromWorker:",
+            payload,
+            False,
+        )
+
+    # Cocoa selector setProviderProgressFromWorker:
+    def setProviderProgressFromWorker_(self, payload):
+        label, value = payload
+        if self._provider_progress is not None:
+            self._provider_progress.setDoubleValue_(float(value))
+        if self._provider_progress_label is not None:
+            self._provider_progress_label.setStringValue_(label)
+
+    # Cocoa selector finishProviderInstallFromWorker:
+    def finishProviderInstallFromWorker_(self, payload):
+        ok, msg = payload
+        self._testing_provider = False
+        if self._test_status_btn is not None:
+            self._test_status_btn.setEnabled_(True)
+        if self._continue_btn is not None:
+            self._continue_btn.setEnabled_(True)
+        if self._provider_progress is not None:
+            self._provider_progress.setHidden_(True)
+        if self._provider_progress_label is not None:
+            self._provider_progress_label.setStringValue_("")
+
+        if not ok:
+            if self._provider_instructions_label is not None:
+                self._provider_instructions_label.setStringValue_(f"Installation failed: {msg}")
+                self._provider_instructions_label.setTextColor_(NSColor.systemRedColor())
+            self._update_provider_status_ui()
+        else:
+            idx = self._provider_popup.indexOfSelectedItem()
+            provider = "openai" if idx == 1 else "anthropic"
+            from ai_mime.provider_settings import _provider_runtime_status
+            logged_in, status_msg = _provider_runtime_status(provider)
+            if not logged_in:
+                self._launch_terminal_login(provider)
+            self._update_provider_status_ui()
 
     # ------------------------------------------------------------------
     # Step 3 – Skills Setup
@@ -1318,15 +1474,14 @@ class _OnboardingWizard(NSObject):
         if self._step == 2:
             idx = self._provider_popup.indexOfSelectedItem()
             provider = "openai" if idx == 1 else "anthropic"
-            key = (self._api_key_field.stringValue() or "").strip() if self._api_key_field is not None else ""
             
             from ai_mime.provider_settings import save_provider_settings
             try:
-                save_provider_settings(provider, api_key=key if key else None)
+                save_provider_settings(provider, api_key=None)
             except Exception as e:
-                if self._provider_status_label is not None:
-                    self._provider_status_label.setStringValue_(f"Error: {e}")
-                    self._provider_status_label.setTextColor_(NSColor.systemRedColor())
+                if self._provider_instructions_label is not None:
+                    self._provider_instructions_label.setStringValue_(f"Error: {e}")
+                    self._provider_instructions_label.setTextColor_(NSColor.systemRedColor())
                 return
 
         self._step += 1
