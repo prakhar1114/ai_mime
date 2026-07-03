@@ -44,7 +44,7 @@ dev = [
 
 [project.scripts]
 start_app = "ai_mime.cli:start_app"
-reflect = "ai_mime.cli:reflect"
+ai-mime-mcp = "ai_mime.mcp_server:cli_main"
 
 [tool.setuptools.package-data]
 "ai_mime.editor.web" = ["*.html", "*.js", "*.css"]

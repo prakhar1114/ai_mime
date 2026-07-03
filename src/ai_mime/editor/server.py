@@ -44,6 +44,16 @@ from ai_mime.provider_settings import (
     read_autoinstall_skills,
     save_provider_settings,
     write_autoinstall_skills,
+    read_autoinstall_mcp,
+    write_autoinstall_mcp,
+    read_autoinstall_mcp_clients,
+    write_autoinstall_mcp_clients,
+)
+
+from ai_mime.editor.mcp_installer import (
+    get_available_clients,
+    install_mcp_to_clients,
+    uninstall_mcp_from_clients,
 )
 from ai_mime.skill_links import (
     link_skill,
@@ -1755,6 +1765,34 @@ def create_app(
         # remove every AI-Mime link off.
         counts = sync_all_skill_links(enabled)
         return {"enabled": enabled, **counts}
+        
+    @app.get("/api/mcp/settings")
+    def api_mcp_settings():
+        return {
+            "enabled": read_autoinstall_mcp(),
+            "saved_clients": read_autoinstall_mcp_clients(),
+            "available_clients": get_available_clients()
+        }
+        
+    @app.post("/api/mcp/install")
+    def api_mcp_install(payload: dict[str, Any] = Body(...)):
+        clients = payload.get("clients", [])
+        if not isinstance(clients, list):
+            raise HTTPException(status_code=400, detail="clients must be a list of strings")
+            
+        install_mcp_to_clients(clients)
+        write_autoinstall_mcp(True)
+        write_autoinstall_mcp_clients(clients)
+        return {"success": True}
+        
+    @app.post("/api/mcp/uninstall")
+    def api_mcp_uninstall():
+        clients = read_autoinstall_mcp_clients()
+        if clients:
+            uninstall_mcp_from_clients(clients)
+        write_autoinstall_mcp(False)
+        write_autoinstall_mcp_clients([])
+        return {"success": True}
 
     @app.get("/api/settings/provider")
     def api_provider_settings():
@@ -2837,6 +2875,46 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/api/skills/{skill_name}/run/stream")
+    def api_skill_run_by_name_stream(skill_name: str, payload: dict[str, Any] | None = Body(default=None)):
+        workflows = []
+        for child in task_runner.workflows_root.iterdir():
+            if child.is_dir() and child.name != ".agent":
+                workflows.append(child)
+        
+        workflows.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        
+        target_task_id = None
+        for child in workflows:
+            skill_dir = _find_skill_dir_with_run_sh(child)
+            if not skill_dir:
+                continue
+            
+            skill_md = skill_dir / "SKILL.md"
+            found_name = skill_dir.name
+            try:
+                text = skill_md.read_text(encoding="utf-8")
+                import re
+                m = re.match(r"\A---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+                if m:
+                    for line in m.group(1).splitlines():
+                        if ":" in line:
+                            k, _, v = line.partition(":")
+                            if k.strip() == "name":
+                                found_name = v.strip().strip("\"'")
+                                break
+            except Exception:
+                pass
+                
+            if found_name == skill_name:
+                target_task_id = child.name
+                break
+                
+        if not target_task_id:
+            raise HTTPException(status_code=404, detail=f"No workflow found with skill name: {skill_name}")
+            
+        return api_skill_run_stream(target_task_id, payload)
 
     @app.post("/api/tasks/{task_id}/skill/kill")
     def api_kill_skill_run(task_id: str):

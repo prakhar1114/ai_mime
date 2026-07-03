@@ -9,6 +9,7 @@
     agentModeBtn: document.getElementById("agentModeBtn"),
     openWorkflowsBtn: document.getElementById("openWorkflowsBtn"),
     autoinstallBtn: document.getElementById("autoinstallBtn"),
+    autoinstallMcpBtn: document.getElementById("autoinstallMcpBtn"),
     quitAppBtn: document.getElementById("quitAppBtn"),
     syncState: document.getElementById("syncState"),
   };
@@ -17,6 +18,7 @@
   let appStatus = {};
   let providerSettings = null;
   let autoinstallEnabled = null;
+  let mcpSettings = null;
   let busy = false;
   let openMenuTaskId = null;
 
@@ -200,6 +202,131 @@
     } finally {
       el.autoinstallBtn.disabled = false;
       renderAutoinstallButton();
+    }
+  }
+
+  function renderMcpButton() {
+    if (!el.autoinstallMcpBtn) return;
+    if (!mcpSettings) {
+      el.autoinstallMcpBtn.textContent = "Auto-Install MCP: Off";
+      el.autoinstallMcpBtn.classList.remove("primary");
+      return;
+    }
+    el.autoinstallMcpBtn.textContent = mcpSettings.enabled
+      ? "Auto-Install MCP: On"
+      : "Auto-Install MCP: Off";
+    el.autoinstallMcpBtn.classList.toggle("primary", mcpSettings.enabled);
+  }
+
+  async function loadMcpSettings() {
+    try {
+      mcpSettings = await request("/api/mcp/settings");
+    } catch {
+      mcpSettings = null;
+    }
+    renderMcpButton();
+  }
+
+  function openMcpModal() {
+    if (!mcpSettings || !mcpSettings.available_clients) return;
+    const saved = mcpSettings.saved_clients || [];
+    
+    let optionsHtml = "";
+    if (mcpSettings.available_clients.length === 0) {
+      optionsHtml = `<div class="provider-message"><em>No supported agents detected on your system.</em></div>`;
+    } else {
+      for (const client of mcpSettings.available_clients) {
+        const checked = (saved.includes(client.id) || !mcpSettings.enabled) ? "checked" : "";
+        optionsHtml += `
+          <label class="provider-option">
+            <input type="checkbox" name="mcp_clients" value="${escapeHtml(client.id)}" ${checked}>
+            <span>
+              <strong>${escapeHtml(client.name)}</strong>
+            </span>
+          </label>
+        `;
+      }
+    }
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay mcp-modal";
+    overlay.innerHTML = `
+      <div class="modal-card provider-card" role="dialog" aria-modal="true" aria-label="Install MCP Server">
+        <div class="modal-header">
+          <div class="modal-title">Install MCP Server</div>
+          <div class="modal-desc">Select which agents you want to automatically install the AI Mime MCP Server into:</div>
+        </div>
+        
+        <div class="mcp-options-list" style="max-height: 40vh; overflow-y: auto; margin: 10px 0;">
+          ${optionsHtml}
+        </div>
+        
+        <div class="modal-desc" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--line);">
+          <strong style="color: var(--text);">Other Agents (Cursor, Windsurf, Zed, etc):</strong><br>
+          To add the MCP Server manually, use this command in your agent's MCP settings:
+        </div>
+        <div class="provider-key" style="margin-top: 8px;">
+          <input type="text" readonly value="uv run ai-mime-mcp" style="font-family: monospace;" onfocus="this.select()">
+        </div>
+        
+        <div class="modal-actions row" style="margin-top: 24px;">
+          <button class="modal-btn secondary" id="cancelMcpBtn">Cancel</button>
+          <button class="modal-btn primary" id="saveMcpBtn">Continue</button>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    overlay.querySelector("#cancelMcpBtn").addEventListener("click", close);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) close();
+    });
+
+    const saveBtn = overlay.querySelector("#saveMcpBtn");
+    saveBtn.addEventListener("click", async () => {
+      const checkboxes = Array.from(overlay.querySelectorAll("input[name='mcp_clients']"));
+      const selected = checkboxes.filter(c => c.checked).map(c => c.value);
+      
+      close();
+      el.autoinstallMcpBtn.disabled = true;
+      el.autoinstallMcpBtn.textContent = "Installing MCP...";
+      
+      try {
+        await request("/api/mcp/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clients: selected })
+        });
+        await loadMcpSettings();
+      } catch (e) {
+        alert("Failed to install MCP: " + (e.message || String(e)));
+      } finally {
+        el.autoinstallMcpBtn.disabled = false;
+        renderMcpButton();
+      }
+    });
+  }
+
+  async function toggleMcp() {
+    if (!mcpSettings) await loadMcpSettings();
+    if (mcpSettings.enabled) {
+      // Uninstall
+      el.autoinstallMcpBtn.disabled = true;
+      el.autoinstallMcpBtn.textContent = "Removing MCP...";
+      try {
+        await request("/api/mcp/uninstall", { method: "POST" });
+        await loadMcpSettings();
+      } catch (e) {
+        alert("Failed to uninstall MCP: " + (e.message || String(e)));
+      } finally {
+        el.autoinstallMcpBtn.disabled = false;
+        renderMcpButton();
+      }
+    } else {
+      // Install -> open modal
+      openMcpModal();
     }
   }
 
@@ -818,6 +945,8 @@
     }
   });
   if (el.autoinstallBtn) el.autoinstallBtn.addEventListener("click", toggleAutoinstall);
+  if (el.autoinstallMcpBtn) el.autoinstallMcpBtn.addEventListener("click", toggleMcp);
+  
   el.quitAppBtn.addEventListener("click", async () => {
     if (!confirm("Are you sure you want to quit the application and close all processes?")) return;
     try {
@@ -845,6 +974,7 @@
   });
   loadProviderSettings();
   loadAutoinstallSettings();
+  loadMcpSettings();
   loadTasks();
   window.setInterval(loadTasks, 1600);
 })();
