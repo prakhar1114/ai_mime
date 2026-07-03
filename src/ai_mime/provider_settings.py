@@ -219,7 +219,7 @@ def install_provider_cli(provider: Provider) -> tuple[bool, str]:
             shell=True,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=600,
         )
         if proc.returncode == 0:
             return True, "Installation complete."

@@ -503,10 +503,10 @@ class _OnboardingWizard(NSObject):
         if self._start_timer is not None:
             self._start_timer.invalidate()
             self._start_timer = None
-        
+
         app = NSApplication.sharedApplication()
         app.stop_(None)
-        
+
         # Post a dummy event to break the event loop immediately.
         try:
             event = NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
@@ -1050,11 +1050,19 @@ class _OnboardingWizard(NSObject):
         idx = self._provider_popup.indexOfSelectedItem()
         provider = "openai" if idx == 1 else "anthropic"
 
-        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "setProviderProgressFromWorker:",
-            ("Downloading and running installer...", 40),
-            False,
-        )
+        def bump_progress():
+            import time
+            val = 10.0
+            while getattr(self, "_testing_provider", False) and val <= 75.0:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "setProviderProgressFromWorker:",
+                    ("Downloading and running installer...", val),
+                    False,
+                )
+                time.sleep(1)
+                val += 0.5
+
+        threading.Thread(target=bump_progress, daemon=True).start()
 
         from ai_mime.provider_settings import install_provider_cli
         ok, msg = install_provider_cli(provider)
@@ -1119,21 +1127,9 @@ class _OnboardingWizard(NSObject):
         if is_frozen():
             self._add_skill_row("python-3.12", "Managed Python for workflow virtualenvs", _H - 300)
 
-        install_btn_w, install_btn_h = 150, 34
-        self._install_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect((_W - install_btn_w) / 2, _H - 398, install_btn_w, install_btn_h)
-        )
-        self._install_btn.setTitle_("Install")
-        self._install_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        self._install_btn.setTarget_(self)
-        self._install_btn.setAction_("installSkills:")
-        self._install_btn.setBezelStyle_(1)
-        self._install_btn.setFont_(NSFont.systemFontOfSize_(13))
-        self._content.addSubview_(self._install_btn)
-
         progress_w, progress_h = 260, 12
         self._install_progress = NSProgressIndicator.alloc().initWithFrame_(
-            NSMakeRect((_W - progress_w) / 2, _H - 428, progress_w, progress_h)
+            NSMakeRect((_W - progress_w) / 2, 118, progress_w, progress_h)
         )
         self._install_progress.setStyle_(NSProgressIndicatorBarStyle)
         self._install_progress.setIndeterminate_(False)
@@ -1145,16 +1141,19 @@ class _OnboardingWizard(NSObject):
 
         self._install_progress_label = self._add_label(
             "",
-            x=_M, y=_H - 456, w=_CW, h=18,
+            x=_M, y=96, w=_CW, h=18,
             size=11, align=_CENTER, color=NSColor.secondaryLabelColor(),
         )
 
         self._skills_error_label = self._add_label(
             "",
-            x=_M, y=8, w=_CW, h=36,
+            x=_M, y=140, w=_CW, h=36,
             size=12, align=_CENTER, color=NSColor.systemRedColor(),
         )
-        self._add_navigation_buttons(continue_enabled=False)
+        self._add_navigation_buttons(continue_enabled=True)
+        self._continue_btn.setTitle_("Install and Continue")
+        self._continue_btn.setAction_("installSkills:")
+        self._continue_btn.setFrame_(NSMakeRect((_W - 180) / 2, 48, 180, 40))
         self._refresh_skill_status()
 
     def _add_skill_row(self, name, detail, y):
@@ -1223,8 +1222,7 @@ class _OnboardingWizard(NSObject):
                 env_path=get_env_path(),
                 browser=browser_skill,
             )
-        if self._continue_btn is not None:
-            self._continue_btn.setEnabled_(browser_ok and python_ok)
+
 
     # Cocoa selector  installSkills:
     def installSkills_(self, sender):
@@ -1234,15 +1232,11 @@ class _OnboardingWizard(NSObject):
         if self._skills_error_label is not None:
             self._skills_error_label.setStringValue_("")
         self._set_install_progress("Preparing install...", 5)
-        if self._install_btn is not None:
-            self._install_btn.setTitle_("Installing...")
-            self._install_btn.setEnabled_(False)
         if self._continue_btn is not None:
             self._continue_btn.setEnabled_(False)
-            self._continue_btn.setHidden_(True)
+            self._continue_btn.setTitle_("Installing...")
         if self._back_btn is not None:
             self._back_btn.setEnabled_(False)
-            self._back_btn.setHidden_(True)
 
         thread = threading.Thread(target=self._install_skills_worker, daemon=True)
         thread.start()
@@ -1318,19 +1312,19 @@ class _OnboardingWizard(NSObject):
         else:
             self._set_install_progress("Install complete.", 100)
         self._installing = False
-        if self._install_btn is not None:
-            self._install_btn.setTitle_("Install")
-            self._install_btn.setEnabled_(True)
         if self._install_progress is not None:
             self._install_progress.setHidden_(True)
         if self._install_progress_label is not None:
             self._install_progress_label.setStringValue_("")
         if self._continue_btn is not None:
-            self._continue_btn.setHidden_(False)
+            self._continue_btn.setEnabled_(True)
+            self._continue_btn.setTitle_("Install and Continue")
         if self._back_btn is not None:
             self._back_btn.setEnabled_(True)
-            self._back_btn.setHidden_(False)
         self._refresh_skill_status()
+
+        if not error:
+            self.onContinue_(None)
 
     # ------------------------------------------------------------------
     # Step 4 – Done
@@ -1474,7 +1468,7 @@ class _OnboardingWizard(NSObject):
         if self._step == 2:
             idx = self._provider_popup.indexOfSelectedItem()
             provider = "openai" if idx == 1 else "anthropic"
-            
+
             from ai_mime.provider_settings import save_provider_settings
             try:
                 save_provider_settings(provider, api_key=None)
