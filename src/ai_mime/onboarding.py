@@ -28,7 +28,6 @@ from AppKit import (
     NSImageView,
     NSMenu,
     NSMenuItem,
-    NSPopUpButton,
     NSEvent,
     NSEventTypeApplicationDefined,
     NSWindowStyleMaskTitled,
@@ -41,6 +40,7 @@ from AppKit import (
     NSProgressIndicator,
     NSProgressIndicatorBarStyle,
     NSProgressIndicatorSpinningStyle,
+    NSImageSymbolConfiguration,
 )
 
 from ai_mime.app_data import (
@@ -66,7 +66,8 @@ _W = 560          # window width
 _H = 480          # window height
 _M = 40           # side margin
 _CW = _W - 2 * _M  # content width
-_STEPS = ("Welcome", "Permissions", "Provider", "Skills", "Done")
+_STEPS = ("Permissions", "Provider", "Skills")
+_FINISH_SPLASH_SECS = 1.2   # brief confirmation splash before hand-off (0 = none)
 _CENTER = 1       # NSTextAlignmentCenter
 _ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 _BROWSER_SKILL_NAME_ENV = "AI_MIME_BROWSER_SKILL_NAME"
@@ -448,6 +449,8 @@ class _OnboardingWizard(NSObject):
         self._continue_btn = None
         self._back_btn = None
         self._provider_popup = None
+        self._provider_choice = 0
+        self._provider_cards = {}
         self._provider_status_rows = {}
         self._provider_instructions_label = None
         self._test_status_btn = None
@@ -461,6 +464,7 @@ class _OnboardingWizard(NSObject):
         self._start_progress = None
         self._start_status_label = None
         self._start_timer = None
+        self._skills_autostart_timer = None
         self._skill_rows = {}
         self._skills_error_label = None
         self._perm_timer = None
@@ -503,6 +507,9 @@ class _OnboardingWizard(NSObject):
         if self._start_timer is not None:
             self._start_timer.invalidate()
             self._start_timer = None
+        if self._skills_autostart_timer is not None:
+            self._skills_autostart_timer.invalidate()
+            self._skills_autostart_timer = None
 
         app = NSApplication.sharedApplication()
         app.stop_(None)
@@ -542,6 +549,7 @@ class _OnboardingWizard(NSObject):
         self._provider_progress = None
         self._provider_progress_label = None
         self._provider_status_rows = {}
+        self._provider_cards = {}
         self._provider_instructions_label = None
         self._test_status_btn = None
         self._install_progress = None
@@ -555,171 +563,79 @@ class _OnboardingWizard(NSObject):
 
     def _render(self):
         self._clear()
-        self._add_step_dots()
         (
-            self._render_welcome,
             self._render_permissions,
             self._render_provider_setup,
             self._render_skills_setup,
-            self._render_done,
         )[self._step]()
-
-    def _add_step_dots(self):
-        n = len(_STEPS)
-        dot = 8
-        gap = 12
-        total = n * dot + (n - 1) * gap
-        sx = (_W - total) / 2
-        y = _H - 26          # near the top
-        for i in range(n):
-            v = NSView.alloc().initWithFrame_(NSMakeRect(sx + i * (dot + gap), y, dot, dot))
-            v.setWantsLayer_(True)
-            layer = v.layer()
-            layer.setCornerRadius_(dot / 2)
-            color = NSColor.systemBlueColor() if i <= self._step else NSColor.colorWithWhite_alpha_(0.75, 1.0)
-            layer.setBackgroundColor_(color.CGColor)
-            self._content.addSubview_(v)
-
-    # ------------------------------------------------------------------
-    # Step 0 – Welcome
-    # ------------------------------------------------------------------
-    def _render_welcome(self):
-        # Logo
-        logo_path = str(get_bundled_resource("AppIcon.appiconset/icon_128_1x.png"))
-        logo_img = NSImage.alloc().initWithContentsOfFile_(logo_path)
-        logo_size = 100
-        logo_view = NSImageView.alloc().initWithFrame_(
-            NSMakeRect((_W - logo_size) / 2, _H - 178, logo_size, logo_size)
-        )
-        if logo_img is not None:
-            logo_view.setImage_(logo_img)
-        self._content.addSubview_(logo_view)
-
-        # App name
-        self._add_label("AI Mime",
-                        x=0, y=_H - 230, w=_W, h=40,
-                        size=32, bold=True, align=_CENTER)
-
-        # Tagline
-        self._add_label(
-            "Record your screen actions, then use AI\n"
-            "to build replayable workflow automations.",
-            x=0, y=_H - 310, w=_W, h=60,
-            size=15, align=_CENTER, color=NSColor.secondaryLabelColor(),
-        )
-
-        # Get Started – prominent centered button
-        self._add_primary_button("Get Started")
 
     # ------------------------------------------------------------------
     # Step 1 – Permissions
     # ------------------------------------------------------------------
+
     def _render_permissions(self):
-        self._add_label("Permissions",
-                        x=0, y=_H - 86, w=_W, h=34,
-                        size=24, bold=True, align=_CENTER)
+        self._rounded_icon(54, _H - 116)
+        self._add_label("Enable permissions", x=0, y=_H - 152, w=_W, h=30,
+                        size=22, bold=True, align=_CENTER)
         self._add_label(
-            "AI Mime needs two permissions to function.\n"
-            "Click buttons below to open settings, then enable AI Mime.",
-            x=0, y=_H - 155, w=_W, h=50,
-            size=14, align=_CENTER, color=NSColor.secondaryLabelColor(),
-        )
+            "AI Mime needs two macOS permissions to\nwatch and replay your workflows.",
+            x=0, y=_H - 196, w=_W, h=36, size=13, align=_CENTER,
+            color=NSColor.secondaryLabelColor())
 
-        # Per-permission rows with individual status indicators and buttons
-        row_h = 70  # Increased height to fit buttons
-        gap   = 16
-        # stack from top: first perm at _H-250, second below
-        y = _H - 250
-        for perm in _PERMS:
-            self._add_perm_row(perm, y, row_h)
-            y -= (row_h + gap)
+        card_h = 124
+        card_y = 150
+        self._card(_M, card_y, _CW, card_h)
+        row_h = card_h / 2
+        visuals = {
+            "accessibility": (NSColor.systemBlueColor(), "accessibility",
+                              "Control the screen to replay your actions"),
+            "screen_recording": (NSColor.systemRedColor(), "video.fill",
+                                 "See the screen while recording a task"),
+        }
+        self._hairline(_M + 62, card_y + row_h, _CW - 62 - 16)
+        order = list(_PERMS)
+        self._add_perm_row(order[0], visuals[order[0]["key"]], card_y + row_h, row_h)
+        self._add_perm_row(order[1], visuals[order[1]["key"]], card_y, row_h)
 
-        self._add_navigation_buttons(continue_enabled=False)
+        self._primary_button("Continue", "onContinue:", enabled=False)
 
-        # Poll for permission state every 0.5 s
         self._perm_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.5, self, "pollPerms:", None, True
-        )
+            0.5, self, "pollPerms:", None, True)
 
-    def _add_perm_row(self, perm, y, h):
-        key, title, path, pane = perm["key"], perm["title"], perm["path"], perm["pane"]
 
-        # ── status indicator circle (left) ──
-        ind_d  = 24
-        ind_y  = y + h - 30  # Position near top of row
+    def _add_perm_row(self, perm, visual, y, h):
+        key = perm["key"]; pane = perm["pane"]; title = perm["title"]
+        color, symbol, subtitle = visual
+        cy = y + h / 2
+        self._tile(_M + 16, cy - 15, color, symbol, size=30)
+        tx = _M + 16 + 30 + 13
+        self._add_label(title, x=tx, y=cy + 1, w=250, h=18, size=14, bold=True)
+        self._add_label(subtitle, x=tx, y=cy - 17, w=300, h=15, size=12,
+                        color=NSColor.secondaryLabelColor())
 
-        indicator = NSView.alloc().initWithFrame_(NSMakeRect(_M, ind_y, ind_d, ind_d))
-        indicator.setWantsLayer_(True)
-        indicator.layer().setCornerRadius_(ind_d / 2)
-        indicator.layer().setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.78, 1.0).CGColor)
-        self._content.addSubview_(indicator)
-
-        # Checkmark inside indicator (hidden until granted)
-        check = NSTextField.alloc().initWithFrame_(NSMakeRect(_M, ind_y + 3, ind_d, ind_d - 8))
-        check.setStringValue_("\u2713")
-        check.setBezeled_(False)
-        check.setDrawsBackground_(False)
-        check.setEditable_(False)
-        check.setSelectable_(False)
-        check.setFont_(NSFont.boldSystemFontOfSize_(14))
-        check.setAlignment_(_CENTER)
-        check.setTextColor_(NSColor.whiteColor())
-        check.setHidden_(True)
-        self._content.addSubview_(check)
-
-        # ── title ──
-        text_x = _M + ind_d + 12
-        text_w = _CW - ind_d - 12
-
-        title_lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(text_x, y + h - 24, text_w, 20))
-        title_lbl.setStringValue_(title)
-        title_lbl.setBezeled_(False)
-        title_lbl.setDrawsBackground_(False)
-        title_lbl.setEditable_(False)
-        title_lbl.setSelectable_(False)
-        title_lbl.setFont_(NSFont.boldSystemFontOfSize_(15))
-        self._content.addSubview_(title_lbl)
-
-        # ── path hint ──
-        path_lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(text_x, y + h - 42, text_w, 16))
-        path_lbl.setStringValue_(path)
-        path_lbl.setBezeled_(False)
-        path_lbl.setDrawsBackground_(False)
-        path_lbl.setEditable_(False)
-        path_lbl.setSelectable_(False)
-        path_lbl.setFont_(NSFont.systemFontOfSize_(11))
-        path_lbl.setTextColor_(NSColor.secondaryLabelColor())
-        self._content.addSubview_(path_lbl)
-
-        # ── "Open Settings" button ──
-        open_btn_w, open_btn_h = 120, 28
-        open_btn = NSButton.alloc().initWithFrame_(NSMakeRect(text_x, y + 6, open_btn_w, open_btn_h))
-        open_btn.setTitle_("Open Settings")
+        right = _M + _CW - 16
+        open_btn = NSButton.alloc().initWithFrame_(NSMakeRect(right - 66, cy - 13, 66, 26))
+        open_btn.setTitle_("Open")
         open_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        open_btn.setBezelStyle_(1)
+        open_btn.setFont_(NSFont.systemFontOfSize_(12))
         open_btn.setTarget_(self)
         open_btn.setAction_("openSpecificSettings:")
-        open_btn.setTag_(hash(pane))  # Store pane identifier in tag
-        open_btn.setBezelStyle_(1)  # Rounded bezel
-        open_btn.setFont_(NSFont.systemFontOfSize_(12))
+        open_btn.setTag_(hash(pane))
         self._content.addSubview_(open_btn)
 
-        # ── "Refresh" button ──
-        refresh_btn_w, refresh_btn_h = 80, 28
-        refresh_btn = NSButton.alloc().initWithFrame_(NSMakeRect(text_x + open_btn_w + 8, y + 6, refresh_btn_w, refresh_btn_h))
-        refresh_btn.setTitle_("Refresh")
-        refresh_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        refresh_btn.setTarget_(self)
-        refresh_btn.setAction_("pollPerms:")
-        refresh_btn.setBezelStyle_(1)
-        refresh_btn.setFont_(NSFont.systemFontOfSize_(12))
-        self._content.addSubview_(refresh_btn)
+        enabled_lbl = self._add_label("Enabled", x=right - 84, y=cy - 8, w=84, h=16,
+                                      size=12.5, bold=True, align=2,
+                                      color=NSColor.systemGreenColor())
+        enabled_lbl.setHidden_(True)
 
-        self._perm_rows[key] = {
-            "indicator": indicator,
-            "check": check,
-            "granted": False,
-            "pane": pane,
-        }
+        status_iv = self._symbol_view("exclamationmark.circle.fill",
+                                      NSColor.systemOrangeColor(),
+                                      right - 66 - 14 - 9, cy, pt=17)
+
+        self._perm_rows[key] = {"granted": False, "pane": pane,
+                                "status_iv": status_iv, "open_btn": open_btn,
+                                "enabled_lbl": enabled_lbl}
 
     # Cocoa selector  openSettings:
     def openSettings_(self, sender):
@@ -765,17 +681,32 @@ class _OnboardingWizard(NSObject):
         if self._continue_btn is not None:
             self._continue_btn.setEnabled_(all(r["granted"] for r in self._perm_rows.values()))
 
+
     def _update_perm(self, key, granted):
         row = self._perm_rows.get(key)
         if row is None or row["granted"] == granted:
             return
         row["granted"] = granted
         if granted:
-            row["indicator"].layer().setBackgroundColor_(NSColor.systemGreenColor().CGColor)
-            row["check"].setHidden_(False)
+            img = self._sf("checkmark.circle.fill", 17)
+            if img is not None:
+                row["status_iv"].setImage_(img)
+            try:
+                row["status_iv"].setContentTintColor_(NSColor.systemGreenColor())
+            except Exception:
+                pass
+            row["open_btn"].setHidden_(True)
+            row["enabled_lbl"].setHidden_(False)
         else:
-            row["indicator"].layer().setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.78, 1.0).CGColor)
-            row["check"].setHidden_(True)
+            img = self._sf("exclamationmark.circle.fill", 17)
+            if img is not None:
+                row["status_iv"].setImage_(img)
+            try:
+                row["status_iv"].setContentTintColor_(NSColor.systemOrangeColor())
+            except Exception:
+                pass
+            row["open_btn"].setHidden_(False)
+            row["enabled_lbl"].setHidden_(True)
 
     # ------------------------------------------------------------------
     # Step 2 – Claude Setup
@@ -783,52 +714,53 @@ class _OnboardingWizard(NSObject):
     # ------------------------------------------------------------------
     # Step 2 – AI Provider Setup
     # ------------------------------------------------------------------
+
     def _render_provider_setup(self):
         if self._perm_timer is not None:
             self._perm_timer.invalidate()
             self._perm_timer = None
 
-        self._add_label("AI Provider Setup",
-                        x=0, y=_H - 86, w=_W, h=34,
-                        size=24, bold=True, align=_CENTER)
+        self._add_label("Choose your AI provider", x=0, y=_H - 100, w=_W, h=30,
+                        size=22, bold=True, align=_CENTER)
         self._add_label(
-            "Select your AI provider. We will verify the installation and login status.",
-            x=0, y=_H - 130, w=_W, h=36,
-            size=14, align=_CENTER, color=NSColor.secondaryLabelColor(),
-        )
+            "AI Mime runs on a coding agent CLI. We’ll\ninstall and verify it for you.",
+            x=0, y=_H - 144, w=_W, h=36, size=13, align=_CENTER,
+            color=NSColor.secondaryLabelColor())
 
-        # Provider Selector Label
-        self._add_label(
-            "AI Provider",
-            x=_M, y=_H - 168, w=_CW, h=18,
-            size=12, bold=True, color=NSColor.secondaryLabelColor(),
-        )
+        from ai_mime.provider_settings import _read_provider
+        self._provider_choice = 1 if _read_provider() == "openai" else 0
+        gap = 14
+        cw = (_CW - gap) / 2
+        ch = 62
+        cy = _H - 234
+        self._add_provider_card(0, "Claude Code", "Anthropic", _M, cy, cw, ch)
+        self._add_provider_card(1, "Codex", "OpenAI", _M + cw + gap, cy, cw, ch)
+        self._style_provider_cards()
 
-        # Provider Popup Button
-        self._provider_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(_M, _H - 195, _CW, 26), False
-        )
-        self._provider_popup.addItemsWithTitles_(["Anthropic / Claude Code", "OpenAI / Codex"])
-        self._provider_popup.setTarget_(self)
-        self._provider_popup.setAction_("providerChanged:")
-        self._content.addSubview_(self._provider_popup)
+        try:
+            gray = NSColor.systemGrayColor()
+        except Exception:
+            gray = NSColor.grayColor()
+        scard_h = 88
+        scard_y = 150
+        self._card(_M, scard_y, _CW, scard_h)
+        self._hairline(_M + 62, scard_y + scard_h / 2, _CW - 62 - 16)
+        self._add_provider_status_row("binary", gray, "terminal.fill",
+                                      "CLI binary", "Command-line tool",
+                                      scard_y + scard_h / 2, scard_h / 2)
+        self._add_provider_status_row("login", NSColor.systemGreenColor(), "key.fill",
+                                      "Authentication", "Provider login status",
+                                      scard_y, scard_h / 2)
+        # Store the subtitle label for dynamic updates
+        self._provider_login_subtitle = self._provider_status_rows["login"].get("subtitle")
 
-        # Status Rows
-        self._add_provider_status_row("binary", "CLI Binary Installation", _H - 240)
-        self._add_provider_status_row("login", "Authentication Status", _H - 275)
-
-        # Instructions Label
         self._provider_instructions_label = self._add_label(
-            "",
-            x=_M, y=_H - 350, w=_CW, h=60,
-            size=12, align=_CENTER, color=NSColor.secondaryLabelColor()
-        )
+            "", x=_M, y=118, w=_CW, h=28, size=12, align=_CENTER,
+            color=NSColor.secondaryLabelColor())
 
-        # Progress Indicator for installation
-        progress_w, progress_h = 260, 12
+        progress_w = 260
         self._provider_progress = NSProgressIndicator.alloc().initWithFrame_(
-            NSMakeRect((_W - progress_w) / 2, 100, progress_w, progress_h)
-        )
+            NSMakeRect((_W - progress_w) / 2, 100, progress_w, 12))
         self._provider_progress.setStyle_(NSProgressIndicatorBarStyle)
         self._provider_progress.setIndeterminate_(False)
         self._provider_progress.setMinValue_(0.0)
@@ -838,116 +770,45 @@ class _OnboardingWizard(NSObject):
         self._content.addSubview_(self._provider_progress)
 
         self._provider_progress_label = self._add_label(
-            "",
-            x=_M, y=78, w=_CW, h=18,
-            size=11, align=_CENTER, color=NSColor.secondaryLabelColor()
-        )
+            "", x=_M, y=82, w=_CW, h=16, size=11, align=_CENTER,
+            color=NSColor.secondaryLabelColor())
 
-        # Add Back button top-left
-        self._back_btn = NSButton.alloc().initWithFrame_(NSMakeRect(24, _H - 36, 60, 24))
-        self._back_btn.setTitle_("Back")
-        self._back_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        self._back_btn.setTarget_(self)
-        self._back_btn.setAction_("onBack:")
-        self._back_btn.setEnabled_(True)
-        self._back_btn.setBezelStyle_(1)
-        self._back_btn.setFont_(NSFont.systemFontOfSize_(11))
-        self._content.addSubview_(self._back_btn)
+        self._back_button()
+        self._test_status_btn = self._secondary_button("Test", "testProvider:", 300, 29, 92, 30)
+        self._primary_button("Continue", "smartAction:", enabled=False)
 
-        # Custom bottom buttons: Test and Test and Continue
-        btn_w, btn_h = 140, 40
-        gap = 16
-        total_w = 2 * btn_w + gap
-        start_x = (_W - total_w) / 2
-
-        self._test_status_btn = NSButton.alloc().initWithFrame_(NSMakeRect(start_x, 48, btn_w, btn_h))
-        self._test_status_btn.setTitle_("Test")
-        self._test_status_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        self._test_status_btn.setTarget_(self)
-        self._test_status_btn.setAction_("testProvider:")
-        self._test_status_btn.setBezelStyle_(1)
-        self._test_status_btn.setFont_(NSFont.systemFontOfSize_(13))
-        self._content.addSubview_(self._test_status_btn)
-
-        self._continue_btn = NSButton.alloc().initWithFrame_(NSMakeRect(start_x + btn_w + gap, 48, btn_w, btn_h))
-        self._continue_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        self._continue_btn.setTarget_(self)
-        self._continue_btn.setAction_("smartAction:")
-        self._continue_btn.setEnabled_(False)
-        self._continue_btn.setBezelStyle_(1)
-        self._continue_btn.setFont_(NSFont.systemFontOfSize_(13))
-        self._content.addSubview_(self._continue_btn)
-
-        # Set default selection or loaded configuration
-        from ai_mime.provider_settings import _read_provider
-        current_prov = _read_provider()
-        if current_prov == "openai":
-            self._provider_popup.selectItemAtIndex_(1)
-        else:
-            self._provider_popup.selectItemAtIndex_(0)
-
-        # Trigger initial UI update
         self._update_provider_status_ui()
 
-    def _add_provider_status_row(self, key, title, y):
-        ind_d = 20
-        indicator = NSView.alloc().initWithFrame_(NSMakeRect(_M, y, ind_d, ind_d))
-        indicator.setWantsLayer_(True)
-        indicator.layer().setCornerRadius_(ind_d / 2)
-        indicator.layer().setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.78, 1.0).CGColor)
-        self._content.addSubview_(indicator)
 
-        check = NSTextField.alloc().initWithFrame_(NSMakeRect(_M, y + 1, ind_d, ind_d - 4))
-        check.setStringValue_("\u2713")
-        check.setBezeled_(False)
-        check.setDrawsBackground_(False)
-        check.setEditable_(False)
-        check.setSelectable_(False)
-        check.setFont_(NSFont.boldSystemFontOfSize_(12))
-        check.setAlignment_(_CENTER)
-        check.setTextColor_(NSColor.whiteColor())
-        check.setHidden_(True)
-        self._content.addSubview_(check)
+    def _add_provider_status_row(self, key, tile_color, symbol, title, subtitle, y, h):
+        cy = y + h / 2
+        self._tile(_M + 16, cy - 14, tile_color, symbol, size=28)
+        tx = _M + 16 + 28 + 12
+        self._add_label(title, x=tx, y=cy + 1, w=240, h=18, size=13.5, bold=True)
+        sub_lbl = self._add_label(subtitle, x=tx, y=cy - 16, w=260, h=14, size=11.5,
+                        color=NSColor.secondaryLabelColor())
+        lbl = self._add_label("Checking…", x=_W - _M - 176, y=cy - 8, w=160, h=16,
+                              size=13, bold=True, align=2,
+                              color=NSColor.secondaryLabelColor())
+        self._provider_status_rows[key] = {"status": lbl, "subtitle": sub_lbl, "is_ok": False}
 
-        text_x = _M + ind_d + 12
-        self._add_label(title, x=text_x, y=y + 1, w=200, h=18, size=13, bold=True)
-
-        status_lbl = self._add_label(
-            "Checking...",
-            x=_W - _M - 200, y=y + 1, w=200, h=18,
-            size=13, align=2, # NSTextAlignmentRight
-            color=NSColor.secondaryLabelColor()
-        )
-
-        self._provider_status_rows[key] = {
-            "indicator": indicator,
-            "check": check,
-            "status": status_lbl,
-            "is_ok": False,
-        }
 
     def _set_status_row(self, key, ok, text):
         row = self._provider_status_rows.get(key)
         if row is None:
             return
         row["is_ok"] = ok
-        row["status"].setStringValue_(text)
+        lbl = row["status"]
+        lbl.setStringValue_(text)
         if ok:
-            row["indicator"].layer().setBackgroundColor_(NSColor.systemGreenColor().CGColor)
-            row["check"].setHidden_(False)
-            row["status"].setTextColor_(NSColor.systemGreenColor())
+            lbl.setTextColor_(NSColor.systemGreenColor())
+        elif text in ("Checking…", "Not Verified"):
+            lbl.setTextColor_(NSColor.secondaryLabelColor())
         else:
-            if text == "Checking..." or text == "Not Verified":
-                row["indicator"].layer().setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.78, 1.0).CGColor)
-                row["check"].setHidden_(True)
-                row["status"].setTextColor_(NSColor.secondaryLabelColor())
-            else:
-                row["indicator"].layer().setBackgroundColor_(NSColor.systemRedColor().CGColor)
-                row["check"].setHidden_(True)
-                row["status"].setTextColor_(NSColor.systemRedColor())
+            lbl.setTextColor_(NSColor.systemRedColor())
 
     def _update_provider_status_ui(self):
-        idx = self._provider_popup.indexOfSelectedItem()
+        idx = self._selected_provider_index()
         provider = "openai" if idx == 1 else "anthropic"
         label_prefix = "Claude Code" if provider == "anthropic" else "Codex"
 
@@ -958,7 +819,10 @@ class _OnboardingWizard(NSObject):
             self._set_status_row("binary", True, "Installed")
             logged_in, msg = _provider_runtime_status(provider)
             if logged_in:
-                self._set_status_row("login", True, "Logged In")
+                self._set_status_row("login", True, "Installed")
+                login_row = self._provider_status_rows.get("login")
+                if login_row and login_row.get("subtitle"):
+                    login_row["subtitle"].setStringValue_(f"Signed in to {label_prefix}")
                 if self._provider_instructions_label is not None:
                     self._provider_instructions_label.setStringValue_(f"{label_prefix} found and logged in.")
                     self._provider_instructions_label.setTextColor_(NSColor.systemGreenColor())
@@ -967,6 +831,9 @@ class _OnboardingWizard(NSObject):
                     self._continue_btn.setEnabled_(True)
             else:
                 self._set_status_row("login", False, "Not Logged In")
+                login_row = self._provider_status_rows.get("login")
+                if login_row and login_row.get("subtitle"):
+                    login_row["subtitle"].setStringValue_("Provider login status")
                 if self._provider_instructions_label is not None:
                     self._provider_instructions_label.setTextColor_(NSColor.secondaryLabelColor())
                     self._provider_instructions_label.setStringValue_(
@@ -1007,6 +874,72 @@ class _OnboardingWizard(NSObject):
             self._continue_btn.setEnabled_(False)
         self._update_provider_status_ui()
 
+    def _selected_provider_index(self):
+        """Index of the selected provider card (0 = Anthropic, 1 = OpenAI)."""
+        return getattr(self, "_provider_choice", 0)
+
+
+    def _add_provider_card(self, index, title, company, x, y, w, h):
+        """A selectable, icon-less provider tile: product title + company."""
+        from AppKit import NSBox
+        card = NSBox.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
+        card.setBoxType_(4)           # NSBoxCustom
+        card.setTitlePosition_(0)     # NSNoTitle
+        card.setCornerRadius_(13)
+        card.setBorderWidth_(1.5)
+        card.setBorderColor_(NSColor.separatorColor())
+        card.setFillColor_(NSColor.controlBackgroundColor())
+        self._content.addSubview_(card)
+
+        self._add_label(title, x=x + 18, y=y + h / 2 - 2, w=w - 44, h=20, size=16, bold=True)
+        self._add_label(company, x=x + 18, y=y + h / 2 - 22, w=w - 44, h=16, size=13,
+                        color=NSColor.secondaryLabelColor())
+
+        check = self._symbol_view("checkmark.circle.fill", self._accent(),
+                                  x + w - 20, y + h - 20, pt=17)
+        check.setHidden_(True)
+
+        hit = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
+        hit.setTitle_("")
+        hit.setButtonType_(NSButtonTypeMomentaryPushIn)
+        try:
+            hit.setTransparent_(True)
+        except Exception:
+            hit.setBordered_(False)
+        hit.setTarget_(self)
+        hit.setAction_("providerCardClicked:")
+        hit.setTag_(index)
+        self._content.addSubview_(hit)
+
+        self._provider_cards[index] = {"card": card, "check": check}
+
+
+    def _style_provider_cards(self):
+        """Reflect the current selection across both cards."""
+        accent = self._accent()
+        for i, row in self._provider_cards.items():
+            selected = (i == self._provider_choice)
+            card = row["card"]
+            if selected:
+                card.setBorderColor_(accent)
+                card.setBorderWidth_(2.0)
+                try:
+                    card.setFillColor_(accent.colorWithAlphaComponent_(0.08))
+                except Exception:
+                    pass
+            else:
+                card.setBorderColor_(NSColor.separatorColor())
+                card.setBorderWidth_(1.5)
+                card.setFillColor_(NSColor.controlBackgroundColor())
+            if row["check"] is not None:
+                row["check"].setHidden_(not selected)
+
+    # Cocoa selector  providerCardClicked:
+    def providerCardClicked_(self, sender):
+        self._provider_choice = int(sender.tag())
+        self._style_provider_cards()
+        self.providerChanged_(sender)
+
     # Cocoa selector testProvider:
     def testProvider_(self, sender):
         # Test button only tests status and updates UI
@@ -1017,7 +950,7 @@ class _OnboardingWizard(NSObject):
         if self._testing_provider:
             return
 
-        idx = self._provider_popup.indexOfSelectedItem()
+        idx = self._selected_provider_index()
         provider = "openai" if idx == 1 else "anthropic"
 
         from ai_mime.provider_settings import is_provider_installed, _provider_runtime_status
@@ -1047,7 +980,7 @@ class _OnboardingWizard(NSObject):
                 self.onContinue_(sender)
 
     def _install_provider_worker(self):
-        idx = self._provider_popup.indexOfSelectedItem()
+        idx = self._selected_provider_index()
         provider = "openai" if idx == 1 else "anthropic"
 
         def bump_progress():
@@ -1101,7 +1034,7 @@ class _OnboardingWizard(NSObject):
                 self._provider_instructions_label.setTextColor_(NSColor.systemRedColor())
             self._update_provider_status_ui()
         else:
-            idx = self._provider_popup.indexOfSelectedItem()
+            idx = self._selected_provider_index()
             provider = "openai" if idx == 1 else "anthropic"
             from ai_mime.provider_settings import _provider_runtime_status
             logged_in, status_msg = _provider_runtime_status(provider)
@@ -1112,25 +1045,38 @@ class _OnboardingWizard(NSObject):
     # ------------------------------------------------------------------
     # Step 3 – Skills Setup
     # ------------------------------------------------------------------
+
     def _render_skills_setup(self):
-        self._add_label("Install Claude Skills",
-                        x=0, y=_H - 86, w=_W, h=34,
-                        size=24, bold=True, align=_CENTER)
+        self._add_label("Installing skills", x=0, y=_H - 100, w=_W, h=30,
+                        size=22, bold=True, align=_CENTER)
         self._add_label(
-            "AI Mime links automation skills into Claude Code and prepares\n"
-            "Python for workflow scripts when running the packaged app.",
-            x=0, y=_H - 150, w=_W, h=48,
-            size=15, align=_CENTER, color=NSColor.secondaryLabelColor(),
-        )
+            "Linking AI Mime’s automation skills into your\nagent. This only happens once.",
+            x=0, y=_H - 144, w=_W, h=36, size=13, align=_CENTER,
+            color=NSColor.secondaryLabelColor())
 
-        self._add_skill_row("browser-harness", "Repo browser-harness skill", _H - 230)
+        try:
+            indigo = NSColor.systemIndigoColor()
+        except Exception:
+            indigo = NSColor.systemPurpleColor()
+        rows = [("browser-harness", indigo, "globe", "Browser harness", "Web automation skill for Claude")]
         if is_frozen():
-            self._add_skill_row("python-3.12", "Managed Python for workflow virtualenvs", _H - 300)
+            rows.append(("python-3.12", NSColor.systemOrangeColor(),
+                         "chevron.left.forwardslash.chevron.right",
+                         "Managed Python 3.12", "Runtime for workflow scripts"))
+        n = len(rows)
+        row_h = 58
+        card_h = n * row_h
+        card_y = 296 - card_h
+        self._card(_M, card_y, _CW, card_h)
+        for i, (name, color, symbol, title, subtitle) in enumerate(rows):
+            ry = card_y + (n - 1 - i) * row_h
+            if i > 0:
+                self._hairline(_M + 62, ry + row_h, _CW - 62 - 16)
+            self._add_skill_row(name, color, symbol, title, subtitle, ry, row_h)
 
-        progress_w, progress_h = 260, 12
+        progress_w = 280
         self._install_progress = NSProgressIndicator.alloc().initWithFrame_(
-            NSMakeRect((_W - progress_w) / 2, 118, progress_w, progress_h)
-        )
+            NSMakeRect((_W - progress_w) / 2, 150, progress_w, 12))
         self._install_progress.setStyle_(NSProgressIndicatorBarStyle)
         self._install_progress.setIndeterminate_(False)
         self._install_progress.setMinValue_(0.0)
@@ -1140,69 +1086,41 @@ class _OnboardingWizard(NSObject):
         self._content.addSubview_(self._install_progress)
 
         self._install_progress_label = self._add_label(
-            "",
-            x=_M, y=96, w=_CW, h=18,
-            size=11, align=_CENTER, color=NSColor.secondaryLabelColor(),
-        )
-
+            "", x=_M, y=130, w=_CW, h=16, size=11, align=_CENTER,
+            color=NSColor.secondaryLabelColor())
         self._skills_error_label = self._add_label(
-            "",
-            x=_M, y=140, w=_CW, h=36,
-            size=12, align=_CENTER, color=NSColor.systemRedColor(),
-        )
-        self._add_navigation_buttons(continue_enabled=True)
-        self._continue_btn.setTitle_("Install and Continue")
-        self._continue_btn.setAction_("installSkills:")
-        self._continue_btn.setFrame_(NSMakeRect((_W - 180) / 2, 48, 180, 40))
+            "", x=_M, y=96, w=_CW, h=30, size=12, align=_CENTER,
+            color=NSColor.systemRedColor())
+
+        self._back_button()
+        self._primary_button("Retry", "installSkills:", enabled=False)
+        self._continue_btn.setHidden_(True)
         self._refresh_skill_status()
 
-    def _add_skill_row(self, name, detail, y):
-        ind_d = 22
-        indicator = NSView.alloc().initWithFrame_(NSMakeRect(_M, y, ind_d, ind_d))
-        indicator.setWantsLayer_(True)
-        indicator.layer().setCornerRadius_(ind_d / 2)
-        indicator.layer().setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.78, 1.0).CGColor)
-        self._content.addSubview_(indicator)
+        self._skills_autostart_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.3, self, "autostartSkills:", None, False)
 
-        check = NSTextField.alloc().initWithFrame_(NSMakeRect(_M, y + 2, ind_d, ind_d - 6))
-        check.setStringValue_("\u2713")
-        check.setBezeled_(False)
-        check.setDrawsBackground_(False)
-        check.setEditable_(False)
-        check.setSelectable_(False)
-        check.setFont_(NSFont.boldSystemFontOfSize_(13))
-        check.setAlignment_(_CENTER)
-        check.setTextColor_(NSColor.whiteColor())
-        check.setHidden_(True)
-        self._content.addSubview_(check)
 
-        text_x = _M + ind_d + 12
-        self._add_label(name, x=text_x, y=y + 6, w=210, h=18, size=14, bold=True)
-        self._add_label(
-            detail,
-            x=text_x, y=y - 14, w=300, h=16,
-            size=11, color=NSColor.secondaryLabelColor(),
-        )
-        status = self._add_label(
-            "Not installed",
-            x=_W - _M - 140, y=y + 2, w=140, h=18,
-            size=12, color=NSColor.secondaryLabelColor(),
-        )
-        self._skill_rows[name] = {"indicator": indicator, "check": check, "status": status}
+    def _add_skill_row(self, name, color, symbol, title, subtitle, y, h):
+        cy = y + h / 2
+        self._tile(_M + 16, cy - 14, color, symbol, size=28)
+        tx = _M + 16 + 28 + 12
+        self._add_label(title, x=tx, y=cy + 1, w=260, h=18, size=13.5, bold=True)
+        self._add_label(subtitle, x=tx, y=cy - 16, w=280, h=14, size=11.5,
+                        color=NSColor.secondaryLabelColor())
+        lbl = self._add_label("Pending", x=_W - _M - 156, y=cy - 8, w=140, h=16,
+                              size=13, bold=True, align=2,
+                              color=NSColor.secondaryLabelColor())
+        self._skill_rows[name] = {"status": lbl}
+
 
     def _set_skill_status(self, name, installed, status_text):
         row = self._skill_rows.get(name)
         if row is None:
             return
         row["status"].setStringValue_(status_text)
-        if installed:
-            row["indicator"].layer().setBackgroundColor_(NSColor.systemGreenColor().CGColor)
-            row["check"].setHidden_(False)
-            row["status"].setTextColor_(NSColor.systemGreenColor())
-        else:
-            row["indicator"].layer().setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.78, 1.0).CGColor)
-            row["check"].setHidden_(True)
-            row["status"].setTextColor_(NSColor.secondaryLabelColor())
+        row["status"].setTextColor_(
+            NSColor.systemGreenColor() if installed else NSColor.secondaryLabelColor())
 
     def _refresh_skill_status(self):
         skills_root = _claude_skills_dir()
@@ -1223,6 +1141,22 @@ class _OnboardingWizard(NSObject):
                 browser=browser_skill,
             )
 
+    # Cocoa selector  autostartSkills:
+    def autostartSkills_(self, timer):
+        """Auto-run the skills/harness install (or skip if already present)."""
+        self._skills_autostart_timer = None
+        if not self._skill_rows or self._installing:
+            return  # navigated away, or an install is already running
+        skills_root = _claude_skills_dir()
+        try:
+            browser_ok = _detect_claude_skills(skills_dir=skills_root) is not None
+        except Exception:
+            browser_ok = False
+        python_ok = (not is_frozen()) or get_python_path().exists()
+        if browser_ok and python_ok:
+            self.onContinue_(None)   # nothing to install — advance straight through
+        else:
+            self.installSkills_(None)
 
     # Cocoa selector  installSkills:
     def installSkills_(self, sender):
@@ -1316,59 +1250,24 @@ class _OnboardingWizard(NSObject):
             self._install_progress.setHidden_(True)
         if self._install_progress_label is not None:
             self._install_progress_label.setStringValue_("")
-        if self._continue_btn is not None:
-            self._continue_btn.setEnabled_(True)
-            self._continue_btn.setTitle_("Install and Continue")
         if self._back_btn is not None:
             self._back_btn.setEnabled_(True)
         self._refresh_skill_status()
 
-        if not error:
+        if error:
+            # Surface a Retry button so the user isn't stuck on a failed install.
+            if self._continue_btn is not None:
+                self._continue_btn.setEnabled_(True)
+                self._continue_btn.setTitle_("Retry")
+                self._continue_btn.setHidden_(False)
+        else:
+            # Success — advance automatically (no click needed).
             self.onContinue_(None)
 
     # ------------------------------------------------------------------
-    # Step 4 – Done
+    # (The interactive "Done" page was removed - onboarding now auto-finishes
+    #  after the Skills step via _finish_onboarding below.)
     # ------------------------------------------------------------------
-    def _render_done(self):
-        # Smaller logo
-        logo_path = str(get_bundled_resource("AppIcon.appiconset/icon_128_1x.png"))
-        logo_img  = NSImage.alloc().initWithContentsOfFile_(logo_path)
-        logo_size = 72
-        logo_view = NSImageView.alloc().initWithFrame_(
-            NSMakeRect((_W - logo_size) / 2, _H - 142, logo_size, logo_size)
-        )
-        if logo_img is not None:
-            logo_view.setImage_(logo_img)
-        self._content.addSubview_(logo_view)
-
-        self._add_label("You\u2019re all set!",
-                        x=0, y=_H - 198, w=_W, h=36,
-                        size=24, bold=True, align=_CENTER)
-        self._add_label(
-            "AI Mime is ready.\n"
-            "Look for the icon in your macOS menu bar.",
-            x=0, y=_H - 268, w=_W, h=52,
-            size=15, align=_CENTER, color=NSColor.secondaryLabelColor(),
-        )
-
-        self._add_primary_button("Start")
-
-        spinner_size = 20
-        self._start_progress = NSProgressIndicator.alloc().initWithFrame_(
-            NSMakeRect((_W - spinner_size) / 2, 106, spinner_size, spinner_size)
-        )
-        self._start_progress.setStyle_(NSProgressIndicatorSpinningStyle)
-        self._start_progress.setIndeterminate_(True)
-        self._start_progress.setDisplayedWhenStopped_(False)
-        self._start_progress.setHidden_(True)
-        self._content.addSubview_(self._start_progress)
-
-        self._start_status_label = self._add_label(
-            "Starting AI Mime...",
-            x=_M, y=128, w=_CW, h=18,
-            size=12, align=_CENTER, color=NSColor.secondaryLabelColor(),
-        )
-        self._start_status_label.setHidden_(True)
 
     # ------------------------------------------------------------------
     # Shared widget helpers
@@ -1389,35 +1288,180 @@ class _OnboardingWizard(NSObject):
         self._content.addSubview_(lbl)
         return lbl
 
-    def _add_navigation_buttons(self, *, continue_enabled):
-        """Add a 'Back' button at the top-left and a standard continue button centered at the bottom."""
-        # Small elegant Back button at top-left
-        back_btn = NSButton.alloc().initWithFrame_(NSMakeRect(24, _H - 36, 60, 24))
-        back_btn.setTitle_("Back")
-        back_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        back_btn.setTarget_(self)
-        back_btn.setAction_("onBack:")
-        back_btn.setEnabled_(True)
+    # ------------------------------------------------------------------
+    # Premium macOS design helpers
+    # ------------------------------------------------------------------
+    @objc.python_method
+    def _accent(self):
         try:
-            back_btn.setBezelStyle_(1)
-            back_btn.setFont_(NSFont.systemFontOfSize_(11))
+            return NSColor.controlAccentColor()
+        except Exception:
+            return NSColor.systemBlueColor()
+
+    @objc.python_method
+    def _sf(self, name, pt=15):
+        """Return an SF Symbol NSImage at a point size, or None."""
+        try:
+            img = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
+        except Exception:
+            return None
+        if img is None:
+            return None
+        try:
+            cfg = NSImageSymbolConfiguration.configurationWithPointSize_weight_scale_(pt, 0.0, 2)
+            img2 = img.imageWithSymbolConfiguration_(cfg)
+            if img2 is not None:
+                img = img2
         except Exception:
             pass
-        self._content.addSubview_(back_btn)
-        self._back_btn = back_btn
+        return img
 
-        # Standard centered Continue button at the bottom
-        btn_w, btn_h = 140, 40
-        cont_btn = NSButton.alloc().initWithFrame_(NSMakeRect((_W - btn_w) / 2, 48, btn_w, btn_h))
-        cont_btn.setTitle_("Continue")
-        cont_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        cont_btn.setTarget_(self)
-        cont_btn.setAction_("onContinue:")
-        cont_btn.setEnabled_(continue_enabled)
-        self._content.addSubview_(cont_btn)
-        self._continue_btn = cont_btn
+    @objc.python_method
+    def _symbol_view(self, name, tint, cx, cy, pt=15):
+        box = pt + 10
+        iv = NSImageView.alloc().initWithFrame_(NSMakeRect(cx - box / 2, cy - box / 2, box, box))
+        img = self._sf(name, pt)
+        if img is not None:
+            iv.setImage_(img)
+            try:
+                iv.setImageScaling_(3)  # proportionally up/down
+            except Exception:
+                pass
+        try:
+            iv.setContentTintColor_(tint)
+        except Exception:
+            pass
+        self._content.addSubview_(iv)
+        return iv
 
-        return cont_btn
+    @objc.python_method
+    def _rounded_icon(self, size, y):
+        logo_path = str(get_bundled_resource("AppIcon.appiconset/icon_256_1x.png"))
+        img = NSImage.alloc().initWithContentsOfFile_(logo_path)
+        iv = NSImageView.alloc().initWithFrame_(NSMakeRect((_W - size) / 2, y, size, size))
+        if img is not None:
+            iv.setImage_(img)
+        iv.setWantsLayer_(True)
+        iv.layer().setCornerRadius_(size * 0.2237)
+        iv.layer().setMasksToBounds_(True)
+        self._content.addSubview_(iv)
+        return iv
+
+    @objc.python_method
+    def _card(self, x, y, w, h):
+        from AppKit import NSBox
+        v = NSBox.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
+        v.setBoxType_(4)           # NSBoxCustom
+        v.setTitlePosition_(0)     # NSNoTitle
+        v.setCornerRadius_(12)
+        v.setFillColor_(NSColor.controlBackgroundColor())
+        v.setBorderWidth_(0.5)
+        v.setBorderColor_(NSColor.separatorColor())
+        self._content.addSubview_(v)
+        return v
+
+    @objc.python_method
+    def _cg(self, color):
+        """Resolve an NSColor to a CGColorRef safe for CALayer use.
+
+        macOS dynamic / catalog colours (systemBlueColor, etc.) cannot be
+        converted to CGColor directly — they need to go through a concrete
+        colour space first.
+        """
+        # Strategy 1: convert to calibrated RGB then get CGColor
+        try:
+            rgb = color.colorUsingColorSpaceName_("NSCalibratedRGBColorSpace")
+            if rgb is not None:
+                return rgb.CGColor
+        except Exception:
+            pass
+        # Strategy 2: direct .CGColor (works for some colour types)
+        try:
+            cg = color.CGColor
+            if cg is not None:
+                return cg
+        except Exception:
+            pass
+        # Strategy 3: extract components and build via Quartz
+        try:
+            rgb = color.colorUsingColorSpaceName_("NSCalibratedRGBColorSpace")
+            if rgb is None:
+                rgb = color
+            from Quartz import CGColorCreateGenericRGB
+            return CGColorCreateGenericRGB(
+                rgb.redComponent(), rgb.greenComponent(),
+                rgb.blueComponent(), rgb.alphaComponent())
+        except Exception:
+            pass
+        return None
+
+    @objc.python_method
+    def _tile(self, x, y, color, symbol, size=30):
+        from AppKit import NSBox
+        t = NSBox.alloc().initWithFrame_(NSMakeRect(x, y, size, size))
+        t.setBoxType_(4)           # NSBoxCustom
+        t.setTitlePosition_(0)     # NSNoTitle
+        t.setBorderWidth_(0)
+        t.setCornerRadius_(7)
+        t.setFillColor_(color)
+        self._content.addSubview_(t)
+        self._symbol_view(symbol, NSColor.whiteColor(), x + size / 2, y + size / 2, pt=15)
+        return t
+
+    @objc.python_method
+    def _hairline(self, x, y, w):
+        from AppKit import NSBox
+        v = NSBox.alloc().initWithFrame_(NSMakeRect(x, y, w, 1))
+        v.setBoxType_(4)           # NSBoxCustom
+        v.setTitlePosition_(0)     # NSNoTitle
+        v.setBorderWidth_(0)
+        v.setFillColor_(NSColor.separatorColor())
+        self._content.addSubview_(v)
+
+    @objc.python_method
+    def _primary_button(self, title, action, enabled=True, w=116, h=32, x=None, y=28):
+        if x is None:
+            x = _W - _M - w
+        b = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
+        b.setTitle_(title)
+        b.setButtonType_(NSButtonTypeMomentaryPushIn)
+        b.setBezelStyle_(1)
+        try:
+            b.setControlSize_(3)  # large
+        except Exception:
+            pass
+        b.setKeyEquivalent_("\r")  # blue default button + Return
+        b.setTarget_(self)
+        b.setAction_(action)
+        b.setEnabled_(enabled)
+        self._content.addSubview_(b)
+        self._continue_btn = b
+        return b
+
+    @objc.python_method
+    def _secondary_button(self, title, action, x, y, w=96, h=30, font=13):
+        b = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, w, h))
+        b.setTitle_(title)
+        b.setButtonType_(NSButtonTypeMomentaryPushIn)
+        b.setBezelStyle_(1)
+        b.setFont_(NSFont.systemFontOfSize_(font))
+        b.setTarget_(self)
+        b.setAction_(action)
+        self._content.addSubview_(b)
+        return b
+
+    @objc.python_method
+    def _back_button(self):
+        b = NSButton.alloc().initWithFrame_(NSMakeRect(_M, 30, 72, 30))
+        b.setTitle_("Back")
+        b.setButtonType_(NSButtonTypeMomentaryPushIn)
+        b.setBezelStyle_(1)
+        b.setFont_(NSFont.systemFontOfSize_(13))
+        b.setTarget_(self)
+        b.setAction_("onBack:")
+        self._content.addSubview_(b)
+        self._back_btn = b
+        return b
 
     # Cocoa selector  onBack:
     def onBack_(self, sender):
@@ -1425,48 +1469,18 @@ class _OnboardingWizard(NSObject):
             self._step -= 1
             self._render()
 
-    def _add_continue(self, title, *, enabled):
-        """Standard centred continue button at the bottom."""
-        btn_w, btn_h = 140, 40
-        btn = NSButton.alloc().initWithFrame_(NSMakeRect((_W - btn_w) / 2, 48, btn_w, btn_h))
-        btn.setTitle_(title)
-        btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        btn.setTarget_(self)
-        btn.setAction_("onContinue:")
-        btn.setEnabled_(enabled)
-        self._content.addSubview_(btn)
-        self._continue_btn = btn
-        return btn
-
-    def _add_primary_button(self, title):
-        """Larger, blue-tinted button used on Welcome and Done pages."""
-        btn_w, btn_h = 180, 44
-        btn = NSButton.alloc().initWithFrame_(NSMakeRect((_W - btn_w) / 2, 48, btn_w, btn_h))
-        btn.setTitle_(title)
-        btn.setButtonType_(NSButtonTypeMomentaryPushIn)
-        btn.setTarget_(self)
-        btn.setAction_("onContinue:")
-        btn.setEnabled_(True)
-        try:
-            btn.setContentTintColor_(NSColor.systemBlueColor())
-        except Exception:
-            pass
-        self._content.addSubview_(btn)
-        self._continue_btn = btn
-        return btn
-
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
     # Cocoa selector  onContinue:
     def onContinue_(self, sender):
         if self._step == len(_STEPS) - 1:
-            self._begin_onboarding_start()
+            self._finish_onboarding()
             return
 
-        # --- Persist provider settings before advancing past step 2 ---
-        if self._step == 2:
-            idx = self._provider_popup.indexOfSelectedItem()
+        # --- Persist provider settings before advancing past the Provider step ---
+        if self._step == 1:
+            idx = self._selected_provider_index()
             provider = "openai" if idx == 1 else "anthropic"
 
             from ai_mime.provider_settings import save_provider_settings
@@ -1491,24 +1505,39 @@ class _OnboardingWizard(NSObject):
 
         self._render()
 
-    def _begin_onboarding_start(self):
+
+    def _finish_onboarding(self):
+        """Brief, non-interactive confirmation, then write the sentinel and hand
+        off to the menu-bar app (replaces the old interactive Done page)."""
         if self._starting:
             return
         self._starting = True
-        if self._continue_btn is not None:
-            self._continue_btn.setTitle_("Starting...")
-            self._continue_btn.setEnabled_(False)
-        if self._start_progress is not None:
-            self._start_progress.setHidden_(False)
-            self._start_progress.startAnimation_(self)
-        if self._start_status_label is not None:
-            self._start_status_label.setHidden_(False)
-        if self._content is not None:
-            self._content.setNeedsDisplay_(True)
+
+        if _FINISH_SPLASH_SECS <= 0:
+            self.finishOnboardingStart_(None)
+            return
+
+        self._clear()
+        self._rounded_icon(84, _H - 176)
+        self._add_label("You’re all set", x=0, y=_H - 232, w=_W, h=34,
+                        size=25, bold=True, align=_CENTER)
+        self._add_label("AI Mime is now running in your menu bar.",
+                        x=_M, y=_H - 272, w=_CW, h=22, size=14, align=_CENTER,
+                        color=NSColor.secondaryLabelColor())
+
+        spinner = NSProgressIndicator.alloc().initWithFrame_(
+            NSMakeRect((_W - 20) / 2, _H - 330, 20, 20))
+        spinner.setStyle_(NSProgressIndicatorSpinningStyle)
+        spinner.setIndeterminate_(True)
+        spinner.setDisplayedWhenStopped_(False)
+        self._content.addSubview_(spinner)
+        spinner.startAnimation_(self)
+
+        self._add_label("Starting AI Mime…", x=_M, y=_H - 366, w=_CW, h=16,
+                        size=12, align=_CENTER, color=NSColor.secondaryLabelColor())
 
         self._start_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.1, self, "finishOnboardingStart:", None, False
-        )
+            _FINISH_SPLASH_SECS, self, "finishOnboardingStart:", None, False)
 
     # Cocoa selector  finishOnboardingStart:
     def finishOnboardingStart_(self, timer):
