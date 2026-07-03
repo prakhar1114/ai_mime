@@ -98,6 +98,7 @@ async def handle_list_tools() -> list[Tool]:
             continue
             
         description = fields.get("description", f"AI Mime Skill: {skill_name}")
+        description += f"\nSkill directory, access ONLY if needed to inspect or run directly: {skill_dir.absolute()}"
         
         template_path = skill_dir / "inputs" / "inputs.template.json"
         example_path = skill_dir / "inputs" / "inputs.example.json"
