@@ -184,4 +184,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "computer-use":
         from ai_mime.agent_runner.computer_use import main as run_computer_use
         sys.exit(run_computer_use(sys.argv[2:]))
+    elif len(sys.argv) > 1 and sys.argv[1] == "mcp-server":
+        from ai_mime.mcp_server import cli_main
+        sys.exit(cli_main())
     start_app()

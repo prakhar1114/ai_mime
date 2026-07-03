@@ -96,6 +96,38 @@ def write_autoinstall_skills(value: bool, config_path: Path | None = None) -> bo
     return bool(value)
 
 
+def read_autoinstall_mcp(config_path: Path | None = None) -> bool:
+    """Whether MCP servers are auto-installed (persisted in user_config.yml). Defaults to False."""
+    value = _read_user_config(config_path).get("autoinstall_mcp")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
+def write_autoinstall_mcp(value: bool, config_path: Path | None = None) -> bool:
+    data = _read_user_config(config_path)
+    data["autoinstall_mcp"] = bool(value)
+    _write_user_config(data, config_path)
+    return bool(value)
+
+
+def read_autoinstall_mcp_clients(config_path: Path | None = None) -> list[str]:
+    """Which MCP clients are auto-installed (persisted in user_config.yml)."""
+    value = _read_user_config(config_path).get("autoinstall_mcp_clients")
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    return []
+
+
+def write_autoinstall_mcp_clients(clients: list[str], config_path: Path | None = None) -> list[str]:
+    data = _read_user_config(config_path)
+    data["autoinstall_mcp_clients"] = list(clients)
+    _write_user_config(data, config_path)
+    return clients
+
+
 def _read_dotenv_value(key: str, env_path: Path | None = None) -> str | None:
     path = env_path or get_env_path()
     try:
