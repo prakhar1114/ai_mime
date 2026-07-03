@@ -182,14 +182,52 @@ def _provider_runtime_status(provider: Provider) -> tuple[bool, str]:
         exe = _find_claude_exe()
         if not exe:
             return False, "Claude Code not found."
-        ok, detail = _command_status([exe, "--version"])
-        return ok, f"Claude Code detected: {detail}" if ok else f"Claude Code check failed: {detail}"
+        ok, detail = _command_status([exe, "auth", "status"])
+        return ok, f"Claude Code logged in: {detail}" if ok else f"Claude Code login check failed: {detail}"
 
     exe = _find_codex_exe()
     if not exe:
         return False, "Codex CLI not found."
     ok, detail = _command_status([exe, "login", "status"], env=codex_subprocess_env(codex_exe=exe))
     return ok, f"Codex login detected: {detail}" if ok else f"Codex login check failed: {detail}"
+
+
+def is_provider_installed(provider: Provider) -> bool:
+    if provider == "anthropic":
+        return _find_claude_exe() is not None
+    return _find_codex_exe() is not None
+
+
+def install_provider_cli(provider: Provider) -> tuple[bool, str]:
+    if is_provider_installed(provider):
+        return True, "Already installed."
+
+    import os
+    import subprocess
+    
+    local_bin = os.path.expanduser("~/.local/bin")
+    os.makedirs(local_bin, exist_ok=True)
+    
+    if provider == "anthropic":
+        cmd = "curl -fsSL https://claude.ai/install.sh | bash"
+    else:  # openai
+        cmd = "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+        
+    try:
+        proc = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if proc.returncode == 0:
+            return True, "Installation complete."
+        else:
+            err = proc.stderr or proc.stdout or "Unknown error"
+            return False, f"Installation failed (exit code {proc.returncode}): {err.strip()}"
+    except Exception as e:
+        return False, f"Installation error: {str(e)}"
 
 
 def provider_status(provider: Provider) -> dict[str, Any]:
