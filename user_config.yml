@@ -1,9 +1,5 @@
 config_version: 1
 provider: openai
 autoinstall_skills: false
-autoinstall_mcp: true
-autoinstall_mcp_clients:
-- claude-desktop
-- claude-code
-- antigravity
-- codex
+autoinstall_mcp: false
+autoinstall_mcp_clients: []
