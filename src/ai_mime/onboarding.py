@@ -399,8 +399,6 @@ def _install_browser_harness(
         "--force",
         "--python",
         str(python),
-        "--with-editable",
-        str(llm_resolver),
         str(source),
     ]
     try:
