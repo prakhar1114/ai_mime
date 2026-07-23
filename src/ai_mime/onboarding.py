@@ -13,35 +13,41 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-import objc
-from Foundation import NSObject, NSTimer, NSMakeRect, NSNotificationCenter
-from AppKit import (
-    NSApplication,
-    NSWindow,
-    NSView,
-    NSTextField,
-    NSButton,
-    NSColor,
-    NSFont,
-    NSScreen,
-    NSImage,
-    NSImageView,
-    NSMenu,
-    NSMenuItem,
-    NSEvent,
-    NSEventTypeApplicationDefined,
-    NSWindowStyleMaskTitled,
-    NSWindowStyleMaskClosable,
-    NSBackingStoreBuffered,
-    NSNormalWindowLevel,
-    NSButtonTypeMomentaryPushIn,
-    NSControlTextDidChangeNotification,
-    NSEventModifierFlagCommand,
-    NSProgressIndicator,
-    NSProgressIndicatorBarStyle,
-    NSProgressIndicatorSpinningStyle,
-    NSImageSymbolConfiguration,
-)
+import sys
+
+try:
+    import objc
+    from Foundation import NSObject, NSTimer, NSMakeRect, NSNotificationCenter
+    from AppKit import (
+        NSApplication,
+        NSWindow,
+        NSView,
+        NSTextField,
+        NSButton,
+        NSColor,
+        NSFont,
+        NSScreen,
+        NSImage,
+        NSImageView,
+        NSMenu,
+        NSMenuItem,
+        NSEvent,
+        NSEventTypeApplicationDefined,
+        NSWindowStyleMaskTitled,
+        NSWindowStyleMaskClosable,
+        NSBackingStoreBuffered,
+        NSNormalWindowLevel,
+        NSButtonTypeMomentaryPushIn,
+        NSControlTextDidChangeNotification,
+        NSEventModifierFlagCommand,
+        NSProgressIndicator,
+        NSProgressIndicatorBarStyle,
+        NSProgressIndicatorSpinningStyle,
+        NSImageSymbolConfiguration,
+    )
+except ImportError:
+    objc = None  # type: ignore[assignment]
+    NSObject = object  # type: ignore[misc, assignment]
 
 from ai_mime.app_data import (
     get_bundled_browser_harness_dir,
@@ -399,6 +405,8 @@ def _install_browser_harness(
         "--force",
         "--python",
         str(python),
+        "--with-editable",
+        str(llm_resolver),
         str(source),
     ]
     try:
@@ -1595,10 +1603,17 @@ def _ensure_main_menu(app):
 def run_onboarding() -> None:
     """Block until the user finishes (or closes) the onboarding wizard.
 
-    Safe to call before ``rumps.App.run()``; they share one NSApplication
-    singleton.  ``stop_()`` merely unwinds the *current* ``run()`` call;
-    ``run()`` can be entered again by rumps afterward.
+    On macOS with AppKit available, displays the 5-step NSApplication wizard.
+    On Windows/Linux or non-AppKit environments, runs automated environment setup.
     """
+    if sys.platform != "darwin" or objc is None:
+        try:
+            _install_claude_skills()
+        except Exception as e:
+            print(f"Onboarding skill setup note: {e}")
+        get_onboarding_done_path().write_text("done", encoding="utf-8")
+        return
+
     app = NSApplication.sharedApplication()
     _ensure_main_menu(app)
     app.activateIgnoringOtherApps_(True)

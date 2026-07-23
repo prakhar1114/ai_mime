@@ -14,14 +14,17 @@ from pathlib import Path
 from llm_resolver.config import DEFAULT_USER_CONFIG as _DEFAULT_USER_CONFIG
 from ai_mime.credentials_store import resolve_credentials_path
 
+from ai_mime.platform import (
+    executable_name,
+    get_default_app_data_dir,
+    get_system_paths,
+    get_venv_python_relpath,
+    is_windows,
+)
+
 _BROWSER_HARNESS_REL = "harness/browser-harness"
 _LLM_RESOLVER_REL = "packages/llm-resolver"
-_FROZEN_SYSTEM_PATHS = (
-    "/usr/bin",
-    "/bin",
-    "/usr/sbin",
-    "/sbin",
-)
+_FROZEN_SYSTEM_PATHS = tuple(get_system_paths())
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +50,7 @@ def _repo_root() -> Path:
 # ---------------------------------------------------------------------------
 
 if is_frozen():
-    APP_DATA_DIR: Path = Path(os.path.expanduser("~/Library/Application Support/AI Mime"))
+    APP_DATA_DIR: Path = get_default_app_data_dir()
 else:
     APP_DATA_DIR = _repo_root()
 
@@ -99,12 +102,13 @@ def get_uv_path() -> Path:
     Frozen builds use the uv binary bundled by PyInstaller. Development uses
     the developer's PATH so local runs keep using the existing toolchain.
     """
+    uv_exe = executable_name("uv")
     if is_frozen():
-        return get_bundled_resource("bin/uv")
+        return get_bundled_resource(f"bin/{uv_exe}")
     found = shutil.which("uv")
     if found:
         return Path(found)
-    return Path("uv")
+    return Path(uv_exe)
 
 
 def get_managed_python_install_dir() -> Path:
@@ -134,19 +138,21 @@ def get_managed_browser_harness_path() -> Path:
     tool bin directory. In development, search the virtualenv or system PATH,
     or fallback to the sub-repo's own virtualenv/executable.
     """
+    harness_exe = executable_name("browser-harness")
     if is_frozen():
-        return get_tool_bin_dir() / "browser-harness"
+        return get_tool_bin_dir() / harness_exe
 
     # Development mode: find a valid local browser-harness executable.
     # 1. Check parent of current python interpreter (if we're inside a venv that has it installed)
     py_bin_dir = Path(sys.executable).parent
-    harness_in_py = py_bin_dir / "browser-harness"
-    if harness_in_py.is_file() and os.access(harness_in_py, os.X_OK):
+    harness_in_py = py_bin_dir / harness_exe
+    if harness_in_py.is_file() and (is_windows() or os.access(harness_in_py, os.X_OK)):
         return harness_in_py
 
     # 2. Check the sub-repo's own virtualenv
-    sub_venv_harness = _repo_root() / "harness" / "browser-harness" / ".venv" / "bin" / "browser-harness"
-    if sub_venv_harness.is_file() and os.access(sub_venv_harness, os.X_OK):
+    bin_dir = "Scripts" if is_windows() else "bin"
+    sub_venv_harness = _repo_root() / "harness" / "browser-harness" / ".venv" / bin_dir / harness_exe
+    if sub_venv_harness.is_file() and (is_windows() or os.access(sub_venv_harness, os.X_OK)):
         return sub_venv_harness
 
     # 3. Check the system PATH
@@ -155,7 +161,7 @@ def get_managed_browser_harness_path() -> Path:
         return Path(found)
 
     # 4. Fallback
-    return get_tool_bin_dir() / "browser-harness"
+    return get_tool_bin_dir() / harness_exe
 
 
 def get_bundled_browser_harness_dir() -> Path:
@@ -171,17 +177,21 @@ def get_bundled_llm_resolver_dir() -> Path:
 def _find_managed_python(install_dir: Path | None = None) -> Path | None:
     root = install_dir or get_managed_python_install_dir()
     candidates: list[Path] = []
-    for pattern in (
+    patterns = (
+        "*/Scripts/python.exe",
         "*/bin/python3.12",
         "*/bin/python3",
         "*/bin/python",
+        "Scripts/python.exe",
         "bin/python3.12",
         "bin/python3",
         "bin/python",
-    ):
+        "python.exe",
+    )
+    for pattern in patterns:
         candidates.extend(root.glob(pattern))
     for candidate in sorted(candidates):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        if candidate.is_file() and (is_windows() or os.access(candidate, os.X_OK)):
             return candidate
     return None
 
@@ -194,15 +204,17 @@ def get_python_path(workflow_dir: str | os.PathLike[str] | None = None) -> Path:
     development, use the current/system interpreter instead of managed Python.
     """
     if workflow_dir is not None:
-        venv_python = Path(workflow_dir) / ".venv" / "bin" / "python"
-        if venv_python.is_file() and os.access(venv_python, os.X_OK):
+        venv_python = Path(workflow_dir) / ".venv" / get_venv_python_relpath()
+        if venv_python.is_file() and (is_windows() or os.access(venv_python, os.X_OK)):
             return venv_python
 
     if is_frozen():
         managed = _find_managed_python()
         if managed is not None:
             return managed
-        return get_managed_python_install_dir() / "bin" / "python3.12"
+        bin_dir = "Scripts" if is_windows() else "bin"
+        py_name = "python.exe" if is_windows() else "python3.12"
+        return get_managed_python_install_dir() / bin_dir / py_name
 
     executable = Path(sys.executable)
     if executable.is_file():
@@ -210,7 +222,7 @@ def get_python_path(workflow_dir: str | os.PathLike[str] | None = None) -> Path:
     found = shutil.which("python3") or shutil.which("python")
     if found:
         return Path(found)
-    return Path("python3")
+    return Path("python.exe" if is_windows() else "python3")
 
 
 def workflow_runtime_env(

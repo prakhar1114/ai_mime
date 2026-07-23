@@ -1,3 +1,4 @@
+import sys
 import rumps
 import multiprocessing
 from pathlib import Path
@@ -431,22 +432,22 @@ class RecorderApp(rumps.App):
 
     def _open_workflows_directory(self, _sender=None) -> None:
         try:
-            import subprocess
+            from ai_mime.platform import open_directory
             path = get_workflows_dir()
             path.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["open", str(path)], check=True)
+            open_directory(path)
         except Exception as e:
-            rumps.alert(f"Open Workflows Directory failed: {e}")
+            log(f"Open Workflows Directory failed: {e}")
 
     def _open_directory(self, path_raw: str) -> None:
         try:
-            import subprocess
+            from ai_mime.platform import open_directory
             path = Path(str(path_raw)).expanduser()
             if not path.is_dir():
                 raise RuntimeError(f"Directory not found: {path}")
-            subprocess.run(["open", str(path)], check=True)
+            open_directory(path)
         except Exception as e:
-            rumps.alert(f"Open Directory failed: {e}")
+            log(f"Open Directory failed: {e}")
 
     def _open_skill_build_for_task(self, task_id: str) -> None:
         try:
@@ -690,76 +691,144 @@ class RecorderApp(rumps.App):
     def _kill_mime_processes(self):
         import os
         import signal
-        import subprocess
-
         current_pid = os.getpid()
+        all_to_kill = set()
 
-        # 1. Gather all descendants of the current process
-        descendants = set()
         try:
-            output = subprocess.check_output(["ps", "-ax", "-o", "pid,ppid"], text=True)
-            children_map = {}
-            for line in output.strip().splitlines()[1:]:
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    try:
-                        pid = int(parts[0])
-                        ppid = int(parts[1])
-                        children_map.setdefault(ppid, []).append(pid)
-                    except ValueError:
-                        continue
-            def gather(p):
-                for child in children_map.get(p, []):
-                    if child not in descendants:
-                        descendants.add(child)
-                        gather(child)
-            gather(current_pid)
-        except Exception:
-            pass
+            import psutil
+            parent = psutil.Process(current_pid)
+            for child in parent.children(recursive=True):
+                all_to_kill.add(child.pid)
 
-        # 2. Gather processes matching specific keywords
-        keyword_pids = set()
-        try:
-            output = subprocess.check_output(["ps", "-ax", "-o", "pid,command"], text=True)
-            for line in output.strip().splitlines()[1:]:
-                parts = line.strip().split(None, 1)
-                if len(parts) < 2:
-                    continue
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
                 try:
-                    pid = int(parts[0])
-                except ValueError:
-                    continue
+                    pid = proc.info["pid"]
+                    if pid == current_pid or pid in all_to_kill:
+                        continue
+                    cmdline = " ".join(proc.info["cmdline"] or []).lower()
+                    if any(x in cmdline for x in ["cursor", "vscode", "helper", "extension-host", "grep"]):
+                        continue
+                    if (
+                        "mime" in cmdline or
+                        "run_computer_use" in cmdline or
+                        "computer_server" in cmdline or
+                        ("run.sh" in cmdline and ("ai_mime" in cmdline or "workflows" in cmdline)) or
+                        ("run.py" in cmdline and ("ai_mime" in cmdline or "workflows" in cmdline))
+                    ):
+                        all_to_kill.add(pid)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
 
-                cmd = parts[1]
-                cmd_lower = cmd.lower()
-
-                # Exclude IDEs and helpers
-                if any(x in cmd_lower for x in ["cursor", "vscode", "helper", "extension-host", "grep"]):
-                    continue
-
-                if ("mime" in cmd_lower or
-                    "run_computer_use" in cmd_lower or
-                    "computer_server" in cmd_lower or
-                    ("run.sh" in cmd_lower and ("ai_mime" in cmd_lower or "workflows" in cmd_lower)) or
-                    ("run.py" in cmd_lower and ("ai_mime" in cmd_lower or "workflows" in cmd_lower))):
-                    keyword_pids.add(pid)
-        except Exception:
+            for pid in all_to_kill:
+                if pid != current_pid:
+                    try:
+                        os.kill(pid, getattr(signal, "SIGKILL", 9))
+                    except Exception:
+                        pass
+            return
+        except ImportError:
             pass
 
-        all_to_kill = descendants.union(keyword_pids)
-        if current_pid in all_to_kill:
-            all_to_kill.remove(current_pid)
-
-        for pid in all_to_kill:
+        # Fallback if psutil is unavailable (macOS/Unix)
+        if sys.platform != "win32":
+            descendants = set()
             try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+                import subprocess
+                output = subprocess.check_output(["ps", "-ax", "-o", "pid,ppid"], text=True)
+                children_map = {}
+                for line in output.strip().splitlines()[1:]:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        try:
+                            pid = int(parts[0])
+                            ppid = int(parts[1])
+                            children_map.setdefault(ppid, []).append(pid)
+                        except ValueError:
+                            continue
+                def gather(p):
+                    for child in children_map.get(p, []):
+                        if child not in descendants:
+                            descendants.add(child)
+                            gather(child)
+                gather(current_pid)
             except Exception:
                 pass
+
+            keyword_pids = set()
+            try:
+                import subprocess
+                output = subprocess.check_output(["ps", "-ax", "-o", "pid,command"], text=True)
+                for line in output.strip().splitlines()[1:]:
+                    parts = line.strip().split(None, 1)
+                    if len(parts) < 2:
+                        continue
+                    try:
+                        pid = int(parts[0])
+                    except ValueError:
+                        continue
+
+                    cmd = parts[1]
+                    cmd_lower = cmd.lower()
+                    if any(x in cmd_lower for x in ["cursor", "vscode", "helper", "extension-host", "grep"]):
+                        continue
+
+                    if ("mime" in cmd_lower or
+                        "run_computer_use" in cmd_lower or
+                        "computer_server" in cmd_lower or
+                        ("run.sh" in cmd_lower and ("ai_mime" in cmd_lower or "workflows" in cmd_lower)) or
+                        ("run.py" in cmd_lower and ("ai_mime" in cmd_lower or "workflows" in cmd_lower))):
+                        keyword_pids.add(pid)
+            except Exception:
+                pass
+
+            all_to_kill = descendants.union(keyword_pids)
+            if current_pid in all_to_kill:
+                all_to_kill.remove(current_pid)
+
+            for pid in all_to_kill:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
 
 
 def run_app():
     user_cfg = load_user_config()
+    if sys.platform == "win32":
+        try:
+            import pystray
+            from PIL import Image
+
+            icon_path = _resolve_menubar_icon_path()
+            if icon_path and Path(icon_path).exists():
+                image = Image.open(icon_path)
+            else:
+                image = Image.new("RGB", (32, 32), color=(52, 199, 89))
+
+            def on_dashboard(icon, item):
+                from ai_mime.platform import open_url
+                open_url("http://127.0.0.1:58839/dashboard")
+
+            def on_workflows(icon, item):
+                from ai_mime.platform import open_directory
+                path = get_workflows_dir()
+                path.mkdir(parents=True, exist_ok=True)
+                open_directory(path)
+
+            def on_quit(icon, item):
+                icon.stop()
+
+            menu = pystray.Menu(
+                pystray.MenuItem("Open Dashboard", on_dashboard),
+                pystray.MenuItem("Open Workflows Directory", on_workflows),
+                pystray.MenuItem("Quit", on_quit),
+            )
+
+            icon = pystray.Icon("AI Mime", image, "AI Mime", menu)
+            icon.run()
+            return
+        except Exception as e:
+            log(f"pystray failed to start: {e}", exc_info=True)
+
     app = RecorderApp(user_cfg=user_cfg)
     app.run()

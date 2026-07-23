@@ -604,8 +604,12 @@ def validate_skill_package(skill_dir: str | Path, schema: dict, optimized_plan: 
             raise ValueError(f"SKILL.md frontmatter is missing required key: {required_key!r}")
 
     run_sh = skill_dir_p / "run.sh"
-    if not os.access(run_sh, os.X_OK):
+    run_bat = skill_dir_p / "run.bat"
+    run_py = skill_dir_p / "scripts" / "run.py"
+    if run_sh.is_file() and sys.platform != "win32" and not os.access(run_sh, os.X_OK):
         raise ValueError("run.sh is not executable — `chmod +x run.sh` in the build agent before signalling.")
+    if not (run_sh.is_file() or run_bat.is_file() or run_py.is_file()):
+        raise ValueError("Skill execution entrypoint (run.sh, run.bat, or scripts/run.py) not found.")
 
     # Credential leak guard: the shipped manifest must never contain real secrets.
     if credentials_store.manifest_path(skill_dir_p).is_file():
@@ -732,10 +736,21 @@ def run_skill_e2e_test(
         return early
 
     def _invoke(inputs_json_path: Path) -> AgentRunResult:
-        if run_sh.exists() and os.access(run_sh, os.X_OK):
-            cmd = [str(run_sh), str(inputs_json_path)]
+        run_bat = skill_dir_p / "run.bat"
+        if sys.platform == "win32":
+            if run_bat.is_file():
+                cmd = ["cmd.exe", "/c", str(run_bat), str(inputs_json_path)]
+            elif run_script.is_file():
+                cmd = [sys.executable, str(run_script), "--inputs-json", str(inputs_json_path)]
+            elif run_sh.is_file():
+                cmd = ["bash", str(run_sh), str(inputs_json_path)]
+            else:
+                cmd = [sys.executable, str(run_script), "--inputs-json", str(inputs_json_path)]
         else:
-            cmd = [sys.executable, str(run_script), "--inputs-json", str(inputs_json_path)]
+            if run_sh.exists() and os.access(run_sh, os.X_OK):
+                cmd = [str(run_sh), str(inputs_json_path)]
+            else:
+                cmd = [sys.executable, str(run_script), "--inputs-json", str(inputs_json_path)]
         try:
             proc = subprocess.run(
                 cmd,

@@ -178,8 +178,15 @@ def _find_skill_dir(workflow_dir: Path) -> Path | None:
         return None
     candidates: list[Path] = []
     for child in skills_root.iterdir():
+        if not child.is_dir():
+            continue
         run_sh = child / "run.sh"
-        if child.is_dir() and run_sh.is_file() and os.access(run_sh, os.X_OK):
+        run_bat = child / "run.bat"
+        run_py = child / "scripts" / "run.py"
+        if run_sh.is_file():
+            if sys.platform == "win32" or os.access(run_sh, os.X_OK):
+                candidates.append(child)
+        elif run_bat.is_file() or run_py.is_file():
             candidates.append(child)
     if not candidates:
         return None
@@ -193,7 +200,7 @@ def _find_skill_dir_with_run_sh(workflow_dir: Path) -> Path | None:
         return None
     candidates: list[Path] = []
     for child in skills_root.iterdir():
-        if child.is_dir() and (child / "run.sh").is_file():
+        if child.is_dir() and ((child / "run.sh").is_file() or (child / "run.bat").is_file() or (child / "scripts" / "run.py").is_file()):
             candidates.append(child)
     if not candidates:
         return None
@@ -2646,10 +2653,13 @@ def create_app(
         if workflow_dir not in skill_dir.parents:
             raise HTTPException(status_code=400, detail="Invalid skill directory")
         run_sh = skill_dir / "run.sh"
-        if not run_sh.exists():
-            raise HTTPException(status_code=404, detail=f"run.sh not found at {run_sh}")
-        if not os.access(run_sh, os.X_OK):
-            raise HTTPException(status_code=400, detail=f"run.sh is not executable: {run_sh}")
+        run_bat = skill_dir / "run.bat"
+        run_py = skill_dir / "scripts" / "run.py"
+        if run_sh.is_file():
+            if sys.platform != "win32" and not os.access(run_sh, os.X_OK):
+                raise HTTPException(status_code=400, detail=f"run.sh is not executable: {run_sh}")
+        elif not (run_bat.is_file() or run_py.is_file()):
+            raise HTTPException(status_code=404, detail=f"Skill execution entrypoint not found at {skill_dir}")
 
         params = payload.get("params") if isinstance(payload, dict) else None
         if params is None:
@@ -2718,7 +2728,18 @@ def create_app(
             with tempfile.TemporaryDirectory(prefix="ai-mime-skill-run-") as td:
                 inputs_path = Path(td) / "inputs.json"
                 inputs_path.write_text(json.dumps(params, indent=2, ensure_ascii=False), encoding="utf-8")
-                cmd = [str(run_sh), str(inputs_path)]
+                if sys.platform == "win32":
+                    if run_bat.is_file():
+                        cmd = ["cmd.exe", "/c", str(run_bat), str(inputs_path)]
+                    elif run_py.is_file():
+                        cmd = [sys.executable, str(run_py), "--inputs-json", str(inputs_path)]
+                    else:
+                        cmd = ["bash", str(run_sh), str(inputs_path)]
+                else:
+                    if run_sh.exists() and os.access(run_sh, os.X_OK):
+                        cmd = [str(run_sh), str(inputs_path)]
+                    else:
+                        cmd = [sys.executable, str(run_py), "--inputs-json", str(inputs_path)]
                 if app_command_queue is not None:
                     app_command_queue.put({
                         "type": "show_automation_overlay",
@@ -2728,7 +2749,7 @@ def create_app(
                     "event": "started",
                     "skill_dir": str(skill_dir),
                     "inputs_path": str(inputs_path),
-                    "command": "./run.sh",
+                    "command": " ".join(cmd),
                     "run_id": run_id,
                     "run_dir": str(run_dir),
                 })

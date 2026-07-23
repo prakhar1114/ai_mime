@@ -240,7 +240,12 @@ class WorkflowSkillBuildService(BaseAgentChatService):
     @staticmethod
     def _has_runnable_skill(skill_dir: Path) -> bool:
         run_sh = skill_dir / "run.sh"
-        return run_sh.is_file() and os.access(run_sh, os.X_OK)
+        run_bat = skill_dir / "run.bat"
+        run_py = skill_dir / "scripts" / "run.py"
+        if run_sh.is_file():
+            if sys.platform == "win32" or os.access(run_sh, os.X_OK):
+                return True
+        return run_bat.is_file() or run_py.is_file()
 
     def create_session(self) -> dict[str, Any]:
         return {"session_id": None, "summary": "New skill-build chat"}

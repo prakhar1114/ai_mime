@@ -18,25 +18,17 @@ from ai_mime.onboarding import run_onboarding
 from ai_mime.debug_log import log, log_server, open_server_log_file
 
 
+from ai_mime.platform import free_port as platform_free_port
+
 COMPUTER_SERVER_PORT = 58840
 
 
 def _free_port(port: int) -> None:
     """Kill whatever process is currently listening on ``port``."""
     try:
-        pids = subprocess.run(
-            ["lsof", "-ti", f"tcp:{port}"],
-            capture_output=True, text=True, check=False,
-        ).stdout.split()
+        platform_free_port(port)
     except Exception as e:
         log(f"Computer server: failed to inspect port {port}: {e}", exc_info=True)
-        return
-    for pid in pids:
-        try:
-            os.kill(int(pid), signal.SIGKILL)
-            log(f"Computer server: killed stale process {pid} on port {port}")
-        except (ProcessLookupError, ValueError):
-            pass
 
 
 def _run_computer_server(port: int) -> None:

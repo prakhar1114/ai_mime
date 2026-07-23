@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ai_mime.app_data import get_workflows_dir
 from ai_mime.debug_log import log as debug_log
+from ai_mime.platform import create_directory_link, is_link, IS_WINDOWS
 
 # Personal-scope skills dirs, keyed by the base dir that signals the tool is
 # present. We link into a target only when its base dir exists.
@@ -54,22 +55,24 @@ def _skill_name(skill_dir: Path) -> str:
 
 
 def _points_into(link: Path, root: Path) -> bool:
-    """True if ``link`` is a symlink whose target is inside ``root`` (uses the
-    raw link target so broken/dangling links still match)."""
-    if not link.is_symlink():
+    """True if ``link`` is a symlink/junction whose target is inside ``root``."""
+    if not is_link(link):
         return False
     try:
-        target = Path(os.readlink(link))
-        if not target.is_absolute():
-            target = (link.parent / target).resolve(strict=False)
+        if IS_WINDOWS:
+            target = link.resolve(strict=False)
+        else:
+            target = Path(os.readlink(link))
+            if not target.is_absolute():
+                target = (link.parent / target).resolve(strict=False)
         return root in target.parents or target == root
     except OSError:
         return False
 
 
 def link_skill(skill_dir: str | os.PathLike[str]) -> list[Path]:
-    """Symlink ``skill_dir`` into every available target. Replaces an existing
-    symlink with the same name; never clobbers a real directory. Returns the
+    """Link ``skill_dir`` into every available target. Replaces an existing
+    symlink/junction with the same name; never clobbers a real directory. Returns the
     links created/updated."""
     skill_dir = Path(skill_dir).resolve()
     if not (skill_dir / "SKILL.md").is_file():
@@ -78,14 +81,20 @@ def link_skill(skill_dir: str | os.PathLike[str]) -> list[Path]:
     created: list[Path] = []
     for skills_dir in _skill_link_targets():
         link = skills_dir / name
-        if link.is_symlink():
-            link.unlink()
+        if is_link(link):
+            try:
+                if IS_WINDOWS and link.is_dir():
+                    os.rmdir(link)
+                else:
+                    link.unlink()
+            except Exception:
+                pass
         elif link.exists():
             # A real directory owns this name — don't clobber it.
             _log(f"Skipping {link}: a real directory already owns this name")
             continue
         try:
-            link.symlink_to(skill_dir)
+            create_directory_link(link, skill_dir)
             created.append(link)
         except OSError as e:
             _log(f"Failed to link {link} -> {skill_dir}: {e}")
