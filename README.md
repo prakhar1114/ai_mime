@@ -58,11 +58,15 @@ Prefer not to build from source? Grab the prebuilt [Desktop App](#desktop-app).
 ### Configuration
 You do **not** need to manually create `.env` or `user_config.yml` for the normal setup path.
 
-On first launch, the native macOS onboarding wizard guides you through:
+On first launch, the native onboarding wizard guides you through:
 1. Granting Accessibility and Screen Recording permissions.
 2. Selecting Anthropic / Claude Code or OpenAI / Codex.
 3. Saving API keys or detecting a local CLI login.
 4. Installing the app-managed browser harness.
+
+> [!IMPORTANT]
+> **Browser Remote Debugging Requirement (macOS & Windows)**:
+> Before running browser automations, open `chrome://inspect/#remote-debugging` in your Chrome/Chromium browser and enable remote debugging. Automations will not work without this setting enabled.
 
 You can update provider settings later from the dashboard.
 
