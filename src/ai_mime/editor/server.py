@@ -63,6 +63,7 @@ from ai_mime.skill_links import (
 
 EDITOR_SERVER_PORT = 58838
 DEFAULT_MARKETPLACE_MANIFEST_URL = "https://market.aimime.cc/manifest.json"
+FALLBACK_MARKETPLACE_MANIFEST_URL = "https://raw.githubusercontent.com/prakhar1114/ai_mime_marketplace/main/docs/manifest.json"
 MARKETPLACE_MANIFEST_PATH_ENV = "AI_MIME_MARKETPLACE_MANIFEST_PATH"
 _MAX_MARKETPLACE_MANIFEST_BYTES = 2 * 1024 * 1024
 TASK_STATUSES: dict[str, dict[str, Any]] = {}
@@ -825,13 +826,22 @@ def _fetch_marketplace_manifest() -> tuple[str, dict[str, Any], Path | None]:
     if manifest_root is not None:
         manifest_ref = str((manifest_root / "manifest.json").resolve())
         raw = _read_file_bytes(manifest_root / "manifest.json", max_bytes=_MAX_MARKETPLACE_MANIFEST_BYTES, label="marketplace manifest")
+        try:
+            manifest = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            raise ValueError(f"Marketplace manifest is not valid JSON: {e}") from e
     else:
         manifest_ref = DEFAULT_MARKETPLACE_MANIFEST_URL
-        raw = _fetch_url_bytes(manifest_ref, max_bytes=_MAX_MARKETPLACE_MANIFEST_BYTES, label="marketplace manifest")
-    try:
-        manifest = json.loads(raw.decode("utf-8"))
-    except Exception as e:
-        raise ValueError(f"Marketplace manifest is not valid JSON: {e}") from e
+        try:
+            raw = _fetch_url_bytes(manifest_ref, max_bytes=_MAX_MARKETPLACE_MANIFEST_BYTES, label="marketplace manifest")
+            manifest = json.loads(raw.decode("utf-8"))
+        except Exception:
+            manifest_ref = FALLBACK_MARKETPLACE_MANIFEST_URL
+            try:
+                raw = _fetch_url_bytes(manifest_ref, max_bytes=_MAX_MARKETPLACE_MANIFEST_BYTES, label="marketplace manifest")
+                manifest = json.loads(raw.decode("utf-8"))
+            except Exception as e:
+                raise ValueError(f"Failed to fetch marketplace manifest: {e}") from e
     if not isinstance(manifest, dict):
         raise ValueError("Marketplace manifest must be a JSON object")
     return manifest_ref, manifest, manifest_root

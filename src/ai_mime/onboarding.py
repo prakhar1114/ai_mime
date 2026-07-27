@@ -66,7 +66,7 @@ _W = 560          # window width
 _H = 480          # window height
 _M = 40           # side margin
 _CW = _W - 2 * _M  # content width
-_STEPS = ("Permissions", "Provider", "Skills")
+_STEPS = ("Permissions", "Provider", "Remote Debugging", "Skills")
 _FINISH_SPLASH_SECS = 1.2   # brief confirmation splash before hand-off (0 = none)
 _CENTER = 1       # NSTextAlignmentCenter
 _ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
@@ -171,6 +171,134 @@ def _detect_local_claude(
 
 def _claude_skills_dir(home: Path | None = None) -> Path:
     return (home or Path.home()) / ".claude" / "skills"
+
+
+def _chrome_process_running() -> bool:
+    """Check if a Chrome/Chromium/Edge process is running."""
+    import platform
+    import subprocess
+    system = platform.system()
+    try:
+        if system == "Windows":
+            out = subprocess.check_output(["tasklist"], text=True, timeout=5)
+            names = ("chrome.exe", "msedge.exe")
+        else:
+            out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5)
+            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge")
+        return any(n.lower() in out.lower() for n in names)
+    except Exception:
+        return False
+
+
+def _find_devtools_active_port_file() -> Path | None:
+    """Search standard user data locations for Chrome's DevToolsActivePort file."""
+    import platform
+    system = platform.system()
+    home = Path.home()
+
+    candidates: list[Path] = []
+    if system == "Darwin":
+        base = home / "Library" / "Application Support" / "Google" / "Chrome"
+    elif system == "Windows":
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        base = (
+            Path(local_app_data) / "Google" / "Chrome" / "User Data"
+            if local_app_data
+            else home / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
+        )
+    else:
+        base = home / ".config" / "google-chrome"
+
+    if base.exists():
+        candidates.append(base / "DevToolsActivePort")
+        candidates.extend(base.glob("*/DevToolsActivePort"))
+
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+def _check_chrome_remote_debugging(timeout: float = 1.0) -> tuple[bool, str]:
+    """Verify if Chrome Remote Debugging is active and reachable via CDP."""
+    import json
+    import socket
+    import urllib.request
+    from urllib.error import HTTPError
+
+    if not _chrome_process_running():
+        return False, "Google Chrome is not running."
+
+    port_file = _find_devtools_active_port_file()
+    if port_file is None:
+        return False, "Remote debugging is not enabled yet."
+
+    try:
+        lines = port_file.read_text(encoding="utf-8").splitlines()
+        port = int(lines[0].strip()) if lines and lines[0].strip().isdigit() else None
+        ws_path = lines[1].strip() if len(lines) > 1 else ""
+    except Exception:
+        return False, "Could not read DevToolsActivePort file."
+
+    if not port:
+        return False, "Remote debugging port not found."
+
+    # Verify TCP socket listener on port
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        err = s.connect_ex(("127.0.0.1", port))
+        s.close()
+        if err != 0:
+            return False, f"Port {port} is not listening."
+    except Exception as e:
+        return False, f"Socket check failed: {e}"
+
+    # Verify HTTP endpoint or Chrome 147+ 404-with-ws_path behavior
+    url = f"http://127.0.0.1:{port}/json/version"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "AI-Mime-Onboarding"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                return True, "Remote debugging is active and verified."
+    except HTTPError as e:
+        # Chrome 147+ returns 404 for /json/* on default user-data-dir, but ws_path is active
+        if e.code == 404 and ws_path:
+            return True, "Remote debugging is active and verified."
+    except Exception:
+        pass
+
+    if ws_path:
+        return True, "Remote debugging is active and verified."
+
+    return False, "Remote debugging is not enabled yet."
+
+
+def _open_chrome_inspect() -> None:
+    """Open chrome://inspect/#remote-debugging in Google Chrome."""
+    import platform
+    import subprocess
+    import webbrowser
+
+    url = "chrome://inspect/#remote-debugging"
+    if platform.system() == "Darwin":
+        try:
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e", 'tell application "Google Chrome" to activate',
+                    "-e", f'tell application "Google Chrome" to open location "{url}"',
+                ],
+                timeout=5,
+                check=False,
+            )
+            return
+        except Exception:
+            pass
+    try:
+        webbrowser.open(url, new=2)
+    except Exception:
+        pass
 
 
 def _browser_harness_skill_dir() -> Path:
@@ -463,6 +591,10 @@ class _OnboardingWizard(NSObject):
         self._start_status_label = None
         self._start_timer = None
         self._skills_autostart_timer = None
+        self._remote_debugging_autostart_timer = None
+        self._rd_enabled_lbl = None
+        self._rd_status_iv = None
+        self._rd_instructions_label = None
         self._skill_rows = {}
         self._skills_error_label = None
         self._perm_timer = None
@@ -508,6 +640,9 @@ class _OnboardingWizard(NSObject):
         if self._skills_autostart_timer is not None:
             self._skills_autostart_timer.invalidate()
             self._skills_autostart_timer = None
+        if hasattr(self, "_remote_debugging_autostart_timer") and self._remote_debugging_autostart_timer is not None:
+            self._remote_debugging_autostart_timer.invalidate()
+            self._remote_debugging_autostart_timer = None
 
         app = NSApplication.sharedApplication()
         app.stop_(None)
@@ -558,12 +693,19 @@ class _OnboardingWizard(NSObject):
         self._skill_rows = {}
         self._skills_error_label = None
         self._perm_rows = {}
+        self._rd_enabled_lbl = None
+        self._rd_status_iv = None
+        self._rd_instructions_label = None
+        if hasattr(self, "_remote_debugging_autostart_timer") and self._remote_debugging_autostart_timer is not None:
+            self._remote_debugging_autostart_timer.invalidate()
+            self._remote_debugging_autostart_timer = None
 
     def _render(self):
         self._clear()
         (
             self._render_permissions,
             self._render_provider_setup,
+            self._render_remote_debugging_setup,
             self._render_skills_setup,
         )[self._step]()
 
@@ -1041,7 +1183,118 @@ class _OnboardingWizard(NSObject):
             self._update_provider_status_ui()
 
     # ------------------------------------------------------------------
-    # Step 3 – Skills Setup
+    # Step 3 – Remote Debugging Setup
+    # ------------------------------------------------------------------
+
+    def _render_remote_debugging_setup(self):
+        if self._perm_timer is not None:
+            self._perm_timer.invalidate()
+            self._perm_timer = None
+
+        self._add_label("Enable Remote Debugging", x=0, y=_H - 100, w=_W, h=30,
+                        size=22, bold=True, align=_CENTER)
+        self._add_label(
+            "AI Mime needs Chrome remote debugging enabled\nto run browser automation skills.",
+            x=0, y=_H - 144, w=_W, h=36, size=13, align=_CENTER,
+            color=NSColor.secondaryLabelColor())
+
+        card_h = 70
+        card_y = _H - 234
+        cy = card_y + card_h / 2
+        self._card(_M, card_y, _CW, card_h)
+
+        self._tile(_M + 16, cy - 14, NSColor.systemBlueColor(), "globe", size=28)
+        tx = _M + 16 + 28 + 12
+        self._add_label("Allow remote debugging", x=tx, y=cy + 1, w=220, h=18, size=13.5, bold=True)
+        self._add_label("Check box on chrome://inspect/#remote-debugging", x=tx, y=cy - 16, w=250, h=14, size=11.5,
+                        color=NSColor.secondaryLabelColor())
+
+        right = _M + _CW - 16
+        open_btn = NSButton.alloc().initWithFrame_(NSMakeRect(right - 104, cy - 13, 104, 26))
+        open_btn.setTitle_("Open Settings")
+        open_btn.setButtonType_(NSButtonTypeMomentaryPushIn)
+        open_btn.setBezelStyle_(1)
+        open_btn.setFont_(NSFont.systemFontOfSize_(11.5))
+        open_btn.setTarget_(self)
+        open_btn.setAction_("openInspectPage:")
+        self._content.addSubview_(open_btn)
+
+        self._rd_enabled_lbl = self._add_label("Enabled", x=right - 108, y=cy - 8, w=108, h=16,
+                                                size=12.5, bold=True, align=2,
+                                                color=NSColor.systemGreenColor())
+        self._rd_enabled_lbl.setHidden_(True)
+
+        self._rd_status_iv = self._symbol_view("exclamationmark.circle.fill",
+                                                NSColor.systemOrangeColor(),
+                                                right - 104 - 14 - 9, cy, pt=17)
+
+        self._rd_instructions_label = self._add_label(
+            "In Chrome, check 'Allow remote debugging for this browser instance', then click 'Test & Continue'.",
+            x=_M, y=118, w=_CW, h=30, size=12, align=_CENTER,
+            color=NSColor.secondaryLabelColor())
+
+        self._back_button()
+        self._primary_button("Test & Continue", "testAndContinueRemoteDebugging:", enabled=True, w=144)
+
+        # Initial check on entry:
+        ok, msg = _check_chrome_remote_debugging()
+        if ok:
+            self._update_remote_debugging_ui(True, "Remote debugging is active and verified.")
+            # Auto-continue if already enabled
+            self._remote_debugging_autostart_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.2, self, "autocontinueRemoteDebugging:", None, False)
+        else:
+            self._update_remote_debugging_ui(False, msg)
+            _open_chrome_inspect()
+
+    def _update_remote_debugging_ui(self, enabled: bool, detail: str):
+        if hasattr(self, "_rd_enabled_lbl") and self._rd_enabled_lbl is not None:
+            self._rd_enabled_lbl.setHidden_(not enabled)
+        if hasattr(self, "_rd_status_iv") and self._rd_status_iv is not None:
+            symbol = "checkmark.circle.fill" if enabled else "exclamationmark.circle.fill"
+            color = NSColor.systemGreenColor() if enabled else NSColor.systemOrangeColor()
+            img = self._sf(symbol, 17)
+            if img is not None:
+                self._rd_status_iv.setImage_(img)
+            try:
+                self._rd_status_iv.setContentTintColor_(color)
+            except Exception:
+                pass
+        if hasattr(self, "_rd_instructions_label") and self._rd_instructions_label is not None:
+            if enabled:
+                self._rd_instructions_label.setStringValue_("Remote debugging verified. Continuing…")
+                self._rd_instructions_label.setTextColor_(NSColor.systemGreenColor())
+            else:
+                self._rd_instructions_label.setStringValue_(
+                    "In Chrome, check 'Allow remote debugging for this browser instance', then click 'Test & Continue'."
+                )
+                self._rd_instructions_label.setTextColor_(NSColor.secondaryLabelColor())
+
+    # Cocoa selector openInspectPage:
+    def openInspectPage_(self, sender):
+        _open_chrome_inspect()
+
+    # Cocoa selector testAndContinueRemoteDebugging:
+    def testAndContinueRemoteDebugging_(self, sender):
+        ok, msg = _check_chrome_remote_debugging()
+        if ok:
+            self._update_remote_debugging_ui(True, msg)
+            self.onContinue_(sender)
+        else:
+            self._update_remote_debugging_ui(False, msg)
+            if hasattr(self, "_rd_instructions_label") and self._rd_instructions_label is not None:
+                self._rd_instructions_label.setStringValue_(
+                    "Remote debugging not enabled yet. Check 'Allow remote debugging for this browser instance' in Chrome and try again."
+                )
+                self._rd_instructions_label.setTextColor_(NSColor.systemRedColor())
+
+    # Cocoa selector autocontinueRemoteDebugging:
+    def autocontinueRemoteDebugging_(self, timer):
+        self._remote_debugging_autostart_timer = None
+        self.onContinue_(None)
+
+    # ------------------------------------------------------------------
+    # Step 4 – Skills Setup
     # ------------------------------------------------------------------
 
     def _render_skills_setup(self):

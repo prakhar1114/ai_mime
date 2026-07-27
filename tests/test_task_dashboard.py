@@ -523,6 +523,28 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertEqual(item["entrypoint"], "skills/fetch-weather/run.sh")
         self.assertEqual(item["skill_name"], "fetch-weather")
 
+    def test_marketplace_manifest_falls_back_to_github_url_on_primary_failure(self) -> None:
+        package_bytes = self._workflow_zip_bytes()
+        manifest = self._marketplace_manifest(package_bytes)
+        app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
+        client = TestClient(app)
+
+        def fake_fetch(url: str, *, max_bytes: int, label: str) -> bytes:
+            if label == "marketplace manifest":
+                if "market.aimime.cc" in url or "example.com" in url:
+                    raise ValueError("Primary endpoint unreachable")
+                if "raw.githubusercontent.com" in url:
+                    return json.dumps(manifest).encode()
+            raise AssertionError(f"unexpected fetch: {url}")
+
+        with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), \
+             patch("ai_mime.editor.server._fetch_url_bytes", side_effect=fake_fetch):
+            response = client.get("/api/marketplace/manifest")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["manifest_url"], "https://raw.githubusercontent.com/prakhar1114/ai_mime_marketplace/main/docs/manifest.json")
+
     def test_marketplace_manifest_path_override_reads_local_directory(self) -> None:
         package_bytes = self._workflow_zip_bytes()
         market = self.root / "marketplace"
