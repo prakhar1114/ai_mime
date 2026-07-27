@@ -22,7 +22,7 @@ You can refer to the complete example skill package reference at `instructions/e
    - `SKILL.md`                       — skill-creator format, sections above.
    - `scripts/run.py`                 — from Phase C.
    - `requirements.txt`               — optional, only when `scripts/run.py` needs third-party Python packages. If present, you must create `.venv` and install it during skill build before signalling.
-   - `run.sh`                         — one-click wrapper, `chmod +x`. Body:
+   - `run.sh` / `run.bat`              — one-click wrapper (`chmod +x` on Unix). AI Mime automatically ensures platform runners (`run.bat` on Windows, `run.sh` on Unix/macOS) are generated upon build/install. Standard `run.sh` body:
        ```bash
        #!/usr/bin/env bash
        set -euo pipefail

@@ -11,11 +11,15 @@ content *below* its window id (see ScreenshotRecorder.capture(exclude_window_id=
 
 # pyright: reportAttributeAccessIssue=false
 
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
 
-import AppKit  # type: ignore[import-not-found]
+if sys.platform == "darwin":
+    import AppKit  # type: ignore[import-not-found]
+else:
+    AppKit = None
 
 from ai_mime.overlay.ui_common import (
     active_screen_visible_frame,
@@ -32,7 +36,10 @@ class RecordingOverlayState:
     req_id: float | None = None
 
 
-class RecordingOverlayActionHandler(AppKit.NSObject):  # type: ignore[misc]
+_NSObjectBase = AppKit.NSObject if AppKit is not None else object
+
+
+class RecordingOverlayActionHandler(_NSObjectBase):  # type: ignore[misc]
     # ObjC selector methods; naming follows PyObjC conventions.
     def addDetails_(self, sender):  # noqa: N802
         self._overlay._begin_refine("details")  # type: ignore[attr-defined]

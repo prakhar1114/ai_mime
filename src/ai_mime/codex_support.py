@@ -4,8 +4,15 @@ import os
 import shutil
 from pathlib import Path
 
+import sys
+
 _HOST_CLI_DIRS = (
     ".local/bin",
+    ".codex/bin",
+    ".claude/bin",
+    "AppData/Roaming/npm",
+    "AppData/Local/Programs/Codex",
+    "AppData/Local/Programs/Claude",
     "bin",
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -17,7 +24,7 @@ _HOST_CLI_DIRS = (
 
 
 def _home_from_env(env: dict[str, str] | None = None) -> Path:
-    raw = (env or os.environ).get("HOME")
+    raw = (env or os.environ).get("HOME") or (env or os.environ).get("USERPROFILE")
     if raw:
         return Path(raw).expanduser()
     return Path.home()
@@ -25,6 +32,13 @@ def _home_from_env(env: dict[str, str] | None = None) -> Path:
 
 def _candidate_dirs(home: Path) -> list[str]:
     dirs: list[str] = []
+    appdata = os.environ.get("APPDATA")
+    localappdata = os.environ.get("LOCALAPPDATA")
+    if appdata:
+        dirs.append(os.path.join(appdata, "npm"))
+    if localappdata:
+        dirs.append(os.path.join(localappdata, "Programs", "Codex"))
+
     for raw in _HOST_CLI_DIRS:
         candidate = Path(raw)
         if not candidate.is_absolute():
@@ -46,7 +60,7 @@ def _merge_path(*groups: list[str]) -> str:
 
 
 def find_codex_executable(*, env: dict[str, str] | None = None) -> str | None:
-    """Find Codex from terminal or macOS app launch environments."""
+    """Find Codex from terminal, Windows or macOS app launch environments."""
     base_env = env or os.environ
     home = _home_from_env(base_env)
     search_path = _merge_path(
@@ -54,7 +68,17 @@ def find_codex_executable(*, env: dict[str, str] | None = None) -> str | None:
         _candidate_dirs(home),
     )
     exe = shutil.which("codex", path=search_path)
-    return exe
+    if exe:
+        return exe
+
+    if sys.platform == "win32":
+        for dir_path in _candidate_dirs(home):
+            base = Path(dir_path) / "codex"
+            for ext in (".cmd", ".exe", ".bat", ".ps1"):
+                p = base.with_suffix(ext)
+                if p.is_file():
+                    return str(p)
+    return None
 
 
 def codex_subprocess_env(

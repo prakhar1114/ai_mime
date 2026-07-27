@@ -70,49 +70,12 @@ OVERLAY_ENABLED = True
 
 
 def _kill_processes_on_tcp_port(port: int) -> None:
-    """Stop any process using this TCP port so a new editor server can bind (macOS/Linux: uses lsof)."""
+    """Stop any process using this TCP port so a new editor server can bind."""
     try:
-        proc = subprocess.run(
-            ["lsof", "-ti", f":{port}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return
-    raw = (proc.stdout or "").strip()
-    if not raw:
-        return
-    ours = os.getpid()
-    pids: list[int] = []
-    for token in raw.replace("\n", " ").split():
-        if token.isdigit():
-            pid = int(token)
-            if pid != ours:
-                pids.append(pid)
-    seen: set[int] = set()
-    unique: list[int] = []
-    for p in pids:
-        if p not in seen:
-            seen.add(p)
-            unique.append(p)
-    if not unique:
-        return
-    print(
-        f"[ai-mime] editor server port {port} in use; stopping PIDs {unique}",
-        file=sys.stderr,
-        flush=True,
-    )
-    for pid in unique:
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.kill(pid, sig)
-            except ProcessLookupError:
-                break
-            except PermissionError:
-                break
-    time.sleep(0.15)
+        from ai_mime.platform import free_port
+        free_port(port)
+    except Exception as e:
+        log(f"Editor server: failed to inspect port {port}: {e}", exc_info=True)
 
 
 def _task_log(msg: str, *, exc_info: bool = False) -> None:
@@ -178,8 +141,14 @@ def _find_skill_dir(workflow_dir: Path) -> Path | None:
         return None
     candidates: list[Path] = []
     for child in skills_root.iterdir():
+        if not child.is_dir():
+            continue
         run_sh = child / "run.sh"
-        if child.is_dir() and run_sh.is_file() and os.access(run_sh, os.X_OK):
+        run_bat = child / "run.bat"
+        run_py = child / "scripts" / "run.py"
+        if run_sh.is_file() and os.access(run_sh, os.X_OK):
+            candidates.append(child)
+        elif run_bat.is_file() or run_py.is_file():
             candidates.append(child)
     if not candidates:
         return None
@@ -193,7 +162,7 @@ def _find_skill_dir_with_run_sh(workflow_dir: Path) -> Path | None:
         return None
     candidates: list[Path] = []
     for child in skills_root.iterdir():
-        if child.is_dir() and (child / "run.sh").is_file():
+        if child.is_dir() and ((child / "run.sh").is_file() or (child / "run.bat").is_file() or (child / "scripts" / "run.py").is_file()):
             candidates.append(child)
     if not candidates:
         return None
@@ -252,7 +221,6 @@ def _write_json(path: Path, obj: Any) -> None:
 
 _REQUIRED_IMPORT_SKILL_FILES = (
     "SKILL.md",
-    "run.sh",
     "scripts/run.py",
     "inputs/inputs.example.json",
     "inputs/inputs.template.json"
@@ -354,7 +322,11 @@ def _strip_common_upload_root(stage_dir: Path) -> Path:
 
 
 def _is_skill_dir(path: Path) -> bool:
-    return path.is_dir() and all((path / rel).is_file() for rel in _REQUIRED_IMPORT_SKILL_FILES)
+    if not path.is_dir():
+        return False
+    if not all((path / rel).is_file() for rel in _REQUIRED_IMPORT_SKILL_FILES):
+        return False
+    return (path / "run.sh").is_file() or (path / "run.bat").is_file()
 
 
 def _find_workflow_skill_dir(workflow_dir: Path) -> Path | None:
@@ -403,10 +375,98 @@ def _parse_skill_preconditions(skill_dir: Path) -> list[str]:
     return out
 
 
-def _chmod_run_sh(skill_dir: Path) -> None:
+def ensure_platform_runners(skill_dir: Path) -> None:
+    """Ensure platform-native runner scripts (run.bat for Windows, run.sh for Unix/macOS)
+    exist in the skill directory, converting and pruning non-native scripts."""
+    if not skill_dir.is_dir():
+        return
+
     run_sh = skill_dir / "run.sh"
-    if run_sh.is_file():
-        run_sh.chmod(run_sh.stat().st_mode | 0o755)
+    run_bat = skill_dir / "run.bat"
+    run_py = skill_dir / "scripts" / "run.py"
+
+    if sys.platform == "win32":
+        if not run_bat.is_file():
+            if run_py.is_file():
+                bat_content = (
+                    "@echo off\r\n"
+                    "setlocal enabledelayedexpansion\r\n"
+                    "set \"HERE=%~dp0\"\r\n"
+                    "if \"%HERE:~-1%\"==\"\\\" set \"HERE=%HERE:~0,-1%\"\r\n"
+                    "\r\n"
+                    "if \"%AI_MIME_PYTHON_PATH%\"==\"\" (\r\n"
+                    "  if exist \"%HERE%\\.env\" (\r\n"
+                    "    for /f \"usebackq tokens=1,* delims==\" %%a in (\"%HERE%\\.env\") do (\r\n"
+                    "      set \"%%a=%%b\"\r\n"
+                    "    )\r\n"
+                    "  )\r\n"
+                    ")\r\n"
+                    "\r\n"
+                    "set \"INPUTS=%~1\"\r\n"
+                    "if \"%INPUTS%\"==\"\" set \"INPUTS=%HERE%\\inputs\\inputs.example.json\"\r\n"
+                    "\r\n"
+                    "set \"PYTHON=%AI_MIME_PYTHON_PATH%\"\r\n"
+                    "if exist \"%HERE%\\.venv\\Scripts\\python.exe\" (\r\n"
+                    "  set \"PYTHON=%HERE%\\.venv\\Scripts\\python.exe\"\r\n"
+                    ") else if exist \"%HERE%\\.venv\\bin\\python\" (\r\n"
+                    "  set \"PYTHON=%HERE%\\.venv\\bin\\python\"\r\n"
+                    ") else if exist \"%HERE%\\..\\..\\.venv\\Scripts\\python.exe\" (\r\n"
+                    "  set \"PYTHON=%HERE%\\..\\..\\.venv\\Scripts\\python.exe\"\r\n"
+                    ") else if exist \"%HERE%\\..\\..\\.venv\\bin\\python\" (\r\n"
+                    "  set \"PYTHON=%HERE%\\..\\..\\.venv\\bin\\python\"\r\n"
+                    ")\r\n"
+                    "\r\n"
+                    "if \"%PYTHON%\"==\"\" set \"PYTHON=python\"\r\n"
+                    "\r\n"
+                    "\"%PYTHON%\" \"%HERE%\\scripts\\run.py\" --inputs-json \"%INPUTS%\"\r\n"
+                    "exit /b %errorlevel%\r\n"
+                )
+                with contextlib.suppress(Exception):
+                    run_bat.write_text(bat_content, encoding="utf-8")
+            elif run_sh.is_file():
+                bat_content = (
+                    "@echo off\r\n"
+                    "\"C:\\Program Files\\Git\\bin\\bash.exe\" \"%~dp0run.sh\" %*\r\n"
+                    "exit /b %errorlevel%\r\n"
+                )
+                with contextlib.suppress(Exception):
+                    run_bat.write_text(bat_content, encoding="utf-8")
+
+        if run_py.is_file() and run_sh.is_file():
+            with contextlib.suppress(Exception):
+                run_sh.unlink()
+    else:
+        if not run_sh.is_file() and (run_bat.is_file() or run_py.is_file()):
+            sh_content = (
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'HERE="$(cd "$(dirname "$0")" && pwd)"\n'
+                'if [[ -z "${AI_MIME_PYTHON_PATH:-}" && -f "$HERE/.env" ]]; then\n'
+                '  set -a; . "$HERE/.env"; set +a\n'
+                "fi\n"
+                'INPUTS="${1:-$HERE/inputs/inputs.example.json}"\n'
+                'PYTHON="${AI_MIME_PYTHON_PATH:-python}"\n'
+                'if [[ -x "$HERE/.venv/bin/python" ]]; then\n'
+                '  PYTHON="$HERE/.venv/bin/python"\n'
+                'elif [[ -x "$HERE/../../.venv/bin/python" ]]; then\n'
+                '  PYTHON="$HERE/../../.venv/bin/python"\n'
+                "fi\n"
+                'exec "$PYTHON" "$HERE/scripts/run.py" --inputs-json "$INPUTS"\n'
+            )
+            with contextlib.suppress(Exception):
+                run_sh.write_text(sh_content, encoding="utf-8")
+
+        if run_sh.is_file():
+            with contextlib.suppress(Exception):
+                run_sh.chmod(run_sh.stat().st_mode | 0o755)
+
+        if run_bat.is_file():
+            with contextlib.suppress(Exception):
+                run_bat.unlink()
+
+
+def _chmod_run_sh(skill_dir: Path) -> None:
+    ensure_platform_runners(skill_dir)
 
 
 def _should_skip_import_rel(rel: Path, *, is_workflow: bool, inside_skill: bool, keep_skill_venv: bool) -> bool:
@@ -1029,6 +1089,19 @@ def _setup_skill_venv(workflow_dir: Path, skill_dir: Path) -> None:
     if not requirements.is_file():
         return
 
+    try:
+        req_text = requirements.read_text(encoding="utf-8")
+    except Exception:
+        req_text = ""
+
+    active_reqs = [
+        line.strip()
+        for line in req_text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if not active_reqs:
+        return
+
     stale_venv = skill_dir / ".venv"
     if stale_venv.exists():
         shutil.rmtree(stale_venv, ignore_errors=True)
@@ -1046,16 +1119,20 @@ def _setup_skill_venv(workflow_dir: Path, skill_dir: Path) -> None:
         env=env,
         label="virtualenv creation",
     )
+
+    venv_python_win = skill_dir / ".venv" / "Scripts" / "python.exe"
+    venv_python_unix = skill_dir / ".venv" / "bin" / "python"
+    venv_python = venv_python_win if venv_python_win.exists() else venv_python_unix
+
     _run_venv_command(
-        [uv_path, "pip", "install", "-r", "requirements.txt", "--python", ".venv/bin/python"],
+        [uv_path, "pip", "install", "-r", "requirements.txt", "--python", str(venv_python)],
         cwd=skill_dir,
         env=env,
         label="dependency installation",
     )
 
-    venv_python = skill_dir / ".venv" / "bin" / "python"
-    if not venv_python.is_file() or not os.access(venv_python, os.X_OK):
-        raise ValueError("Skill dependency setup did not create an executable .venv/bin/python")
+    if not venv_python.is_file() or (sys.platform != "win32" and not os.access(venv_python, os.X_OK)):
+        raise ValueError(f"Skill dependency setup did not create an executable virtualenv python at {venv_python}")
 
 
 def _snapshot_asset_files(assets_dir: Path) -> dict[str, tuple[int, int]]:
@@ -1532,6 +1609,7 @@ def create_app(
         return tasks_dashboard()
 
     @app.get("/tasks", response_class=HTMLResponse)
+    @app.get("/dashboard", response_class=HTMLResponse)
     def tasks_dashboard():
         index_path = web_dir / "tasks.html"
         if not index_path.exists():
@@ -2234,30 +2312,79 @@ def create_app(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to stage marketplace item: {e}")
 
-    @app.post("/api/app/quit")
-    def api_quit_app():
-        if app_command_queue is None:
-            raise HTTPException(status_code=503, detail="App control is unavailable")
-        for tid, proc in list(_running_automations.items()):
+    def _kill_automation_proc(proc: Any) -> None:
+        if proc is None:
+            return
+        try:
+            if sys.platform == "win32":
+                if hasattr(proc, "pid") and proc.pid:
+                    subprocess.call(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                if hasattr(proc, "terminate"):
+                    proc.terminate()
+            else:
+                if hasattr(proc, "pid") and proc.pid:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        pass
+                if hasattr(proc, "terminate"):
+                    proc.terminate()
+        except Exception:
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                if hasattr(proc, "kill"):
+                    proc.kill()
             except Exception:
                 pass
+
+    @app.post("/api/app/quit")
+    def api_quit_app():
+        for tid, proc in list(_running_automations.items()):
+            _kill_automation_proc(proc)
             _running_automations.pop(tid, None)
-        try:
-            app_command_queue.put({"type": "quit_app"})
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to queue quit command: {e}")
+
+        queued = False
+        if app_command_queue is not None:
+            try:
+                app_command_queue.put({"type": "quit_app"})
+                queued = True
+            except Exception:
+                queued = False
+
+        def _deferred_quit():
+            time.sleep(0.5)
+            try:
+                from ai_mime.app import kill_mime_processes
+                kill_mime_processes()
+            except Exception:
+                pass
+            os._exit(0)
+
+        if not queued:
+            threading.Thread(target=_deferred_quit, daemon=True).start()
+
         return {"ok": True}
 
     @app.post("/api/app/open-workflows")
     def api_open_workflows():
-        if app_command_queue is None:
-            raise HTTPException(status_code=503, detail="App control is unavailable")
+        from ai_mime.platform import open_directory
+        workflows_dir = task_runner.workflows_root
+        workflows_dir.mkdir(parents=True, exist_ok=True)
+
+        if app_command_queue is not None:
+            try:
+                app_command_queue.put({"type": "open_workflows_directory"})
+                return {"ok": True}
+            except Exception:
+                pass
+
         try:
-            app_command_queue.put({"type": "open_workflows_directory"})
+            open_directory(workflows_dir)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to queue open workflows command: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to open workflows folder: {e}")
         return {"ok": True}
 
 
@@ -2603,8 +2730,6 @@ def create_app(
     @app.post("/api/tasks/{task_id}/skill/open-folder")
     def api_open_skill_folder(task_id: str):
         _safe_task_id(task_id)
-        if app_command_queue is None:
-            raise HTTPException(status_code=503, detail="App control is unavailable")
         row = task_runner.get_status(task_id)
         workflow_dir_raw = row.get("workflow_dir")
         skill_dir_raw = row.get("skill_dir")
@@ -2619,10 +2744,19 @@ def create_app(
             raise HTTPException(status_code=400, detail="Invalid skill directory")
         if not skill_dir.exists() or not skill_dir.is_dir():
             raise HTTPException(status_code=404, detail="Skill folder not found")
+
+        if app_command_queue is not None:
+            try:
+                app_command_queue.put({"type": "open_directory", "path": str(skill_dir)})
+                return {"ok": True, "path": str(skill_dir)}
+            except Exception:
+                pass
+
+        from ai_mime.platform import open_directory
         try:
-            app_command_queue.put({"type": "open_directory", "path": str(skill_dir)})
+            open_directory(skill_dir)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to queue open skill folder command: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to open skill folder: {e}")
         return {"ok": True, "path": str(skill_dir)}
 
     @app.post("/api/tasks/{task_id}/skill/run/stream")
@@ -2645,11 +2779,15 @@ def create_app(
         _safe_workflow_dir(task_runner.workflows_root, task_id)
         if workflow_dir not in skill_dir.parents:
             raise HTTPException(status_code=400, detail="Invalid skill directory")
+        ensure_platform_runners(skill_dir)
         run_sh = skill_dir / "run.sh"
-        if not run_sh.exists():
-            raise HTTPException(status_code=404, detail=f"run.sh not found at {run_sh}")
-        if not os.access(run_sh, os.X_OK):
-            raise HTTPException(status_code=400, detail=f"run.sh is not executable: {run_sh}")
+        run_bat = skill_dir / "run.bat"
+        run_py = skill_dir / "scripts" / "run.py"
+        if run_sh.is_file():
+            if sys.platform != "win32" and not os.access(run_sh, os.X_OK):
+                raise HTTPException(status_code=400, detail=f"run.sh is not executable: {run_sh}")
+        elif not (run_bat.is_file() or run_py.is_file()):
+            raise HTTPException(status_code=404, detail=f"Skill execution entrypoint not found at {skill_dir}")
 
         params = payload.get("params") if isinstance(payload, dict) else None
         if params is None:
@@ -2718,7 +2856,18 @@ def create_app(
             with tempfile.TemporaryDirectory(prefix="ai-mime-skill-run-") as td:
                 inputs_path = Path(td) / "inputs.json"
                 inputs_path.write_text(json.dumps(params, indent=2, ensure_ascii=False), encoding="utf-8")
-                cmd = [str(run_sh), str(inputs_path)]
+                if sys.platform == "win32":
+                    if run_bat.is_file():
+                        cmd = ["cmd.exe", "/c", str(run_bat), str(inputs_path)]
+                    elif run_py.is_file():
+                        cmd = [sys.executable, str(run_py), "--inputs-json", str(inputs_path)]
+                    else:
+                        cmd = ["bash", str(run_sh), str(inputs_path)]
+                else:
+                    if run_sh.exists() and os.access(run_sh, os.X_OK):
+                        cmd = [str(run_sh), str(inputs_path)]
+                    else:
+                        cmd = [sys.executable, str(run_py), "--inputs-json", str(inputs_path)]
                 if app_command_queue is not None:
                     app_command_queue.put({
                         "type": "show_automation_overlay",
@@ -2728,7 +2877,7 @@ def create_app(
                     "event": "started",
                     "skill_dir": str(skill_dir),
                     "inputs_path": str(inputs_path),
-                    "command": "./run.sh",
+                    "command": " ".join(cmd),
                     "run_id": run_id,
                     "run_dir": str(run_dir),
                 })
@@ -2811,10 +2960,11 @@ def create_app(
                     exit_code = proc.wait()
                     duration_ms = int((time.monotonic() - started) * 1000)
                     success = exit_code == 0
+                    runner_name = "run.bat" if sys.platform == "win32" else "run.sh"
                     _finish_run_log(
                         status="success" if success else "failed",
                         exit_code=exit_code,
-                        error=None if success else f"run.sh exited with code {exit_code}",
+                        error=None if success else f"{runner_name} exited with code {exit_code}",
                     )
                     if app_command_queue is not None:
                         app_command_queue.put({
@@ -2861,14 +3011,10 @@ def create_app(
                     return
                 finally:
                     if proc is not None and proc.poll() is None:
-                        try:
-                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                        except Exception:
-                            pass
-                        proc.terminate()
+                        _kill_automation_proc(proc)
                     _running_automations.pop(task_id, None)
                     if not overlay_completed and app_command_queue is not None:
-                        app_command_queue.put({"type": "hide_conversation_overlay"})
+                        app_command_queue.put({"type": "update_automation_overlay", "status": "failed"})
 
         return StreamingResponse(
             _stream(),
@@ -2923,12 +3069,7 @@ def create_app(
         if not proc:
             return {"ok": False, "message": "No active skill run for this task"}
         _killed_automations.add(task_id)
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to kill process group: {e}")
+        _kill_automation_proc(proc)
         return {"ok": True, "message": "Skill run terminated"}
 
     @app.get("/replay/{task_id}", response_class=HTMLResponse)

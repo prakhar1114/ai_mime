@@ -21,6 +21,8 @@ from ai_mime.codex_support import codex_subprocess_env, find_codex_executable
 from ai_mime.debug_log import log as debug_log
 
 
+from openai_codex import AsyncCodex, Codex, CodexConfig, Sandbox, SkillInput, TextInput  # type: ignore[import-not-found]
+
 logger = logging.getLogger(__name__)
 _CODEX_RESTRICTED_AGENT_MODES = {"general", "build_skill_chat", "replay_execution"}
 _CODEX_RESTRICTED_FEATURES = (
@@ -40,8 +42,6 @@ def _log(message: str, *, exc_info: bool = False) -> None:
 
 
 def _load_codex_sdk() -> tuple[Any, Any, Any, Any]:
-    from openai_codex import AsyncCodex, Codex, CodexConfig, Sandbox  # type: ignore[import-not-found]
-
     return Codex, AsyncCodex, CodexConfig, Sandbox
 
 
@@ -353,7 +353,6 @@ def _browser_skill_input() -> Any | None:
     path = resolved_browser_skill_path()
     if not path.is_dir() or not (path / "SKILL.md").is_file():
         return None
-    from openai_codex import SkillInput  # type: ignore[import-not-found]
 
     return SkillInput(name=resolved_browser_skill_name(), path=str(path))
 
@@ -364,7 +363,6 @@ def _codex_turn_input(prompt: str, *, skills: Any = None) -> Any:
     skill_input = _browser_skill_input()
     if skill_input is None:
         return prompt
-    from openai_codex import TextInput  # type: ignore[import-not-found]
 
     return [skill_input, TextInput(prompt)]
 

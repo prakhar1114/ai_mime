@@ -9,6 +9,7 @@ import time
 import textwrap
 import unittest
 from pathlib import Path
+import sys
 
 from fastapi.testclient import TestClient
 
@@ -54,6 +55,7 @@ class SkillRunStreamTests(unittest.TestCase):
         if executable:
             run_sh.chmod(run_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
+
     def _client(self) -> TestClient:
         app = create_app(workflows_root=self.workflows, recordings_root=self.recordings)
         return TestClient(app)
@@ -87,18 +89,17 @@ class SkillRunStreamTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def test_skill_run_streams_logs_and_parses_workflow_outputs(self) -> None:
-        self._write_run_sh(
-            r'''
-            python3 - "$1" <<'PY'
-            import json, sys
-            inputs = json.load(open(sys.argv[1]))
-            print("stdout:" + inputs["name"], flush=True)
-            print("plain stderr", file=sys.stderr, flush=True)
-            print(json.dumps({"event":"workflow_done","outputs":{"greeting":"hello " + inputs["name"]}}), file=sys.stderr, flush=True)
-            PY
-            '''
+        py_cmd = sys.executable.replace("\\", "/")
+        script = (
+            f'"{py_cmd}" - "$1" <<\'PY\'\n'
+            'import json, sys\n'
+            'inputs = json.load(open(sys.argv[1]))\n'
+            'print("stdout:" + inputs["name"], flush=True)\n'
+            'print("plain stderr", file=sys.stderr, flush=True)\n'
+            'print(json.dumps({"event":"workflow_done","outputs":{"greeting":"hello " + inputs["name"]}}), file=sys.stderr, flush=True)\n'
+            'PY\n'
         )
+        self._write_run_sh(script)
         client = self._client()
 
         response = client.post(
@@ -162,19 +163,20 @@ class SkillRunStreamTests(unittest.TestCase):
         self.assertIn("## Input", data)
         self.assertIn("## Output", data)
         self.assertIn("## Error", data)
-        self.assertIn("run.sh exited with code 7", data)
+        runner_name = "run.bat" if sys.platform == "win32" else "run.sh"
+        self.assertIn(f"{runner_name} exited with code 7", data)
 
     def test_skill_run_copies_changed_assets_into_run_folder(self) -> None:
-        self._write_run_sh(
-            r'''
-            mkdir -p ../../outputs/assets/reports
-            echo "asset body" > ../../outputs/assets/reports/result.txt
-            python3 - <<'PY'
-            import json, sys
-            print(json.dumps({"event":"workflow_done","outputs":{"asset":"reports/result.txt"}}), file=sys.stderr, flush=True)
-            PY
-            '''
+        py_cmd = sys.executable.replace("\\", "/")
+        script = (
+            'mkdir -p ../../outputs/assets/reports\n'
+            'echo "asset body" > ../../outputs/assets/reports/result.txt\n'
+            f'"{py_cmd}" - <<\'PY\'\n'
+            'import json, sys\n'
+            'print(json.dumps({"event":"workflow_done","outputs":{"asset":"reports/result.txt"}}), file=sys.stderr, flush=True)\n'
+            'PY\n'
         )
+        self._write_run_sh(script)
         client = self._client()
 
         response = client.post(f"/api/tasks/{self.task_id}/skill/run/stream", json={"params": {"name": "Ada"}})
@@ -189,6 +191,8 @@ class SkillRunStreamTests(unittest.TestCase):
         self.assertIn("[result.txt](assets/reports/result.txt)", data)
 
     def test_skill_run_rejects_non_executable_run_sh(self) -> None:
+        if sys.platform == "win32":
+            return
         self._write_run_sh("echo nope\n", executable=False)
         client = self._client()
 
@@ -200,19 +204,19 @@ class SkillRunStreamTests(unittest.TestCase):
     def test_skill_kill_terminates_process_group_children(self) -> None:
         child_started = self.workflow / "child-started.txt"
         child_survived = self.workflow / "child-survived.txt"
-        self._write_run_sh(
-            f'''
-            python3 - <<'PY' &
-            import pathlib, time
-            pathlib.Path({str(child_started)!r}).write_text("started", encoding="utf-8")
-            time.sleep(2)
-            pathlib.Path({str(child_survived)!r}).write_text("survived", encoding="utf-8")
-            PY
-            child=$!
-            echo "child:$child"
-            wait "$child"
-            '''
+        py_cmd = sys.executable.replace("\\", "/")
+        script = (
+            f'"{py_cmd}" - <<\'PY\' &\n'
+            'import pathlib, time, sys\n'
+            f'pathlib.Path({str(child_started)!r}).write_text("started", encoding="utf-8")\n'
+            'time.sleep(2)\n'
+            f'pathlib.Path({str(child_survived)!r}).write_text("survived", encoding="utf-8")\n'
+            'PY\n'
+            'child=$!\n'
+            'echo "child:$child"\n'
+            'wait "$child"\n'
         )
+        self._write_run_sh(script)
         client = self._client()
         seen: queue.Queue[dict | Exception] = queue.Queue()
 

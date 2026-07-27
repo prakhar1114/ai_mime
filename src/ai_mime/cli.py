@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 import logging
 import multiprocessing
@@ -18,25 +19,17 @@ from ai_mime.onboarding import run_onboarding
 from ai_mime.debug_log import log, log_server, open_server_log_file
 
 
+from ai_mime.platform import free_port as platform_free_port
+
 COMPUTER_SERVER_PORT = 58840
 
 
 def _free_port(port: int) -> None:
     """Kill whatever process is currently listening on ``port``."""
     try:
-        pids = subprocess.run(
-            ["lsof", "-ti", f"tcp:{port}"],
-            capture_output=True, text=True, check=False,
-        ).stdout.split()
+        platform_free_port(port)
     except Exception as e:
         log(f"Computer server: failed to inspect port {port}: {e}", exc_info=True)
-        return
-    for pid in pids:
-        try:
-            os.kill(int(pid), signal.SIGKILL)
-            log(f"Computer server: killed stale process {pid} on port {port}")
-        except (ProcessLookupError, ValueError):
-            pass
 
 
 def _run_computer_server(port: int) -> None:
@@ -84,23 +77,64 @@ def _serve_computer_server(port: int) -> None:
     Server(host="0.0.0.0", port=port).start()
 
 
-def _start_computer_server(port: int = COMPUTER_SERVER_PORT) -> None:
-    """Launch the cua computer server on ``port`` as a child process.
+def _mcp_initialize_response_looks_valid(body: bytes) -> bool:
+    """Check if an HTTP/SSE response body contains a valid MCP initialize JSON-RPC result."""
+    try:
+        text = body.decode("utf-8", errors="replace")
+        for line in text.splitlines():
+            if line.startswith("data: "):
+                line = line[6:]
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict) and "result" in data:
+                    res = data["result"]
+                    if isinstance(res, dict) and ("protocolVersion" in res or "capabilities" in res):
+                        return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
 
-    Runs in-process via multiprocessing (rather than shelling out to a separate
-    interpreter) so the packaged app's server inherits the bundle's bundled
-    computer_server and its macOS screen-recording/accessibility permissions.
-    """
+
+def _start_computer_server(port: int = COMPUTER_SERVER_PORT) -> None:
+    """Launch the cua computer server on ``port``."""
     _free_port(port)
-    proc = multiprocessing.Process(
-        target=_run_computer_server, args=(port,), daemon=True
+    if sys.platform == "win32":
+        thread = threading.Thread(
+            target=_run_computer_server, args=(port,), daemon=True
+        )
+        thread.start()
+        log(f"Computer server: launched on port {port} (thread)")
+        click.echo(f"Computer server starting on port {port}.")
+    else:
+        proc = multiprocessing.Process(
+            target=_run_computer_server, args=(port,), daemon=True
+        )
+        proc.start()
+        atexit.register(proc.terminate)
+        log(f"Computer server: launched on port {port} (pid {proc.pid})")
+        click.echo(f"Computer server starting on port {port} (pid {proc.pid}).")
+
+
+def _start_editor_server() -> None:
+    """Launch the editor/dashboard server (FastAPI) on port 58838."""
+    from ai_mime.editor.server import start_editor_server
+    from ai_mime.app_data import get_recordings_dir, get_workflows_dir
+    workflows_root = get_workflows_dir()
+    recordings_root = get_recordings_dir()
+    workflows_root.mkdir(parents=True, exist_ok=True)
+    recordings_root.mkdir(parents=True, exist_ok=True)
+    proc, port = start_editor_server(
+        workflows_root=workflows_root,
+        recordings_root=recordings_root,
     )
-    proc.start()
     atexit.register(proc.terminate)
-    log(f"Computer server: launched on port {port} (pid {proc.pid})")
-    if is_frozen():
-        log_server(f"Computer server: launched on port {port} (pid {proc.pid})")
-    click.echo(f"Computer server starting on port {port} (pid {proc.pid}).")
+    log(f"Editor server: launched on port {port} (pid {proc.pid})")
+    click.echo(f"Editor server starting on port {port} (pid {proc.pid}).")
 
 
 @click.command()
@@ -127,8 +161,9 @@ def start_app():
         log("start_app: permissions OK, starting app")
         run_app()
     else:
-        log("start_app: permissions missing, not starting app")
-        click.echo("Permissions missing. Please enable them and restart.")
+        log("start_app: permissions missing, starting editor server in headless mode")
+        _start_editor_server()
+        click.echo("Permissions missing. Running editor server in headless mode.")
 
 @click.command()
 @click.option(

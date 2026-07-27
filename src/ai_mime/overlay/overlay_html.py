@@ -36,9 +36,9 @@ OVERLAY_HTML = """
     padding: 0;
   }
 
-  body {
+  html, body {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background-color: transparent;
+    background-color: #222222;
     color: var(--text-primary);
     overflow: hidden; /* No scrollbars on body, container expands natively */
     font-size: 13px;
@@ -256,6 +256,11 @@ OVERLAY_HTML = """
             type: 'resize',
             height: height
           });
+        } else if (window.pywebview && window.pywebview.api) {
+          window.pywebview.api.postMessage({
+            type: 'resize',
+            height: height
+          });
         }
       }
     }
@@ -275,6 +280,8 @@ OVERLAY_HTML = """
     }
     if (window.webkit && window.webkit.messageHandlers.overlay) {
       window.webkit.messageHandlers.overlay.postMessage(msg);
+    } else if (window.pywebview && window.pywebview.api) {
+      window.pywebview.api.postMessage(msg);
     } else {
       console.log('Action triggered:', action, payload);
     }

@@ -937,30 +937,34 @@
   if (el.agentModeBtn) el.agentModeBtn.addEventListener("click", () => {
     window.location.href = "/agent";
   });
-  el.openWorkflowsBtn.addEventListener("click", async () => {
-    try {
-      await request("/api/app/open-workflows", { method: "POST" });
-    } catch (e) {
-      alert(e.message || String(e));
-    }
-  });
+  if (el.openWorkflowsBtn) {
+    el.openWorkflowsBtn.addEventListener("click", async () => {
+      try {
+        await request("/api/app/open-workflows", { method: "POST" });
+      } catch (e) {
+        alert(e.message || String(e));
+      }
+    });
+  }
   if (el.autoinstallBtn) el.autoinstallBtn.addEventListener("click", toggleAutoinstall);
   if (el.autoinstallMcpBtn) el.autoinstallMcpBtn.addEventListener("click", toggleMcp);
   
-  el.quitAppBtn.addEventListener("click", async () => {
-    if (!confirm("Are you sure you want to quit the application and close all processes?")) return;
-    try {
-      await request("/api/app/quit", { method: "POST" });
-      document.body.innerHTML = `
-        <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0b0f14; color: #e8eef5; font-family: sans-serif; flex-direction: column; gap: 10px;">
-          <h2 style="margin: 0; font-weight: 700;">Quitting Application</h2>
-          <p style="color: #9baabb; margin: 0;">You can close this tab now.</p>
-        </div>
-      `;
-    } catch (e) {
-      alert(e.message || String(e));
-    }
-  });
+  if (el.quitAppBtn) {
+    el.quitAppBtn.addEventListener("click", async () => {
+      if (!confirm("Are you sure you want to quit the application and close all processes?")) return;
+      try {
+        await request("/api/app/quit", { method: "POST" });
+        document.body.innerHTML = `
+          <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0b0f14; color: #e8eef5; font-family: sans-serif; flex-direction: column; gap: 10px;">
+            <h2 style="margin: 0; font-weight: 700;">Quitting Application</h2>
+            <p style="color: #9baabb; margin: 0;">You can close this tab now.</p>
+          </div>
+        `;
+      } catch (e) {
+        alert(e.message || String(e));
+      }
+    });
+  }
   el.startRecordingBtn.addEventListener("click", async () => {
     try {
       el.startRecordingBtn.disabled = true;

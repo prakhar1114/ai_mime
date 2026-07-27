@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import httpx
@@ -37,8 +38,15 @@ def find_built_skill_dir(workflow_dir: Path) -> Path | None:
         return None
     candidates = []
     for child in skills_root.iterdir():
+        if not child.is_dir():
+            continue
         run_sh = child / "run.sh"
-        if child.is_dir() and run_sh.is_file() and os.access(run_sh, os.X_OK):
+        run_bat = child / "run.bat"
+        run_py = child / "scripts" / "run.py"
+        if run_sh.is_file():
+            if sys.platform == "win32" or os.access(run_sh, os.X_OK):
+                candidates.append(child)
+        elif run_bat.is_file() or run_py.is_file():
             candidates.append(child)
     if not candidates:
         return None

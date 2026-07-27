@@ -8,12 +8,19 @@ Goal: keep Replay + Recording overlays visually consistent and modern.
 
 # pyright: reportAttributeAccessIssue=false
 
+import sys
 from typing import Any
 
-import AppKit  # type: ignore[import-not-found]
+if sys.platform == "darwin":
+    import AppKit  # type: ignore[import-not-found]
+else:
+    AppKit = None
 
 
-class KeyablePanel(AppKit.NSPanel):  # type: ignore[misc]
+_NSPanelBase = AppKit.NSPanel if AppKit is not None else object
+
+
+class KeyablePanel(_NSPanelBase):  # type: ignore[misc]
     """
     Borderless panels often refuse key status by default; override so NSTextField can edit.
     """
@@ -30,6 +37,14 @@ def active_screen_visible_frame() -> tuple[float, float, float, float]:
     Return (sx, sy, sw, sh) for the visible frame of the screen under the mouse cursor.
     Falls back to mainScreen/defaults.
     """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            sw = float(ctypes.windll.user32.GetSystemMetrics(0))
+            sh = float(ctypes.windll.user32.GetSystemMetrics(1))
+            return 0.0, 0.0, sw, sh
+        except Exception:
+            return 0.0, 0.0, 1920.0, 1080.0
     try:
         mouse = AppKit.NSEvent.mouseLocation()
         mx = float(getattr(mouse, "x", 0.0))

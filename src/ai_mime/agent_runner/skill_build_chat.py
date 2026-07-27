@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -191,6 +192,8 @@ class WorkflowSkillBuildService(BaseAgentChatService):
         # directly from Claude Code/Codex without a reinstall, and (if enabled)
         # expose it to Claude Code / Codex via a symlink.
         try:
+            from ai_mime.editor.server import ensure_platform_runners
+            ensure_platform_runners(skill_dir)
             app_data.write_skill_env_file(skill_dir)
             _log(f"Wrote standalone .env for {skill_dir}")
         except Exception as e:
@@ -240,7 +243,13 @@ class WorkflowSkillBuildService(BaseAgentChatService):
     @staticmethod
     def _has_runnable_skill(skill_dir: Path) -> bool:
         run_sh = skill_dir / "run.sh"
-        return run_sh.is_file() and os.access(run_sh, os.X_OK)
+        run_bat = skill_dir / "run.bat"
+        run_py = skill_dir / "scripts" / "run.py"
+        if run_sh.is_file():
+            if sys.platform != "win32" and not os.access(run_sh, os.X_OK):
+                return False
+            return True
+        return run_bat.is_file() or run_py.is_file()
 
     def create_session(self) -> dict[str, Any]:
         return {"session_id": None, "summary": "New skill-build chat"}

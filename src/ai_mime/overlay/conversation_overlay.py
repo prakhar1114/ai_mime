@@ -7,11 +7,18 @@ Used during active agent interactions in build_skill_chat or replay_execution mo
 
 # pyright: reportAttributeAccessIssue=false
 
-import AppKit  # type: ignore[import-not-found]
-import WebKit
+import sys
+if sys.platform == "darwin":
+    import AppKit  # type: ignore[import-not-found]
+    import WebKit
+    import objc
+    import Foundation
+else:
+    AppKit = None
+    WebKit = None
+    objc = None
+    Foundation = None
 import json
-import objc
-import Foundation
 import threading
 import urllib.request
 import urllib.parse
@@ -42,9 +49,14 @@ _MESSAGE_MAX_LINES = 4
 _TOOL_MAX_LINES = 2
 
 
-class InteractiveHUDView(AppKit.NSVisualEffectView):  # type: ignore[misc]
+_NSVisualEffectViewBase = AppKit.NSVisualEffectView if AppKit is not None else object
+_NSObjectBase = AppKit.NSObject if AppKit is not None else object
+
+
+class InteractiveHUDView(_NSVisualEffectViewBase):  # type: ignore[misc]
     def initWithFrame_(self, frame):
-        self = objc.super(InteractiveHUDView, self).initWithFrame_(frame)
+        if objc is not None:
+            self = objc.super(InteractiveHUDView, self).initWithFrame_(frame)
         if self:
             self._owner = None
         return self
@@ -56,10 +68,11 @@ class InteractiveHUDView(AppKit.NSVisualEffectView):  # type: ignore[misc]
                 return
         except Exception:
             pass
-        objc.super(InteractiveHUDView, self).mouseDown_(event)
+        if objc is not None:
+            objc.super(InteractiveHUDView, self).mouseDown_(event)
 
 
-class WebOverlayMessageHandler(AppKit.NSObject):  # type: ignore[misc]
+class WebOverlayMessageHandler(_NSObjectBase):  # type: ignore[misc]
     def userContentController_didReceiveScriptMessage_(self, userContentController, message):
         try:
             body = message.body()
@@ -102,6 +115,29 @@ class ConversationOverlay:
         self.height = 220.0
         self.is_minimized = False
         self._pending_state = {}
+
+        sx, sy, sw, sh = active_screen_visible_frame()
+        base_x = float(sx + sw - self.width - 20.0)
+        base_y = float(sy + (sh - self.height) / 2.0)
+
+        if AppKit is None or sys.platform == "win32":
+            from ai_mime.overlay.win_overlay import PyWebViewOverlayHUD, get_shared_win_overlay
+            hud = get_shared_win_overlay()
+            if hud is not None:
+                self._win_hud = hud
+                hud.start(OVERLAY_HTML)
+            else:
+                self._win_hud = PyWebViewOverlayHUD(
+                    OVERLAY_HTML,
+                    title="AI Agent",
+                    width=int(self.width),
+                    height=int(self.height),
+                    x=int(base_x),
+                    y=int(base_y),
+                )
+                self._win_hud.start()
+            return
+        self._win_hud = None
 
         rect = self._expanded_frame(self.height)
         self._panel = make_overlay_panel(rect, nonactivating=True)
@@ -215,12 +251,28 @@ class ConversationOverlay:
             self._pending_state = {}
 
     def _push_state(self, state_dict: dict) -> None:
+        if getattr(self, "_win_hud", None) is not None:
+            state_json = json.dumps(state_dict)
+            script = f"updateOverlayState({json.dumps(state_json)});"
+            self._win_hud.evaluate_js(script)
+            return
         try:
             self._pending_state.update(state_dict)
         except Exception as e:
             print(f"Error evaluating JS: {e}")
 
+    def is_visible(self) -> bool:
+        if getattr(self, "_win_hud", None) is not None:
+            return self._win_hud.is_visible
+        try:
+            return bool(self._panel.isVisible())
+        except Exception:
+            return False
+
     def show(self) -> None:
+        if getattr(self, "_win_hud", None) is not None:
+            self._win_hud.start()
+            return
         try:
             self._clamp_expanded_frame()
             self._panel.orderFrontRegardless()
@@ -231,6 +283,9 @@ class ConversationOverlay:
                 pass
 
     def hide(self) -> None:
+        if getattr(self, "_win_hud", None) is not None:
+            self._win_hud.close()
+            return
         try:
             self._panel.orderOut_(None)
         except Exception:
@@ -418,23 +473,24 @@ sys.exit(1)
                 end if
             end tell
             '''
-            script_obj = Foundation.NSAppleScript.alloc().initWithSource_(activate_script)
-            if script_obj:
-                script_obj.executeAndReturnError_(None)
+            if Foundation is not None:
+                script_obj = Foundation.NSAppleScript.alloc().initWithSource_(activate_script)
+                if script_obj:
+                    script_obj.executeAndReturnError_(None)
         else:
             webbrowser.open(url)
     except Exception as e:
         print(f"Error focusing browser tab: {e}")
 
 
-class AutomationOverlayTimerHandler(AppKit.NSObject):  # type: ignore[misc]
+class AutomationOverlayTimerHandler(_NSObjectBase):  # type: ignore[misc]
     def autoClose_(self, timer):  # noqa: N802 - ObjC selector
         try:
             self._overlay.close()  # type: ignore[attr-defined]
         except Exception:
             pass
 
-class AutomationOverlayMessageHandler(AppKit.NSObject):  # type: ignore[misc]
+class AutomationOverlayMessageHandler(_NSObjectBase):  # type: ignore[misc]
     def setOverlay_(self, overlay):
         self._overlay = overlay
 
@@ -469,8 +525,11 @@ class AutomationOverlay:
         self.is_minimized = False
         self._last_state: dict[str, Any] = {"status": "running", "mode": "maximized"}
         self._pending_state: dict[str, Any] = {}
-        self._timer_handler = AutomationOverlayTimerHandler.alloc().init()
-        self._timer_handler._overlay = self
+        if AppKit is not None and sys.platform == "darwin":
+            self._timer_handler = AutomationOverlayTimerHandler.alloc().init()
+            self._timer_handler._overlay = self
+        else:
+            self._timer_handler = None
 
         # We need to create the panel on the main thread, or we can just initialize it here
         # since it's already instantiated in the main thread (poll_dashboard_command_queue is on main thread)
@@ -482,11 +541,41 @@ class AutomationOverlay:
         except ImportError:
             AUTOMATION_OVERLAY_HTML = "<html><body>Error loading HTML</body></html>"
 
-        sx, sy, sw, sh = active_screen_visible_frame()
         self.width = 320.0
         self.height = 160.0
+        sx, sy, sw, sh = active_screen_visible_frame()
         self.base_x = float(sx + sw - self.width - 20.0)
         self.base_y = float(sy + (sh - self.height) / 2.0)
+
+        state_json = json.dumps(self._last_state)
+        injected_html = AUTOMATION_OVERLAY_HTML.replace("</body>", f"<script>updateOverlayState({state_json});</script></body>")
+
+        if AppKit is None or sys.platform == "win32":
+            from ai_mime.overlay.win_overlay import PyWebViewOverlayHUD, get_shared_win_overlay
+            hud = get_shared_win_overlay()
+            if hud is not None:
+                self._win_hud = hud
+                # (Re)load the automation HTML into the shared window. The window may
+                # currently be showing the conversation OVERLAY_HTML, so we can't just
+                # push state -- load the page whose updateOverlayState knows these fields.
+                # The initial state is baked into injected_html's <script>, so it renders
+                # as soon as the DOM is ready without a separate (race-prone) evaluate_js.
+                hud.start(injected_html)
+                # If the window still held an identical page from a prior run (start()
+                # skips the reload), reset it to the fresh "running" state explicitly.
+                hud.evaluate_js(f"updateOverlayState({state_json});")
+            else:
+                self._win_hud = PyWebViewOverlayHUD(
+                    html_content=injected_html,
+                    title="AI Mime Automation HUD",
+                    width=int(self.width),
+                    height=int(self.height),
+                    x=int(self.base_x),
+                    y=int(self.base_y),
+                )
+                self._win_hud.start()
+            return
+        self._win_hud = None
         rect = AppKit.NSMakeRect(self.base_x, self.base_y, self.width, self.height)
 
         self._panel = make_overlay_panel(rect, nonactivating=True)
@@ -518,17 +607,19 @@ class AutomationOverlay:
         self._webview.setValue_forKey_(False, "drawsBackground")
         self._panel.contentView().addSubview_(self._webview)
 
-        state_json = json.dumps(json.dumps(self._last_state))
+        state_json = json.dumps(self._last_state)
         injected_html = AUTOMATION_OVERLAY_HTML.replace("</body>", f"<script>updateOverlayState({state_json});</script></body>")
 
         self._webview.loadHTMLString_baseURL_(injected_html, None)
         self.show()
 
     def _handle_request_state(self) -> None:
+        if getattr(self, "_win_hud", None) is not None:
+            return
         if self._pending_state:
             try:
                 state_json = json.dumps(self._pending_state)
-                script = f"updateOverlayState({json.dumps(state_json)});"
+                script = f"updateOverlayState({state_json});"
                 self._webview.evaluateJavaScript_completionHandler_(script, None)
             except Exception as e:
                 print(f"Error evaluating JS: {e}")
@@ -537,23 +628,47 @@ class AutomationOverlay:
     def _push_state(self, state_dict: dict) -> None:
         try:
             self._last_state.update(state_dict)
+        except Exception:
+            pass
+        if getattr(self, "_win_hud", None) is not None:
+            script = f"updateOverlayState({json.dumps(self._last_state)});"
+            self._win_hud.evaluate_js(script)
+            return
+        try:
             self._pending_state.update(state_dict)
         except Exception as e:
             print(f"Error evaluating JS: {e}")
 
+    def is_visible(self) -> bool:
+        if getattr(self, "_win_hud", None) is not None:
+            return self._win_hud.is_visible
+        try:
+            return bool(self._panel.isVisible())
+        except Exception:
+            return False
+
     def show(self) -> None:
+        if getattr(self, "_win_hud", None) is not None:
+            self._win_hud.start()
+            return
         try:
             self._panel.orderFrontRegardless()
         except Exception:
             pass
 
     def hide(self) -> None:
+        if getattr(self, "_win_hud", None) is not None:
+            self._win_hud.close()
+            return
         try:
             self._panel.orderOut_(None)
         except Exception:
             pass
 
     def close(self) -> None:
+        if getattr(self, "_win_hud", None) is not None:
+            self._win_hud.close()
+            return
         try:
             self._panel.close()
         except Exception:
@@ -564,6 +679,8 @@ class AutomationOverlay:
             return
         self.is_minimized = True
         self._push_state({"mode": "minimized"})
+        if getattr(self, "_win_hud", None) is not None:
+            return
 
         current_frame = self._panel.frame()
         self._expanded_size = current_frame.size
@@ -580,6 +697,9 @@ class AutomationOverlay:
             return
         self.is_minimized = False
         self._push_state({"mode": "maximized"})
+        if getattr(self, "_win_hud", None) is not None:
+            self._win_hud.restore()
+            return
 
         sx, sy, sw, sh = active_screen_visible_frame()
         h = float(self._expanded_size.height if hasattr(self, "_expanded_size") else self.height)
@@ -593,16 +713,17 @@ class AutomationOverlay:
     def update_status(self, status: str) -> None:
         try:
             self._push_state({"status": status})
-            if status in ("success", "failed"):
-                AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                    3.0,
-                    self._timer_handler,
-                    "autoClose:",
-                    None,
-                    False,
-                )
-                if status == "failed":
-                    self._handle_show_chat()
+            if status == "success":
+                if AppKit is not None and sys.platform == "darwin":
+                    AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                        5.0,
+                        self._timer_handler,
+                        "autoClose:",
+                        None,
+                        False,
+                    )
+                else:
+                    threading.Timer(5.0, self.close).start()
         except Exception as e:
             print(f"Error updating automation status: {e}")
 
@@ -660,7 +781,7 @@ class AutomationOverlay:
             print(f"Error focusing chat in browser: {e}")
 
     def _handle_resize(self, height: float) -> None:
-        if self.is_minimized:
+        if self.is_minimized or getattr(self, "_win_hud", None) is not None:
             return
         try:
             frame = self._panel.frame()

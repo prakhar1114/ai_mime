@@ -1,10 +1,16 @@
-import rumps
+import sys
+if sys.platform == "darwin":
+    import rumps
+    from ai_mime.record.overlay_ui import RecordingOverlay
+else:
+    rumps = None
+    RecordingOverlay = None
 import multiprocessing
+import threading
 from pathlib import Path
 import time
 import urllib.parse
 import urllib.request
-import webbrowser
 from lmnr import observe
 from queue import Empty
 import traceback
@@ -18,7 +24,6 @@ from ai_mime.app_data import get_bundled_resource, get_recordings_dir, get_workf
 from ai_mime.user_config import ResolvedUserConfig, load_user_config
 from ai_mime.reflect.runner import run_reflect_and_compile_schema
 from ai_mime.editor.server import start_editor_server
-from ai_mime.record.overlay_ui import RecordingOverlay
 from ai_mime.debug_log import log
 
 
@@ -54,12 +59,14 @@ def _resolve_menubar_icon_path() -> str | None:
     return None
 
 
-class RecorderApp(rumps.App):
+_RumpsApp = rumps.App if rumps is not None else object
+
+
+class RecorderApp(_RumpsApp):
     def __init__(self, *, user_cfg: ResolvedUserConfig):
         icon_path = _resolve_menubar_icon_path()
-        # Keep a non-empty title: rumps can fail to attach/open the menu reliably with an empty title.
-        # (We still show the icon; macOS will render both.)
-        super(RecorderApp, self).__init__("AI Mime", icon=icon_path, quit_button=None)
+        if rumps is not None:
+            super(RecorderApp, self).__init__("AI Mime", icon=icon_path, quit_button=None)
         self._user_cfg = user_cfg
         # We only need storage here to read last session or show info,
         # but the active storage instance will live in the subprocess.
@@ -84,6 +91,11 @@ class RecorderApp(rumps.App):
 
         # Browser dashboard -> rumps app commands and app -> dashboard status.
         self.dashboard_command_q: multiprocessing.Queue | None = multiprocessing.Queue()
+        # On Windows two loops (the __init__ polling thread and the webview.start
+        # callback) drain this queue concurrently. Serialize draining so a single
+        # cycle consumes a whole batch in order -- otherwise show_automation_overlay
+        # and its follow-up log commands get split across threads and dropped.
+        self._dashboard_poll_lock = threading.Lock()
         self._dashboard_manager = multiprocessing.Manager()
         self.dashboard_state = self._dashboard_manager.dict()
 
@@ -91,26 +103,42 @@ class RecorderApp(rumps.App):
         self.dashboard_process: multiprocessing.Process | None = None
         self.dashboard_port: int | None = None
 
-        # Poll reflect/schema compilation completion from the reflect worker.
-        self._reflect_timer = rumps.Timer(self._poll_reflect_events, 0.2)
-        self._reflect_timer.start()
+        if sys.platform == "darwin" and rumps is not None:
+            # Poll reflect/schema compilation completion from the reflect worker.
+            self._reflect_timer = rumps.Timer(self._poll_reflect_events, 0.2)
+            self._reflect_timer.start()
 
-        self._dashboard_command_timer = rumps.Timer(self._poll_dashboard_commands, 0.25)
-        self._dashboard_command_timer.start()
+            self._dashboard_command_timer = rumps.Timer(self._poll_dashboard_commands, 0.25)
+            self._dashboard_command_timer.start()
+
+            # Menu Items
+            self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
+            self.tasks_button = rumps.MenuItem("Open Dashboard", callback=self._open_tasks_dashboard)
+            self.workflows_button = rumps.MenuItem("Open Workflows Directory", callback=self._open_workflows_directory)
+
+            # Options submenu (placed at the bottom, right above the default Quit item).
+            self.custom_quit_button = rumps.MenuItem("Quit", callback=self.quit_app)
+
+            # Build the menu using rumps.Menu APIs (more robust across rumps versions than assigning a raw list).
+            self._build_menu()
+        else:
+            self._start_windows_polling_thread()
+
         self._publish_dashboard_state()
-
-        # Menu Items
-        self.start_button = rumps.MenuItem("Start Recording", callback=self.toggle_recording)
-        self.tasks_button = rumps.MenuItem("Open Dashboard", callback=self._open_tasks_dashboard)
-        self.workflows_button = rumps.MenuItem("Open Workflows Directory", callback=self._open_workflows_directory)
-
-        # Options submenu (placed at the bottom, right above the default Quit item).
-        self.custom_quit_button = rumps.MenuItem("Quit", callback=self.quit_app)
-
-        # Build the menu using rumps.Menu APIs (more robust across rumps versions than assigning a raw list).
-        self._build_menu()
         self.port = self._ensure_dashboard_server()
         self._open_tasks_dashboard()
+
+    def _start_windows_polling_thread(self) -> None:
+        def _poll_loop():
+            while True:
+                time.sleep(0.2)
+                try:
+                    self._poll_reflect_events(None)
+                    self._poll_dashboard_commands(None)
+                except Exception:
+                    pass
+        t = threading.Thread(target=_poll_loop, daemon=True)
+        t.start()
 
     def _log_to_tmp(self, msg: str) -> None:
         try:
@@ -179,6 +207,16 @@ class RecorderApp(rumps.App):
         q = self.dashboard_command_q
         if q is None:
             return
+        # Only one thread drains at a time; a concurrent caller returns immediately
+        # and the commands remain queued for the current holder to consume in order.
+        if not self._dashboard_poll_lock.acquire(blocking=False):
+            return
+        try:
+            self._drain_dashboard_commands(q)
+        finally:
+            self._dashboard_poll_lock.release()
+
+    def _drain_dashboard_commands(self, q):
         handled = False
         while True:
             try:
@@ -207,7 +245,7 @@ class RecorderApp(rumps.App):
                     status = cmd.get("status")
                     needs_input = cmd.get("needs_input", False)
                     if self._conversation_overlay is not None:
-                        if not self._conversation_overlay._panel.isVisible():
+                        if not self._conversation_overlay.is_visible():
                             self._conversation_overlay = None
                         elif getattr(self._conversation_overlay, "task_id", None) == task_id and getattr(self._conversation_overlay, "mode", None) == mode:
                             if status is not None:
@@ -263,6 +301,7 @@ class RecorderApp(rumps.App):
                 elif cmd.get("type") == "show_automation_overlay":
                     handled = True
                     task_id = cmd.get("task_id") or ""
+                    print(f"[OVERLAY-DEBUG] show_automation_overlay received, task_id={task_id}", flush=True)
                     if self._conversation_overlay is not None:
                         try:
                             self._conversation_overlay.close()
@@ -272,7 +311,9 @@ class RecorderApp(rumps.App):
                     try:
                         from ai_mime.overlay.conversation_overlay import AutomationOverlay
                         self._conversation_overlay = AutomationOverlay(port=self.port, task_id=task_id)
+                        print(f"[OVERLAY-DEBUG] AutomationOverlay created OK, _win_hud={getattr(self._conversation_overlay, '_win_hud', 'MISSING')}", flush=True)
                     except Exception as e:
+                        print(f"[OVERLAY-DEBUG] Failed to create AutomationOverlay: {e}", flush=True)
                         log(f"Failed to create AutomationOverlay: {e}", exc_info=True)
                 elif cmd.get("type") == "update_automation_overlay":
                     handled = True
@@ -289,7 +330,10 @@ class RecorderApp(rumps.App):
                         try:
                             self._conversation_overlay.update_text(text)
                         except Exception as e:
+                            print(f"[OVERLAY-DEBUG] Failed to update_text: {e}", flush=True)
                             log(f"Failed to update AutomationOverlay log: {e}", exc_info=True)
+                    else:
+                        print(f"[OVERLAY-DEBUG] update_automation_overlay_log: overlay={self._conversation_overlay}, has_update_text={hasattr(self._conversation_overlay, 'update_text') if self._conversation_overlay else 'N/A'}", flush=True)
                 elif cmd.get("type") == "quit_app":
                     handled = True
                     self.quit_app()
@@ -422,31 +466,30 @@ class RecorderApp(rumps.App):
 
     def _open_tasks_dashboard(self, _sender=None) -> None:
         try:
+            from ai_mime.platform import open_url
             url = f"http://127.0.0.1:{self.port}/tasks"
-            ok = webbrowser.open(url, new=1)
-            if not ok:
-                raise RuntimeError(f"Failed to open browser for: {url}")
+            open_url(url)
         except Exception as e:
-            rumps.alert(f"Open Tasks failed: {e}")
+            log(f"Open Tasks failed: {e}")
 
     def _open_workflows_directory(self, _sender=None) -> None:
         try:
-            import subprocess
+            from ai_mime.platform import open_directory
             path = get_workflows_dir()
             path.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["open", str(path)], check=True)
+            open_directory(path)
         except Exception as e:
-            rumps.alert(f"Open Workflows Directory failed: {e}")
+            log(f"Open Workflows Directory failed: {e}")
 
     def _open_directory(self, path_raw: str) -> None:
         try:
-            import subprocess
+            from ai_mime.platform import open_directory
             path = Path(str(path_raw)).expanduser()
             if not path.is_dir():
                 raise RuntimeError(f"Directory not found: {path}")
-            subprocess.run(["open", str(path)], check=True)
+            open_directory(path)
         except Exception as e:
-            rumps.alert(f"Open Directory failed: {e}")
+            log(f"Open Directory failed: {e}")
 
     def _open_skill_build_for_task(self, task_id: str) -> None:
         try:
@@ -685,20 +728,76 @@ class RecorderApp(rumps.App):
         self._kill_mime_processes()
 
         # Quit the rumps application
-        rumps.quit_application()
+        if rumps is not None:
+            try:
+                rumps.quit_application()
+            except Exception:
+                pass
 
     def _kill_mime_processes(self):
-        import os
-        import signal
-        import subprocess
+        kill_mime_processes()
 
-        current_pid = os.getpid()
 
-        # 1. Gather all descendants of the current process
-        descendants = set()
+def kill_mime_processes() -> None:
+    import os
+    import signal
+    current_pid = os.getpid()
+    all_to_kill: set[int] = set()
+
+    try:
+        import psutil
         try:
+            parent = psutil.Process(current_pid)
+            for child in parent.children(recursive=True):
+                all_to_kill.add(child.pid)
+        except Exception:
+            pass
+
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                pid = proc.info["pid"]
+                if pid == current_pid or pid in all_to_kill:
+                    continue
+                cmdline = " ".join(proc.info["cmdline"] or []).lower()
+                if any(x in cmdline for x in ["cursor", "vscode", "helper", "extension-host", "grep"]):
+                    continue
+                if (
+                    "mime" in cmdline or
+                    "run_computer_use" in cmdline or
+                    "computer_server" in cmdline or
+                    (("run.sh" in cmdline or "run.bat" in cmdline) and ("ai_mime" in cmdline or "workflows" in cmdline)) or
+                    ("run.py" in cmdline and ("ai_mime" in cmdline or "workflows" in cmdline))
+                ):
+                    all_to_kill.add(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+
+        sig = getattr(signal, "SIGKILL", getattr(signal, "SIGTERM", 15))
+        for pid in all_to_kill:
+            if pid != current_pid:
+                try:
+                    os.kill(pid, sig)
+                except Exception:
+                    pass
+        return
+    except ImportError:
+        pass
+
+    if sys.platform == "win32":
+        try:
+            import subprocess
+            subprocess.call(
+                ["taskkill", "/F", "/FI", "IMAGENAME eq python.exe", "/FI", "WINDOWTITLE eq AI Mime*"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        except Exception:
+            pass
+    else:
+        descendants: set[int] = set()
+        try:
+            import subprocess
             output = subprocess.check_output(["ps", "-ax", "-o", "pid,ppid"], text=True)
-            children_map = {}
+            children_map: dict[int, list[int]] = {}
             for line in output.strip().splitlines()[1:]:
                 parts = line.strip().split()
                 if len(parts) >= 2:
@@ -708,7 +807,7 @@ class RecorderApp(rumps.App):
                         children_map.setdefault(ppid, []).append(pid)
                     except ValueError:
                         continue
-            def gather(p):
+            def gather(p: int) -> None:
                 for child in children_map.get(p, []):
                     if child not in descendants:
                         descendants.add(child)
@@ -717,9 +816,9 @@ class RecorderApp(rumps.App):
         except Exception:
             pass
 
-        # 2. Gather processes matching specific keywords
-        keyword_pids = set()
+        keyword_pids: set[int] = set()
         try:
+            import subprocess
             output = subprocess.check_output(["ps", "-ax", "-o", "pid,command"], text=True)
             for line in output.strip().splitlines()[1:]:
                 parts = line.strip().split(None, 1)
@@ -732,8 +831,6 @@ class RecorderApp(rumps.App):
 
                 cmd = parts[1]
                 cmd_lower = cmd.lower()
-
-                # Exclude IDEs and helpers
                 if any(x in cmd_lower for x in ["cursor", "vscode", "helper", "extension-host", "grep"]):
                     continue
 
@@ -750,16 +847,112 @@ class RecorderApp(rumps.App):
         if current_pid in all_to_kill:
             all_to_kill.remove(current_pid)
 
+        sig = getattr(signal, "SIGKILL", getattr(signal, "SIGTERM", 15))
         for pid in all_to_kill:
             try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+                os.kill(pid, sig)
             except Exception:
                 pass
 
 
-def run_app():
-    user_cfg = load_user_config()
+def run_windows_tray_app(user_cfg: ResolvedUserConfig) -> None:
+    """Explicit system tray application launcher for Windows using pystray."""
+    app = RecorderApp(user_cfg=user_cfg)
+
+    import pystray
+    from PIL import Image
+
+    icon_path = _resolve_menubar_icon_path()
+    image = None
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    candidates = [
+        repo_root / "AppIcon.icns",
+        get_bundled_resource("docs/logo/icon256.png"),
+        get_bundled_resource("AppIcon.appiconset/icon_256_1x.png"),
+        icon_path,
+    ]
+    for cand in candidates:
+        if cand and Path(cand).exists():
+            try:
+                image = Image.open(str(cand))
+                break
+            except Exception:
+                pass
+    if image is None:
+        image = Image.new("RGB", (32, 32), color=(52, 199, 89))
+
+    def on_dashboard(icon, item=None):
+        app._open_tasks_dashboard()
+
+    def on_workflows(icon, item):
+        app._open_workflows_directory()
+
+    def on_quit(icon, item):
+        icon.stop()
+        app.quit_app()
+        os._exit(0)
+
+    menu = pystray.Menu(
+        pystray.MenuItem("Open Dashboard", on_dashboard, default=True),
+        pystray.MenuItem("Open Workflows Directory", on_workflows),
+        pystray.MenuItem("Quit", on_quit),
+    )
+
+    icon = pystray.Icon("AI Mime", image, "AI Mime", menu)
+    try:
+        icon.action = on_dashboard
+    except Exception:
+        pass
+    icon.run_detached()
+    def _run_webview_and_poll():
+        while True:
+            time.sleep(0.15)
+            try:
+                app._poll_reflect_events(None)
+                app._poll_dashboard_commands(None)
+            except Exception:
+                pass
+
+    try:
+        import webview
+        from ai_mime.overlay.ui_common import active_screen_visible_frame
+        from ai_mime.overlay.win_overlay import PyWebViewOverlayHUD
+        from ai_mime.overlay.automation_overlay_html import AUTOMATION_OVERLAY_HTML
+
+        sx, sy, sw, sh = active_screen_visible_frame()
+        hud_w, hud_h = 340, 180
+        hud_x = int(sw - hud_w - 15)
+        hud_y = int((sh - hud_h) / 2)
+        hud = PyWebViewOverlayHUD(
+            html_content=AUTOMATION_OVERLAY_HTML,
+            title="AI Mime Automation HUD",
+            width=hud_w,
+            height=hud_h,
+            x=hud_x,
+            y=hud_y,
+        )
+        hud.create_window()
+        webview.start(_run_webview_and_poll)
+    except Exception as e:
+        log(f"webview main loop fallback: {e}")
+        while True:
+            time.sleep(0.5)
+
+
+def run_mac_rumps_app(user_cfg: ResolvedUserConfig) -> None:
+    """Explicit menubar application launcher for macOS using rumps."""
+    if rumps is None:
+        raise RuntimeError("rumps library is required on macOS but failed to import.")
     app = RecorderApp(user_cfg=user_cfg)
     app.run()
+
+
+def run_app() -> None:
+    """Main application entry point with explicit platform routing."""
+    user_cfg = load_user_config()
+    if sys.platform == "win32":
+        run_windows_tray_app(user_cfg)
+    elif sys.platform == "darwin":
+        run_mac_rumps_app(user_cfg)
+    else:
+        raise NotImplementedError(f"Unsupported operating system platform: {sys.platform}")

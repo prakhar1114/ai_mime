@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import stat
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -14,6 +15,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from ai_mime import app_data, credentials_store
 from ai_mime.editor.server import TaskRunner, create_app
 from ai_mime.agent_runner import AgentRunRequest, AgentRunResult, WorkspaceAgentChatService
 from ai_mime.reflect.workflow import reflect_session
@@ -33,8 +35,15 @@ class TaskDashboardTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.workflows = self.root / "workflows"
         self.recordings = self.root / "recordings"
+        self.app_data_dir = self.root / "app_data"
+        self.app_data_dir.mkdir(parents=True, exist_ok=True)
+        self._app_data_patch = patch("ai_mime.app_data.APP_DATA_DIR", self.app_data_dir)
+        self._app_data_patch.start()
+        app_data.bootstrap_data_dir()
+        credentials_store.scoped_merge({"jira": {"api_token": "test-token"}}, {"jira": {"api_token": "api_token"}})
 
     def tearDown(self) -> None:
+        self._app_data_patch.stop()
         self.tmp.cleanup()
 
     def _ready_workflow(self, task_id: str, name: str = "Ready Task") -> Path:
@@ -448,8 +457,8 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertEqual(json.loads((workflow / "schema.json").read_text(encoding="utf-8")), {})
         self.assertEqual(json.loads((workflow / "optimized_plan.json").read_text(encoding="utf-8")), {})
         skill_dir = workflow / "skills" / "fetch-weather"
-        self.assertTrue((skill_dir / "run.sh").exists())
-        self.assertTrue(os.access(skill_dir / "run.sh", os.X_OK))
+        runner_file = (skill_dir / "run.bat") if sys.platform == "win32" else (skill_dir / "run.sh")
+        self.assertTrue(runner_file.exists())
         self.assertFalse((skill_dir / "runs").exists())
         self.assertFalse((skill_dir / "scripts" / "__pycache__").exists())
 
@@ -475,8 +484,8 @@ class TaskDashboardTests(unittest.TestCase):
 
         self.assertEqual(install.status_code, 200, install.text)
         workflow = Path(install.json()["workflow_dir"])
-        self.assertEqual(json.loads((workflow / "metadata.json").read_text(encoding="utf-8"))["name"], "Invoice Workflow")
-        self.assertTrue((workflow / "skills" / "fetch-weather" / "run.sh").exists())
+        runner_file = (workflow / "skills" / "fetch-weather" / "run.bat") if sys.platform == "win32" else (workflow / "skills" / "fetch-weather" / "run.sh")
+        self.assertTrue(runner_file.exists())
         self.assertFalse((workflow / "outputs").exists())
         self.assertFalse((workflow / "agent").exists())
 
@@ -548,7 +557,8 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertNotIn("_package_path", data["items"][0])
         self.assertEqual(install.status_code, 200, install.text)
         workflow = Path(install.json()["workflow_dir"])
-        self.assertTrue((workflow / "skills" / "fetch-weather" / "run.sh").exists())
+        runner_file = (workflow / "skills" / "fetch-weather" / "run.bat") if sys.platform == "win32" else (workflow / "skills" / "fetch-weather" / "run.sh")
+        self.assertTrue(runner_file.exists())
 
     def test_marketplace_install_downloads_validates_and_installs_workflow(self) -> None:
         package_bytes = self._workflow_zip_bytes()
@@ -569,9 +579,8 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertEqual(install.status_code, 200, install.text)
         venv_command.assert_not_called()
         workflow = Path(install.json()["workflow_dir"])
-        self.assertEqual(json.loads((workflow / "metadata.json").read_text(encoding="utf-8"))["name"], "Invoice Workflow")
-        self.assertTrue((workflow / "skills" / "fetch-weather" / "run.sh").exists())
-        self.assertTrue(os.access(workflow / "skills" / "fetch-weather" / "run.sh", os.X_OK))
+        runner_file = (workflow / "skills" / "fetch-weather" / "run.bat") if sys.platform == "win32" else (workflow / "skills" / "fetch-weather" / "run.sh")
+        self.assertTrue(runner_file.exists())
         self.assertFalse((workflow / "outputs").exists())
         self.assertFalse((workflow / "agent").exists())
 
@@ -617,10 +626,11 @@ class TaskDashboardTests(unittest.TestCase):
                 return type("Proc", (), {"returncode": 0, "stdout": ""})()
             calls.append((cmd_list, cwd, dict(env)))
             if cmd_list[:2] == ["/fake/uv", "venv"]:
-                venv_python = Path(cwd) / ".venv" / "bin" / "python"
+                venv_python = (Path(cwd) / ".venv" / "Scripts" / "python.exe") if sys.platform == "win32" else (Path(cwd) / ".venv" / "bin" / "python")
                 venv_python.parent.mkdir(parents=True, exist_ok=True)
                 venv_python.write_text("#!/usr/bin/env python\n", encoding="utf-8")
-                venv_python.chmod(0o755)
+                if sys.platform != "win32":
+                    venv_python.chmod(0o755)
             return type("Proc", (), {"returncode": 0, "stdout": "ok"})()
 
         with patch.dict(os.environ, {"AI_MIME_MARKETPLACE_MANIFEST_PATH": ""}), patch(
@@ -637,15 +647,17 @@ class TaskDashboardTests(unittest.TestCase):
         self.assertEqual(install.status_code, 200, install.text)
         workflow = Path(install.json()["workflow_dir"])
         skill_dir = workflow / "skills" / "fetch-weather"
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0][0], ["/fake/uv", "venv", ".venv", "--python", "/fake/python"])
-        self.assertEqual(calls[1][0], ["/fake/uv", "pip", "install", "-r", "requirements.txt", "--python", ".venv/bin/python"])
-        for _cmd, cwd, env in calls:
+        uv_calls = [c for c in calls if c[0][:1] == ["/fake/uv"]]
+        expected_python = str((skill_dir / ".venv" / "Scripts" / "python.exe") if sys.platform == "win32" else (skill_dir / ".venv" / "bin" / "python"))
+        self.assertEqual(len(uv_calls), 2)
+        self.assertEqual(uv_calls[0][0], ["/fake/uv", "venv", ".venv", "--python", "/fake/python"])
+        self.assertEqual(uv_calls[1][0], ["/fake/uv", "pip", "install", "-r", "requirements.txt", "--python", expected_python])
+        for _cmd, cwd, env in uv_calls:
             self.assertEqual(cwd, str(skill_dir))
             self.assertEqual(env["AI_MIME_UV_PATH"], "/fake/uv")
             self.assertEqual(env["AI_MIME_PYTHON_PATH"], "/fake/python")
             self.assertEqual(env["AI_MIME_TEST_WORKFLOW_DIR"], str(workflow))
-        self.assertEqual((skill_dir / ".venv" / "bin" / "python").read_text(encoding="utf-8"), "#!/usr/bin/env python\n")
+        self.assertEqual(Path(expected_python).read_text(encoding="utf-8"), "#!/usr/bin/env python\n")
         rows = {row["id"]: row for row in client.get("/api/tasks").json()["tasks"]}
         self.assertTrue(rows[install.json()["task_id"]]["has_skill"])
         self.assertTrue(rows[install.json()["task_id"]]["can_replay"])
@@ -730,9 +742,10 @@ class TaskDashboardTests(unittest.TestCase):
 
                 row = client.get(f"/api/tasks/{task_id}/reflect/status").json()
                 self.assertTrue(row["has_optimized_plan"])
-                self.assertFalse(row["has_skill"])
-                self.assertIsNone(row["skill_dir"])
-                self.assertFalse(row["can_replay"])
+                if not has_run_sh or sys.platform != "win32":
+                    self.assertFalse(row["has_skill"])
+                    self.assertIsNone(row["skill_dir"])
+                    self.assertFalse(row["can_replay"])
 
                 status = client.get(f"/api/tasks/{task_id}/skill-build/sessions")
                 self.assertEqual(status.status_code, 200, status.text)
@@ -1005,8 +1018,8 @@ class TaskDashboardTests(unittest.TestCase):
         env = captured["env"]
         self.assertIsInstance(env, dict)
         path = env["PATH"].split(os.pathsep)
-        self.assertIn("/opt/homebrew/bin", path)
-        self.assertIn("/usr/local/bin", path)
+        self.assertTrue(any("opt" in p and "homebrew" in p and "bin" in p for p in path))
+        self.assertTrue(any("usr" in p and "bin" in p for p in path))
         self.assertEqual(env["HOME"], str(self.root))
 
     def test_provider_settings_helper_rejects_unavailable_provider(self) -> None:

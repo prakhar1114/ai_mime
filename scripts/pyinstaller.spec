@@ -28,9 +28,109 @@ if not _uv_binary or not os.path.isfile(_uv_binary):  # noqa: F821
 # Make ai_mime importable during analysis.
 sys.path.insert(0, _src)
 
-# ---------------------------------------------------------------------------
-# Analysis
-# ---------------------------------------------------------------------------
+_is_win = sys.platform == "win32"
+
+_platform_hidden_imports = []
+if _is_win:
+    _platform_hidden_imports.extend([
+        "pynput._backend.win32",
+        "pynput._backend.win32._util",
+        "pynput._backend.win32.keyboard",
+        "pynput._backend.win32.mouse",
+        "mss._windows",
+        "pystray",
+        "pystray._win32",
+        "webview",
+        "webview.platforms.winforms",
+        "psutil",
+    ])
+else:
+    _platform_hidden_imports.extend([
+        "objc",
+        "AppKit",
+        "Foundation",
+        "Cocoa",
+        "Quartz",
+        "ApplicationServices",
+        "rumps",
+        "pynput._backend.darwin",
+        "pynput._backend.darwin._utils",
+        "pynput._backend.darwin.keyboard",
+        "pynput._backend.darwin.mouse",
+        "mss._darwin",
+    ])
+
+hidden_imports_list = [
+    "pynput",
+    "pynput._backend",
+    "mss",
+    "PIL",
+    "PIL.Image",
+    "sounddevice",
+    "psutil",
+    "pystray",
+    "webview",
+    "ai_mime",
+    "ai_mime.app",
+    "ai_mime.app_data",
+    "ai_mime.cli",
+    "ai_mime.onboarding",
+    "ai_mime.permissions",
+    "ai_mime.platform",
+    "ai_mime.user_config",
+    "ai_mime.record",
+    "ai_mime.record.capture",
+    "ai_mime.record.recorder_process",
+    "ai_mime.record.storage",
+    "ai_mime.record.overlay_ui",
+    "ai_mime.reflect",
+    "ai_mime.reflect.workflow",
+    "ai_mime.reflect.schema_utils",
+    "ai_mime.reflect.schema_compiler",
+    "ai_mime.reflect.runner",
+    "ai_mime.screenshot",
+    "ai_mime.editor",
+    "ai_mime.editor.server",
+    "ai_mime.overlay",
+    "ai_mime.overlay.conversation_overlay",
+    "ai_mime.overlay.ui_common",
+    "ai_mime.agent_runner",
+    "ai_mime.agent_runner.models",
+    "ai_mime.agent_runner.runner",
+    "ai_mime.agent_runner.chat",
+    "ai_mime.agent_runner.skill_build_chat",
+    "ai_mime.agent_runner.computer_use",
+    "ai_mime.agent_runner.adapters",
+    "ai_mime.agent_runner.adapters.claude_sdk",
+    "ai_mime.agent_runner.adapters.codex_cli",
+    "ai_mime.computer_server_custom",
+    "computer_server",
+    "computer_server.main",
+    "computer_server.mcp_server",
+    "fastmcp",
+    "docket",
+    "docket._redis",
+    "burner_redis",
+    "burner_redis._burner_redis",
+    "burner_redis.pipeline",
+    "burner_redis.lock",
+    "burner_redis.pubsub",
+    "mcp",
+    "mcp.client",
+    "mcp.client.session",
+    "mcp.client.streamable_http",
+    "mcp.types",
+    "llm_resolver",
+    "llm_resolver.codex",
+    "litellm",
+    "openai",
+    "openai_codex",
+    "openai_codex.types",
+    "lmnr",
+    "fastapi",
+    "uvicorn",
+] + _platform_hidden_imports
+
 a = Analysis(
     scripts=[os.path.join(_src, "ai_mime", "cli.py")],
     pathex=[_src],
@@ -57,94 +157,7 @@ a = Analysis(
     + copy_metadata("pydocket")
     + copy_metadata("burner-redis")
     + copy_metadata("cua-computer-server"),
-    hiddenimports=[
-        # --- Cocoa / AppKit stack -------------------------------------------
-        "objc",
-        "AppKit",
-        "Foundation",
-        "Cocoa",
-        "Quartz",
-        "ApplicationServices",
-        "rumps",
-        # --- pynput macOS backend (spawned child re-imports) ----------------
-        "pynput",
-        "pynput._backend",
-        "pynput._backend.darwin",
-        "pynput._backend.darwin._utils",
-        "pynput._backend.darwin.keyboard",
-        "pynput._backend.darwin.mouse",
-        # --- mss macOS backend ----------------------------------------------
-        "mss",
-        "mss._darwin",
-        # --- Pillow ---------------------------------------------------------
-        "PIL",
-        "PIL.Image",
-        # --- sounddevice ----------------------------------------------------
-        "sounddevice",
-        # --- ai_mime sub-packages (spawn re-imports everything) -------------
-        "ai_mime",
-        "ai_mime.app",
-        "ai_mime.app_data",
-        "ai_mime.cli",
-        "ai_mime.onboarding",
-        "ai_mime.permissions",
-        "ai_mime.user_config",
-        "ai_mime.record",
-        "ai_mime.record.capture",
-        "ai_mime.record.recorder_process",
-        "ai_mime.record.storage",
-        "ai_mime.record.overlay_ui",
-        "ai_mime.reflect",
-        "ai_mime.reflect.workflow",
-        "ai_mime.reflect.schema_utils",
-        "ai_mime.reflect.schema_compiler",
-        "ai_mime.reflect.runner",
-        "ai_mime.screenshot",
-        "ai_mime.editor",
-        "ai_mime.editor.server",
-        "ai_mime.overlay",
-        "ai_mime.overlay.conversation_overlay",
-        "ai_mime.overlay.ui_common",
-        "ai_mime.agent_runner",
-        "ai_mime.agent_runner.models",
-        "ai_mime.agent_runner.runner",
-        "ai_mime.agent_runner.chat",
-        "ai_mime.agent_runner.skill_build_chat",
-        "ai_mime.agent_runner.computer_use",
-        "ai_mime.agent_runner.adapters",
-        "ai_mime.agent_runner.adapters.claude_sdk",
-        "ai_mime.agent_runner.adapters.codex_cli",
-        "ai_mime.computer_server_custom",
-        # --- CUA computer server / MCP ----------------------------------------
-        "computer_server",
-        "computer_server.main",
-        "computer_server.mcp_server",
-        "fastmcp",
-        "docket",
-        "docket._redis",
-        "burner_redis",
-        "burner_redis._burner_redis",
-        "burner_redis.pipeline",
-        "burner_redis.lock",
-        "burner_redis.pubsub",
-        "mcp",
-        "mcp.client",
-        "mcp.client.session",
-        "mcp.client.streamable_http",
-        "mcp.types",
-        # --- LLM / inference ------------------------------------------------
-        "llm_resolver",
-        "llm_resolver.codex",
-        "litellm",
-        "openai",
-        "openai_codex",
-        "openai_codex.types",
-        # --- Observability --------------------------------------------------
-        "lmnr",
-        # --- Editor server (FastAPI + uvicorn) ------------------------------
-        "fastapi",
-        "uvicorn",
-    ],
+    hiddenimports=hidden_imports_list,
     excludes=[
         "tkinter",
         "PyQt5",
@@ -164,6 +177,10 @@ pyz = PYZ(a.pure, a.zipped_data, debug=False)
 # ---------------------------------------------------------------------------
 # Executable
 # ---------------------------------------------------------------------------
+icon_path = os.path.join(_repo, "AppIcon.ico" if _is_win else "AppIcon.icns")
+if not os.path.exists(icon_path):
+    icon_path = None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -173,7 +190,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,  # GUI / Agent app — no terminal window
-    icon=os.path.join(_repo, "AppIcon.icns"),
+    icon=icon_path,
 )
 
 # ---------------------------------------------------------------------------
@@ -191,20 +208,18 @@ coll = COLLECT(
 )
 
 # ---------------------------------------------------------------------------
-# macOS .app bundle
+# macOS .app bundle (only generated on macOS)
 # ---------------------------------------------------------------------------
-app = BUNDLE(
-    coll,
-    name="AI Mime.app",
-    icon=os.path.join(_repo, "AppIcon.icns"),
-    bundle_identifier="com.aimime.app",
-    info_plist={
-        # Agent / menubar-only: no Dock icon, no splash window.
-        # "LSUIType": "Agent",
-        # "LSBackgroundOnly": "true",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleName": "AI Mime",
-        "CFBundleExecutable": "ai_mime",
-        "NSAppleScriptEnabled": False,
-    },
-)
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="AI Mime.app",
+        icon=os.path.join(_repo, "AppIcon.icns"),
+        bundle_identifier="com.aimime.app",
+        info_plist={
+            "CFBundleShortVersionString": "0.1.0",
+            "CFBundleName": "AI Mime",
+            "CFBundleExecutable": "ai_mime",
+            "NSAppleScriptEnabled": False,
+        },
+    )

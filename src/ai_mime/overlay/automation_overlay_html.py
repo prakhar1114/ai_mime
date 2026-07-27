@@ -51,9 +51,9 @@ AUTOMATION_OVERLAY_HTML = r"""
     padding: 0;
   }
 
-  body {
+  html, body {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background-color: transparent;
+    background-color: #222222;
     color: var(--text-primary);
     overflow: hidden;
     font-size: 13px;
@@ -282,6 +282,11 @@ AUTOMATION_OVERLAY_HTML = r"""
             type: 'resize',
             height: height
           });
+        } else if (window.pywebview && window.pywebview.api) {
+          window.pywebview.api.postMessage({
+            type: 'resize',
+            height: height
+          });
         }
       }
     }
@@ -300,6 +305,8 @@ AUTOMATION_OVERLAY_HTML = r"""
     }
     if (window.webkit && window.webkit.messageHandlers.overlay) {
       window.webkit.messageHandlers.overlay.postMessage(msg);
+    } else if (window.pywebview && window.pywebview.api) {
+      window.pywebview.api.postMessage(msg);
     } else {
       console.log('Action triggered:', action, payload);
     }
@@ -324,8 +331,20 @@ AUTOMATION_OVERLAY_HTML = r"""
           .replace(/'/g, "&#039;");
   }
 
-  function updateOverlayState(stateStr) {
-    const state = JSON.parse(stateStr);
+  function updateOverlayState(stateInput) {
+    let state = stateInput;
+    if (typeof stateInput === 'string') {
+      try {
+        state = JSON.parse(stateInput);
+        if (typeof state === 'string') {
+          state = JSON.parse(state);
+        }
+      } catch (e) {
+        console.error('Error parsing state:', e);
+        return;
+      }
+    }
+    if (!state || typeof state !== 'object') return;
     const container = document.getElementById('main-container');
 
     if (state.mode !== undefined) {

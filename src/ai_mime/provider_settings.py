@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
+import urllib.request
 from pathlib import Path
 from typing import Any, Literal
 
@@ -174,13 +176,27 @@ def _find_binary_exe(name: str) -> str | None:
     if exe:
         return exe
     home = Path.home()
-    for candidate_dir in _CLAUDE_FALLBACK_DIRS:
+    fallback_dirs = list(_CLAUDE_FALLBACK_DIRS)
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        localappdata = os.environ.get("LOCALAPPDATA")
+        if appdata:
+            fallback_dirs.append(os.path.join(appdata, "npm"))
+        if localappdata:
+            fallback_dirs.append(os.path.join(localappdata, "Programs", name))
+            fallback_dirs.append(os.path.join(localappdata, "Programs", "Claude"))
+            fallback_dirs.append(os.path.join(localappdata, "Programs", "Codex"))
+        fallback_dirs.append(str(home / ".claude" / "bin"))
+        fallback_dirs.append(str(home / ".codex" / "bin"))
+    for candidate_dir in fallback_dirs:
         candidate = Path(candidate_dir)
         if not candidate.is_absolute():
             candidate = home / candidate
-        candidate = candidate / name
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+        target = candidate / name
+        for ext in ("", ".cmd", ".exe", ".bat", ".ps1"):
+            p = target.with_name(target.name + ext) if ext else target
+            if p.is_file():
+                return str(p)
     return None
 
 
@@ -189,7 +205,7 @@ def _find_claude_exe() -> str | None:
 
 
 def _find_codex_exe() -> str | None:
-    return find_codex_executable()
+    return find_codex_executable() or _find_binary_exe("codex")
 
 
 def _command_status(
@@ -230,36 +246,123 @@ def is_provider_installed(provider: Provider) -> bool:
     return _find_codex_exe() is not None
 
 
+def launch_terminal_login(provider: str) -> None:
+    """Launch interactive login in a new terminal window for the specified provider."""
+    if provider == "anthropic":
+        exe = _find_claude_exe()
+        subcmd = "auth login"
+        fallback_name = "claude"
+    else:
+        exe = _find_codex_exe()
+        subcmd = "login"
+        fallback_name = "codex"
+
+    cmd_exec = f'"{exe}" {subcmd}' if exe else f"{fallback_name} {subcmd}"
+
+    if sys.platform == "win32":
+        home = Path.home()
+        appdata = os.environ.get("APPDATA", "")
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        paths_to_add = [
+            str(home / ".local" / "bin"),
+            str(home / ".claude" / "bin"),
+            str(home / ".codex" / "bin"),
+            os.path.join(appdata, "npm") if appdata else "",
+            os.path.join(localappdata, "Programs", "Codex") if localappdata else "",
+            os.path.join(localappdata, "Programs", "Claude") if localappdata else "",
+        ]
+        if exe:
+            paths_to_add.insert(0, str(Path(exe).parent))
+
+        extra_path = ";".join([p for p in paths_to_add if p and os.path.exists(p)])
+        env = dict(os.environ)
+        if extra_path:
+            env["PATH"] = extra_path + ";" + env.get("PATH", "")
+            full_cmd = f'set "PATH={extra_path};%PATH%" && {cmd_exec}'
+        else:
+            full_cmd = cmd_exec
+
+        subprocess.Popen(["cmd.exe", "/c", "start", "cmd.exe", "/k", full_cmd], env=env)
+    elif sys.platform == "darwin":
+        applescript = f'''
+        tell application "Terminal"
+            activate
+            do script "{cmd_exec}"
+        end tell
+        '''
+        try:
+            subprocess.run(["osascript", "-e", applescript])
+        except Exception:
+            pass
+    else:
+        for term in ("x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"):
+            if shutil.which(term):
+                subprocess.Popen([term, "-e", cmd_exec])
+                break
+
+
+def launch_terminal_install(provider: str) -> None:
+    """Launch CLI installer in an interactive terminal window so user prompts and progress are displayed."""
+    if sys.platform == "win32":
+        if provider == "anthropic":
+            if shutil.which("npm"):
+                cmd_str = 'npm install -g @anthropic-ai/claude-code || powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://claude.ai/install.ps1 | iex"'
+            else:
+                cmd_str = 'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://claude.ai/install.ps1 | iex"'
+        else:  # openai
+            if shutil.which("npm"):
+                cmd_str = 'npm install -g @openai/codex || powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://chatgpt.com/codex/install.ps1 | iex"'
+            else:
+                cmd_str = 'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://chatgpt.com/codex/install.ps1 | iex"'
+
+        subprocess.Popen(["cmd.exe", "/c", "start", "cmd.exe", "/k", cmd_str])
+    elif sys.platform == "darwin":
+        cmd_str = "curl -fsSL https://claude.ai/install.sh | bash" if provider == "anthropic" else "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+        applescript = f'''
+        tell application "Terminal"
+            activate
+            do script "{cmd_str}"
+        end tell
+        '''
+        try:
+            subprocess.run(["osascript", "-e", applescript])
+        except Exception:
+            pass
+    else:
+        cmd_str = "curl -fsSL https://claude.ai/install.sh | bash" if provider == "anthropic" else "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+        for term in ("x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"):
+            if shutil.which(term):
+                subprocess.Popen([term, "-e", cmd_str])
+                break
+
+
 def install_provider_cli(provider: Provider) -> tuple[bool, str]:
     if is_provider_installed(provider):
         return True, "Already installed."
 
-    import os
-    import subprocess
-    
-    local_bin = os.path.expanduser("~/.local/bin")
-    os.makedirs(local_bin, exist_ok=True)
-    
     if provider == "anthropic":
-        cmd = "curl -fsSL https://claude.ai/install.sh | bash"
-    else:  # openai
-        cmd = "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
-        
-    try:
-        proc = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        if proc.returncode == 0:
-            return True, "Installation complete."
+        if sys.platform == "win32":
+            cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://claude.ai/install.ps1 | iex"'
         else:
-            err = proc.stderr or proc.stdout or "Unknown error"
-            return False, f"Installation failed (exit code {proc.returncode}): {err.strip()}"
+            cmd = "curl -fsSL https://claude.ai/install.sh | bash"
+    else:  # openai
+        if shutil.which("npm"):
+            cmd = "npm install -g @openai/codex"
+        elif sys.platform == "win32":
+            cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://chatgpt.com/codex/install.ps1 | iex"'
+        else:
+            cmd = "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+
+    try:
+        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
     except Exception as e:
-        return False, f"Installation error: {str(e)}"
+        return False, f"Installation error: {e}"
+
+    if is_provider_installed(provider):
+        return True, "Installation complete."
+
+    err = (proc.stderr or proc.stdout or "").strip()
+    return False, f"Installation failed: {err}"
 
 
 def provider_status(provider: Provider) -> dict[str, Any]:

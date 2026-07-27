@@ -13,35 +13,45 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-import objc
-from Foundation import NSObject, NSTimer, NSMakeRect, NSNotificationCenter
-from AppKit import (
-    NSApplication,
-    NSWindow,
-    NSView,
-    NSTextField,
-    NSButton,
-    NSColor,
-    NSFont,
-    NSScreen,
-    NSImage,
-    NSImageView,
-    NSMenu,
-    NSMenuItem,
-    NSEvent,
-    NSEventTypeApplicationDefined,
-    NSWindowStyleMaskTitled,
-    NSWindowStyleMaskClosable,
-    NSBackingStoreBuffered,
-    NSNormalWindowLevel,
-    NSButtonTypeMomentaryPushIn,
-    NSControlTextDidChangeNotification,
-    NSEventModifierFlagCommand,
-    NSProgressIndicator,
-    NSProgressIndicatorBarStyle,
-    NSProgressIndicatorSpinningStyle,
-    NSImageSymbolConfiguration,
-)
+import sys
+
+if sys.platform == "darwin":
+    import objc
+    from Foundation import NSObject, NSTimer, NSMakeRect, NSNotificationCenter
+    from AppKit import (
+        NSApplication,
+        NSWindow,
+        NSView,
+        NSTextField,
+        NSButton,
+        NSColor,
+        NSFont,
+        NSScreen,
+        NSImage,
+        NSImageView,
+        NSMenu,
+        NSMenuItem,
+        NSEvent,
+        NSEventTypeApplicationDefined,
+        NSWindowStyleMaskTitled,
+        NSWindowStyleMaskClosable,
+        NSBackingStoreBuffered,
+        NSNormalWindowLevel,
+        NSButtonTypeMomentaryPushIn,
+        NSControlTextDidChangeNotification,
+        NSEventModifierFlagCommand,
+        NSProgressIndicator,
+        NSProgressIndicatorBarStyle,
+        NSProgressIndicatorSpinningStyle,
+        NSImageSymbolConfiguration,
+    )
+else:
+    class DummyObjC:
+        @staticmethod
+        def python_method(func):
+            return func
+    objc = DummyObjC()  # type: ignore[assignment]
+    NSObject = object  # type: ignore[misc, assignment]
 
 from ai_mime.app_data import (
     get_bundled_browser_harness_dir,
@@ -306,6 +316,9 @@ def _install_claude_skills(
     browser_source = browser_harness_skill_dir or _browser_harness_skill_dir()
 
     skills_root.mkdir(parents=True, exist_ok=True)
+
+    if not browser_source.exists() or not any(browser_source.iterdir()):
+        return {}
 
     _ensure_symlink(
         skills_root / "browser",
@@ -853,18 +866,8 @@ class _OnboardingWizard(NSObject):
                 self._continue_btn.setEnabled_(True)
 
     def _launch_terminal_login(self, provider):
-        import subprocess
-        cmd = "claude auth login" if provider == "anthropic" else "codex login"
-        applescript = f'''
-        tell application "Terminal"
-            activate
-            do script "{cmd}"
-        end tell
-        '''
-        try:
-            subprocess.run(["osascript", "-e", applescript])
-        except Exception:
-            pass
+        from ai_mime.provider_settings import launch_terminal_login
+        launch_terminal_login(provider)
 
     # Cocoa selector providerChanged:
     def providerChanged_(self, sender):
@@ -1542,6 +1545,11 @@ class _OnboardingWizard(NSObject):
         self._start_timer = None
         # All steps done — write sentinel and exit run loop.
         get_onboarding_done_path().touch()
+        try:
+            from ai_mime.platform import open_url
+            open_url("http://127.0.0.1:58838/tasks")
+        except Exception:
+            pass
         if self._window is not None:
             self._window.close()  # triggers windowWillClose_ → _stop_loop
         else:
@@ -1592,16 +1600,430 @@ def _ensure_main_menu(app):
 # ---------------------------------------------------------------------------
 
 
+class _WinOnboardingWizard:
+    """Tkinter-based onboarding wizard for Windows with macOS-faithful styling."""
+
+    def __init__(self) -> None:
+        import tkinter as tk
+
+        self._root = tk.Tk()
+        self._root.title("AI Mime Setup")
+        self._root.geometry("580x540")
+        self._root.resizable(False, False)
+
+        # Center window on screen
+        self._root.update_idletasks()
+        width = self._root.winfo_width()
+        height = self._root.winfo_height()
+        x = (self._root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self._root.winfo_screenheight() // 2) - (height // 2)
+        self._root.geometry(f"{width}x{height}+{x}+{y}")
+
+        # Set Window & Taskbar Icon from AppIcon.icns or docs/logo/icon256.png
+        self._app_icon_photo = None
+        self._app_icon_header_photo = None
+        self._load_app_icons()
+
+        if self._app_icon_photo is not None:
+            try:
+                self._root.iconphoto(False, self._app_icon_photo)
+            except Exception:
+                pass
+
+        from ai_mime.provider_settings import _read_provider
+        self._step = 0
+        self._provider_choice = 1 if _read_provider() == "openai" else 0
+        self._installing = False
+
+        # macOS Palette matching AppKit onboarding
+        self._bg_color = "#eef0f2"            # macOS light window background
+        self._card_bg = "#ffffff"            # Unselected card background
+        self._card_selected_bg = "#e8f0fe"   # Selected card light blue tint
+        self._card_border = "#d1d1d6"        # Unselected border
+        self._accent_color = "#007aff"       # macOS system blue accent
+        self._fg_color = "#1d1d1f"           # Primary text label
+        self._sub_fg = "#6e6e73"             # Secondary text subtitle
+        self._secondary_fg = "#8e8e93"       # Muted row label
+        self._green_color = "#34c759"        # macOS system green status
+        self._red_color = "#ff3b30"          # macOS system red
+
+        self._root.configure(bg=self._bg_color)
+
+        self._main_container = tk.Frame(self._root, bg=self._bg_color, padx=35, pady=25)
+        self._main_container.pack(fill="both", expand=True)
+
+        self._render()
+
+    def _load_app_icons(self) -> None:
+        from PIL import Image, ImageTk
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        candidates = [
+            repo_root / "AppIcon.icns",
+            get_bundled_resource("docs/logo/icon256.png"),
+            get_bundled_resource("AppIcon.appiconset/icon_256_1x.png"),
+        ]
+        for path in candidates:
+            if path and path.exists():
+                try:
+                    img = Image.open(str(path))
+                    self._app_icon_photo = ImageTk.PhotoImage(img.resize((32, 32), Image.Resampling.LANCZOS))
+                    self._app_icon_header_photo = ImageTk.PhotoImage(img.resize((64, 64), Image.Resampling.LANCZOS))
+                    break
+                except Exception:
+                    pass
+
+    def _clear(self) -> None:
+        for widget in self._main_container.winfo_children():
+            widget.destroy()
+
+    def _render(self) -> None:
+        self._clear()
+        if self._step == 0:
+            self._render_provider_step()
+        else:
+            self._render_skills_step()
+
+    def _render_provider_step(self) -> None:
+        import tkinter as tk
+
+        # App Icon Header (if available)
+        if self._app_icon_header_photo is not None:
+            icon_lbl = tk.Label(self._main_container, image=self._app_icon_header_photo, bg=self._bg_color)
+            icon_lbl.pack(anchor="n", pady=(0, 10))
+
+        # Title
+        title_lbl = tk.Label(
+            self._main_container,
+            text="Choose your AI provider",
+            font=("Segoe UI", 20, "bold"),
+            bg=self._bg_color,
+            fg=self._fg_color,
+        )
+        title_lbl.pack(anchor="n", pady=(0, 4))
+
+        sub_lbl = tk.Label(
+            self._main_container,
+            text="AI Mime runs on a coding agent CLI. We’ll\ninstall and verify it for you.",
+            font=("Segoe UI", 11),
+            bg=self._bg_color,
+            fg=self._sub_fg,
+            justify="center",
+        )
+        sub_lbl.pack(anchor="n", pady=(0, 20))
+
+        # Side-by-Side Provider Cards Frame
+        cards_frame = tk.Frame(self._main_container, bg=self._bg_color)
+        cards_frame.pack(fill="x", pady=(0, 16))
+
+        self._card_canvases = {}
+        for idx, (p_name, p_company) in enumerate([("Claude Code", "Anthropic"), ("Codex", "OpenAI")]):
+            is_selected = (idx == self._provider_choice)
+
+            c_width = 240
+            c_height = 70
+            canvas = tk.Canvas(
+                cards_frame,
+                width=c_width,
+                height=c_height,
+                bg=self._bg_color,
+                highlightthickness=0,
+                cursor="hand2",
+            )
+            canvas.pack(side="left", expand=True, padx=6 if idx == 1 else (0, 6))
+
+            self._draw_provider_card(canvas, idx, p_name, p_company, is_selected)
+            canvas.bind("<Button-1>", lambda e, i=idx: self._select_provider(i))
+            self._card_canvases[idx] = (canvas, p_name, p_company)
+
+        # Status Card Box (White container with two rows)
+        status_card = tk.Canvas(
+            self._main_container,
+            width=500,
+            height=110,
+            bg=self._bg_color,
+            highlightthickness=0,
+        )
+        status_card.pack(fill="x", pady=(0, 16))
+        self._status_card_canvas = status_card
+
+        self._instruction_lbl = tk.Label(
+            self._main_container, text="", font=("Segoe UI", 10, "bold"), bg=self._bg_color, fg=self._green_color, wraplength=500
+        )
+        self._instruction_lbl.pack(pady=(0, 16))
+
+        # Bottom Button Bar
+        btn_bar = tk.Frame(self._main_container, bg=self._bg_color)
+        btn_bar.pack(fill="x", side="bottom")
+
+        self._back_btn = tk.Button(
+            btn_bar, text="Back", font=("Segoe UI", 10), command=self._on_back, bg="#ffffff", fg="#1d1d1f", activebackground="#f2f2f7", activeforeground="#1d1d1f", relief="flat", highlightbackground="#c7c7cc", highlightthickness=1, padx=18, pady=4, cursor="hand2"
+        )
+        self._back_btn.pack(side="left")
+
+        self._action_btn = tk.Button(
+            btn_bar, text="Continue", font=("Segoe UI", 10, "bold"), command=self._on_action_click, bg=self._accent_color, fg="#ffffff", activebackground="#0062cc", activeforeground="#ffffff", relief="flat", padx=22, pady=4, cursor="hand2"
+        )
+        self._action_btn.pack(side="right")
+
+        self._test_btn = tk.Button(
+            btn_bar, text="Test", font=("Segoe UI", 10), command=self._update_provider_status, bg="#ffffff", fg="#1d1d1f", activebackground="#f2f2f7", activeforeground="#1d1d1f", relief="flat", highlightbackground="#c7c7cc", highlightthickness=1, padx=18, pady=4, cursor="hand2"
+        )
+        self._test_btn.pack(side="right", padx=(0, 10))
+
+        self._update_provider_status()
+
+    def _draw_provider_card(self, canvas: Any, idx: int, name: str, company: str, is_selected: bool) -> None:
+        canvas.delete("all")
+        w, h = 240, 70
+        bg = self._card_selected_bg if is_selected else self._card_bg
+        border_c = self._accent_color if is_selected else self._card_border
+        b_width = 2 if is_selected else 1
+
+        canvas.create_rectangle(b_width, b_width, w - b_width, h - b_width, fill=bg, outline=border_c, width=b_width)
+
+        canvas.create_text(16, 24, text=name, font=("Segoe UI", 13, "bold"), fill=self._fg_color, anchor="w")
+        canvas.create_text(16, 46, text=company, font=("Segoe UI", 10), fill=self._sub_fg, anchor="w")
+
+        if is_selected:
+            cx, cy, cr = w - 24, 24, 11
+            canvas.create_oval(cx - cr, cy - cr, cx + cr, cy + cr, fill=self._accent_color, outline=self._accent_color)
+            canvas.create_text(cx, cy - 1, text="✓", font=("Segoe UI", 10, "bold"), fill="#ffffff")
+
+    def _draw_status_card(self, bin_status: str, bin_ok: bool, login_status: str, login_ok: bool, subtitle_msg: str) -> None:
+        c = self._status_card_canvas
+        c.delete("all")
+        w, h = 500, 108
+
+        c.create_rectangle(1, 1, w - 1, h - 1, fill="#ffffff", outline="#d1d1d6", width=1)
+        c.create_line(60, h / 2, w - 16, h / 2, fill="#e5e5ea", width=1)
+
+        # Row 1: CLI binary
+        c.create_rectangle(16, 12, 44, 40, fill="#48484a", outline="#48484a")
+        c.create_text(30, 25, text=">_", font=("Segoe UI", 10, "bold"), fill="#ffffff")
+
+        c.create_text(58, 18, text="CLI binary", font=("Segoe UI", 11, "bold"), fill=self._fg_color, anchor="w")
+        c.create_text(58, 34, text="Command-line tool", font=("Segoe UI", 9), fill=self._secondary_fg, anchor="w")
+
+        bin_color = self._green_color if bin_ok else (self._sub_fg if bin_status == "Checking..." else self._red_color)
+        c.create_text(w - 20, 26, text=bin_status, font=("Segoe UI", 11, "bold"), fill=bin_color, anchor="e")
+
+        # Row 2: Authentication
+        c.create_rectangle(16, 64, 44, 92, fill=self._green_color, outline=self._green_color)
+        c.create_text(30, 77, text="🔑", font=("Segoe UI", 10), fill="#ffffff")
+
+        c.create_text(58, 70, text="Authentication", font=("Segoe UI", 11, "bold"), fill=self._fg_color, anchor="w")
+        c.create_text(58, 86, text=subtitle_msg, font=("Segoe UI", 9), fill=self._secondary_fg, anchor="w")
+
+        login_color = self._green_color if login_ok else (self._sub_fg if login_status == "Not Verified" else self._red_color)
+        c.create_text(w - 20, 78, text=login_status, font=("Segoe UI", 11, "bold"), fill=login_color, anchor="e")
+
+    def _select_provider(self, choice: int) -> None:
+        self._provider_choice = choice
+        for idx, (canvas, name, company) in self._card_canvases.items():
+            is_selected = (idx == choice)
+            self._draw_provider_card(canvas, idx, name, company, is_selected)
+        self._update_provider_status()
+
+    def _update_provider_status(self) -> None:
+        from ai_mime.provider_settings import is_provider_installed, _provider_runtime_status
+        provider = "openai" if self._provider_choice == 1 else "anthropic"
+        label_prefix = "Claude Code" if provider == "anthropic" else "Codex"
+
+        installed = is_provider_installed(provider)
+        if installed:
+            logged_in, msg = _provider_runtime_status(provider)
+            if logged_in:
+                self._draw_status_card("Installed", True, "Installed", True, f"Signed in to {label_prefix}")
+                self._instruction_lbl.configure(text=f"{label_prefix} found and logged in.", fg=self._green_color)
+                self._action_btn.configure(text="Continue", command=self._on_action_click, state="normal")
+            else:
+                self._draw_status_card("Installed", True, "Not Logged In", False, "Provider login status")
+                self._instruction_lbl.configure(
+                    text=f"{label_prefix} found. Please click 'Login' to authenticate in Terminal, then 'Test'.", fg=self._sub_fg
+                )
+                self._action_btn.configure(text="Login", command=self._on_login_click, state="normal")
+        else:
+            self._draw_status_card("Not Installed", False, "Not Verified", False, "Provider login status")
+            self._instruction_lbl.configure(
+                text=f"CLI tool is not installed. Click 'Install' to automatically install and login.", fg=self._sub_fg
+            )
+            self._action_btn.configure(text="Install", command=self._on_install_click, state="normal")
+
+    def _on_login_click(self) -> None:
+        from ai_mime.provider_settings import launch_terminal_login
+        provider = "openai" if self._provider_choice == 1 else "anthropic"
+        launch_terminal_login(provider)
+        self._update_provider_status()
+
+    def _on_install_click(self) -> None:
+        provider = "openai" if self._provider_choice == 1 else "anthropic"
+        self._install_provider_cli_async(provider)
+
+    def _on_action_click(self) -> None:
+        from ai_mime.provider_settings import save_provider_settings
+        provider = "openai" if self._provider_choice == 1 else "anthropic"
+        try:
+            save_provider_settings(provider, api_key=None)
+        except Exception:
+            pass
+        self._step = 1
+        self._render()
+
+    def _install_provider_cli_async(self, provider: str) -> None:
+        if self._installing:
+            return
+        self._installing = True
+        self._action_btn.configure(text="Installing...", state="disabled")
+        self._instruction_lbl.configure(text=f"Installing {provider.title()} CLI in background...", fg=self._accent_color)
+
+        def worker():
+            from ai_mime.provider_settings import install_provider_cli
+            ok, msg = install_provider_cli(provider)
+            self._root.after(0, lambda: self._finish_provider_install(ok, msg))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_provider_install(self, ok: bool, msg: str) -> None:
+        self._installing = False
+        if ok:
+            self._instruction_lbl.configure(text="Installation complete! Opening login terminal...", fg=self._green_color)
+            from ai_mime.provider_settings import launch_terminal_login
+            provider = "openai" if self._provider_choice == 1 else "anthropic"
+            launch_terminal_login(provider)
+        else:
+            self._instruction_lbl.configure(text=f"Installation failed: {msg}", fg=self._red_color)
+        self._update_provider_status()
+
+    def _render_skills_step(self) -> None:
+        import tkinter as tk
+
+        if self._app_icon_header_photo is not None:
+            icon_lbl = tk.Label(self._main_container, image=self._app_icon_header_photo, bg=self._bg_color)
+            icon_lbl.pack(anchor="n", pady=(0, 10))
+
+        title_lbl = tk.Label(
+            self._main_container,
+            text="Installing Skills & Environment",
+            font=("Segoe UI", 20, "bold"),
+            bg=self._bg_color,
+            fg=self._fg_color,
+        )
+        title_lbl.pack(anchor="n", pady=(0, 4))
+
+        sub_lbl = tk.Label(
+            self._main_container,
+            text="Linking AI Mime's automation skills and runtime dependencies.",
+            font=("Segoe UI", 11),
+            bg=self._bg_color,
+            fg=self._sub_fg,
+        )
+        sub_lbl.pack(anchor="n", pady=(0, 20))
+
+        self._skills_progress_lbl = tk.Label(
+            self._main_container, text="Preparing skill setup...", font=("Segoe UI", 11), bg=self._bg_color, fg=self._fg_color
+        )
+        self._skills_progress_lbl.pack(pady=10)
+
+        self._skills_status_lbl = tk.Label(
+            self._main_container, text="", font=("Segoe UI", 9), bg=self._bg_color, fg=self._sub_fg
+        )
+        self._skills_status_lbl.pack(pady=5)
+
+        btn_bar = tk.Frame(self._main_container, bg=self._bg_color)
+        btn_bar.pack(fill="x", side="bottom")
+
+        self._back_btn = tk.Button(
+            btn_bar, text="Back", font=("Segoe UI", 10), command=self._on_back, bg="#ffffff", fg="#1d1d1f", relief="flat", highlightbackground="#c7c7cc", highlightthickness=1, padx=18, pady=4, cursor="hand2"
+        )
+        self._back_btn.pack(side="left")
+
+        self._finish_btn = tk.Button(
+            btn_bar, text="Finish", font=("Segoe UI", 10, "bold"), command=self._finish_onboarding, bg=self._accent_color, fg="#ffffff", relief="flat", padx=22, pady=4, state="disabled", cursor="hand2"
+        )
+        self._finish_btn.pack(side="right")
+
+        self._run_skills_install_async()
+
+    def _on_back(self) -> None:
+        if not self._installing:
+            self._step = 0
+            self._render()
+
+    def _run_skills_install_async(self) -> None:
+        self._installing = True
+        self._back_btn.configure(state="disabled")
+
+        def worker():
+            error = None
+            try:
+                _install_claude_skills()
+                if is_frozen():
+                    _install_managed_python()
+                    _install_browser_harness()
+            except Exception as e:
+                error = str(e)
+            self._root.after(0, lambda: self._finish_skills_install(error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_skills_install(self, error: str | None) -> None:
+        self._installing = False
+        self._back_btn.configure(state="normal")
+        if error:
+            self._skills_progress_lbl.configure(text="Skill setup encountered a warning", fg=self._red_color)
+            self._skills_status_lbl.configure(text=error, fg=self._red_color)
+            self._finish_btn.configure(text="Continue Anyway", state="normal")
+        else:
+            self._skills_progress_lbl.configure(text="You're all set!", fg=self._green_color)
+            self._skills_status_lbl.configure(text="AI Mime skills and dependencies installed successfully.", fg=self._fg_color)
+            self._finish_btn.configure(text="Finish", state="normal")
+            self._root.after(1200, self._finish_onboarding)
+
+    def _finish_onboarding(self) -> None:
+        get_onboarding_done_path().write_text("done", encoding="utf-8")
+        try:
+            from ai_mime.platform import open_url
+            open_url("http://127.0.0.1:58838/tasks")
+        except Exception:
+            pass
+        self._root.destroy()
+
+    def run(self) -> None:
+        self._root.mainloop()
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+
 def run_onboarding() -> None:
     """Block until the user finishes (or closes) the onboarding wizard.
 
-    Safe to call before ``rumps.App.run()``; they share one NSApplication
-    singleton.  ``stop_()`` merely unwinds the *current* ``run()`` call;
-    ``run()`` can be entered again by rumps afterward.
+    On macOS with AppKit available, displays the 5-step NSApplication wizard.
+    On Windows/Linux or non-AppKit environments, displays the Tkinter wizard.
     """
-    app = NSApplication.sharedApplication()
-    _ensure_main_menu(app)
-    app.activateIgnoringOtherApps_(True)
-    wizard = _OnboardingWizard.alloc().init()
-    wizard.show()
-    app.run()
+    if sys.platform == "darwin" and objc is not None:
+        app = NSApplication.sharedApplication()
+        _ensure_main_menu(app)
+        app.activateIgnoringOtherApps_(True)
+        wizard = _OnboardingWizard.alloc().init()
+        wizard.show()
+        app.run()
+        return
+
+    try:
+        wizard = _WinOnboardingWizard()
+        wizard.run()
+    except Exception as e:
+        print(f"Tkinter onboarding note: {e}")
+        try:
+            _install_claude_skills()
+        except Exception as ex:
+            print(f"Onboarding skill setup note: {ex}")
+        get_onboarding_done_path().write_text("done", encoding="utf-8")
+        try:
+            from ai_mime.platform import open_url
+            open_url("http://127.0.0.1:58838/tasks")
+        except Exception:
+            pass

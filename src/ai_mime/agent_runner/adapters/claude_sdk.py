@@ -138,7 +138,7 @@ def _packaged_bash_block_reason(command: str) -> str | None:
         return None
 
     try:
-        tokens = shlex.split(command, posix=True)
+        tokens = shlex.split(command, posix=(sys.platform != "win32"))
     except ValueError:
         tokens = re.findall(r"[^\s]+", command)
 
@@ -348,29 +348,41 @@ def list_claude_sessions(directory: Path) -> list[dict[str, Any]]:
 def _find_claude_exe() -> str | None:
     """Find the local Claude Code executable path, checking common fallback directories.
 
-    This matches the detection logic in onboarding.py to ensure the path is consistent
-    across both onboarding and agent execution, even if the parent terminal's PATH
-    is stripped or not inherited.
+    This matches the detection logic in onboarding.py and codex_support.py to ensure the path
+    is consistent across both onboarding and agent execution.
     """
-
     exe = shutil.which("claude")
     if exe:
         return exe
 
-    fallback_dirs = (
+    fallback_dirs = [
         ".local/bin",
+        ".claude/bin",
         "bin",
         "/opt/homebrew/bin",
         "/usr/local/bin",
-    )
+    ]
+    appdata = os.environ.get("APPDATA")
+    localappdata = os.environ.get("LOCALAPPDATA")
+    if appdata:
+        fallback_dirs.insert(0, os.path.join(appdata, "npm"))
+    if localappdata:
+        fallback_dirs.insert(0, os.path.join(localappdata, "Programs", "Claude"))
+
     home = Path.home()
     for candidate_dir in fallback_dirs:
         candidate = Path(candidate_dir)
         if not candidate.is_absolute():
             candidate = home / candidate
-        candidate = candidate / "claude"
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+        base = candidate / "claude"
+        if candidate.is_dir():
+            if sys.platform == "win32":
+                for ext in (".cmd", ".exe", ".bat", ".ps1"):
+                    p = base.with_suffix(ext)
+                    if p.is_file():
+                        return str(p)
+            elif base.is_file() and os.access(base, os.X_OK):
+                return str(base)
 
     return None
 

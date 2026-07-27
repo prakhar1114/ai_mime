@@ -1,10 +1,15 @@
+import sys
 import mss
 import threading
 import os
 from io import BytesIO as _BytesIO
 
-import Quartz  # type: ignore[import-not-found]
-import AppKit  # type: ignore[import-not-found]
+if sys.platform == "darwin":
+    import Quartz  # type: ignore[import-not-found]
+    import AppKit  # type: ignore[import-not-found]
+else:
+    Quartz = None
+    AppKit = None
 
 
 class ScreenshotRecorder:
@@ -20,6 +25,9 @@ class ScreenshotRecorder:
 
         This is used to keep an always-visible overlay from appearing in agent screenshots.
         """
+        if Quartz is None or AppKit is None:
+            return None
+
         try:
             win_id = int(below_window_id)
             if win_id <= 0:
