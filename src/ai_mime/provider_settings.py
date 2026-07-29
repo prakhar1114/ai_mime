@@ -128,6 +128,64 @@ def write_autoinstall_mcp_clients(clients: list[str], config_path: Path | None =
     return clients
 
 
+def register_siri_shortcuts() -> bool:
+    """Invoke AIMimeIntents --register to update Shortcuts.app and Siri system index."""
+    try:
+        from ai_mime.app_data import get_aimime_intents_path
+        binary = get_aimime_intents_path()
+        if binary is None or not binary.is_file():
+            return False
+        subprocess.run([str(binary), "--register"], timeout=5, check=False)
+        lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        if os.path.exists(lsregister):
+            for candidate in (Path("/Applications/AI Mime.app"), Path(__file__).resolve().parents[3] / "dist" / "AI Mime.app"):
+                if candidate.exists():
+                    subprocess.run([lsregister, "-f", str(candidate)], timeout=5, check=False)
+        return True
+    except Exception:
+        return False
+
+
+def unregister_siri_shortcuts() -> bool:
+    """Invoke AIMimeIntents --unregister to remove Shortcuts.app and Siri system index."""
+    try:
+        from ai_mime.app_data import get_aimime_intents_path
+        binary = get_aimime_intents_path()
+        if binary is None or not binary.is_file():
+            return False
+        subprocess.run([str(binary), "--unregister"], timeout=5, check=False)
+        lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        if os.path.exists(lsregister):
+            for candidate in (Path("/Applications/AI Mime.app"), Path(__file__).resolve().parents[3] / "dist" / "AI Mime.app"):
+                if candidate.exists():
+                    subprocess.run([lsregister, "-f", str(candidate)], timeout=5, check=False)
+        return True
+    except Exception:
+        return False
+
+
+def read_siri_enabled(config_path: Path | None = None) -> bool:
+    """Whether Siri & App Intents integration is enabled (persisted in user_config.yml). Defaults to True."""
+    value = _read_user_config(config_path).get("siri_enabled")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "off")
+    return True
+
+
+def write_siri_enabled(value: bool, config_path: Path | None = None) -> bool:
+    data = _read_user_config(config_path)
+    enabled = bool(value)
+    data["siri_enabled"] = enabled
+    _write_user_config(data, config_path)
+    if enabled:
+        register_siri_shortcuts()
+    else:
+        unregister_siri_shortcuts()
+    return enabled
+
+
 def _read_dotenv_value(key: str, env_path: Path | None = None) -> str | None:
     path = env_path or get_env_path()
     try:

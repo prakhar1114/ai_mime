@@ -82,6 +82,18 @@ def get_onboarding_done_path() -> Path:
     return APP_DATA_DIR / ".onboarding_done"
 
 
+def get_aimime_intents_path() -> Path | None:
+    """Path to the compiled Swift AIMimeIntents binary helper."""
+    if is_frozen():
+        binary = Path(sys.executable).parent / "AIMimeIntents"
+        return binary if binary.is_file() else None
+    for sub in ("debug", "release"):
+        candidate = _repo_root() / "src" / "platforms" / "macos" / ".build" / sub / "AIMimeIntents"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def get_bundled_resource(rel: str) -> Path:
     """Resolve a read-only bundled resource.
 

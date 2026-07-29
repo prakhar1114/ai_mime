@@ -31,12 +31,18 @@ sys.path.insert(0, _src)
 # ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
+_aimime_intents_derived = os.path.join(_repo, "src", "platforms", "macos", ".derivedData", "Build", "Products", "Release", "AIMimeIntents")
+_aimime_intents_spm = os.path.join(_repo, "src", "platforms", "macos", ".build", "release", "AIMimeIntents")
+_aimime_intents = _aimime_intents_derived if os.path.isfile(_aimime_intents_derived) else _aimime_intents_spm
+
+_binaries = [(_uv_binary, "bin")]
+if os.path.isfile(_aimime_intents):
+    _binaries.append((_aimime_intents, "."))
+
 a = Analysis(
     scripts=[os.path.join(_src, "ai_mime", "cli.py")],
     pathex=[_src],
-    binaries=[
-        (_uv_binary, "bin"),
-    ],
+    binaries=_binaries,
     datas=[
         # user_config.yml → bundle root (sys._MEIPASS root)
         (os.path.join(_repo, "user_config.yml"), "."),

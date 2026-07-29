@@ -48,6 +48,8 @@ from ai_mime.provider_settings import (
     write_autoinstall_mcp,
     read_autoinstall_mcp_clients,
     write_autoinstall_mcp_clients,
+    read_siri_enabled,
+    write_siri_enabled,
 )
 
 from ai_mime.editor.mcp_installer import (
@@ -1775,6 +1777,18 @@ def create_app(
         # remove every AI-Mime link off.
         counts = sync_all_skill_links(enabled)
         return {"enabled": enabled, **counts}
+
+    @app.get("/api/settings/siri")
+    def api_siri_settings():
+        return {"enabled": read_siri_enabled()}
+
+    @app.post("/api/settings/siri")
+    def api_update_siri_settings(payload: dict[str, Any] = Body(...)):
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail="enabled must be a boolean")
+        write_siri_enabled(enabled)
+        return {"enabled": enabled}
         
     @app.get("/api/mcp/settings")
     def api_mcp_settings():

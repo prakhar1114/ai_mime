@@ -1,5 +1,6 @@
 config_version: 1
 provider: openai
 autoinstall_skills: false
-autoinstall_mcp: true
+autoinstall_mcp: false
 autoinstall_mcp_clients: []
+siri_enabled: false

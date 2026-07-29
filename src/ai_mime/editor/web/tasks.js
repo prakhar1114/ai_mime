@@ -10,6 +10,7 @@
     openWorkflowsBtn: document.getElementById("openWorkflowsBtn"),
     autoinstallBtn: document.getElementById("autoinstallBtn"),
     autoinstallMcpBtn: document.getElementById("autoinstallMcpBtn"),
+    siriShortcutsBtn: document.getElementById("siriShortcutsBtn"),
     quitAppBtn: document.getElementById("quitAppBtn"),
     syncState: document.getElementById("syncState"),
   };
@@ -216,6 +217,45 @@
       ? "Auto-Install MCP: On"
       : "Auto-Install MCP: Off";
     el.autoinstallMcpBtn.classList.toggle("primary", mcpSettings.enabled);
+  }
+
+  let siriSettings = null;
+
+  function renderSiriButton() {
+    if (!el.siriShortcutsBtn) return;
+    const enabled = siriSettings ? siriSettings.enabled !== false : true;
+    el.siriShortcutsBtn.textContent = enabled
+      ? "Siri Automations: On"
+      : "Siri Automations: Off";
+    el.siriShortcutsBtn.classList.toggle("primary", enabled);
+  }
+
+  async function loadSiriSettings() {
+    try {
+      siriSettings = await request("/api/settings/siri");
+    } catch {
+      siriSettings = { enabled: true };
+    }
+    renderSiriButton();
+  }
+
+  async function toggleSiri() {
+    if (!el.siriShortcutsBtn) return;
+    const current = siriSettings ? siriSettings.enabled !== false : true;
+    const next = !current;
+    el.siriShortcutsBtn.disabled = true;
+    try {
+      siriSettings = await request("/api/settings/siri", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+    } catch (e) {
+      console.error("Failed to toggle Siri settings:", e);
+    } finally {
+      el.siriShortcutsBtn.disabled = false;
+      renderSiriButton();
+    }
   }
 
   async function loadMcpSettings() {
@@ -946,6 +986,7 @@
   });
   if (el.autoinstallBtn) el.autoinstallBtn.addEventListener("click", toggleAutoinstall);
   if (el.autoinstallMcpBtn) el.autoinstallMcpBtn.addEventListener("click", toggleMcp);
+  if (el.siriShortcutsBtn) el.siriShortcutsBtn.addEventListener("click", toggleSiri);
   
   el.quitAppBtn.addEventListener("click", async () => {
     if (!confirm("Are you sure you want to quit the application and close all processes?")) return;
@@ -975,6 +1016,7 @@
   loadProviderSettings();
   loadAutoinstallSettings();
   loadMcpSettings();
+  loadSiriSettings();
   loadTasks();
   window.setInterval(loadTasks, 1600);
 })();

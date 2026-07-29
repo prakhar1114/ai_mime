@@ -20,4 +20,11 @@ workflows/
 
 dist/
 build/
+.build/
+.swiftpm/
+.derivedData/
+DerivedData/
+src/platforms/macos/.build/
+src/platforms/macos/.swiftpm/
+src/platforms/macos/.derivedData/
 .onboarding_done

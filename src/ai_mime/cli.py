@@ -125,6 +125,12 @@ def start_app():
 
     if check_permissions():
         log("start_app: permissions OK, starting app")
+        try:
+            from ai_mime.provider_settings import read_siri_enabled, register_siri_shortcuts
+            if read_siri_enabled():
+                register_siri_shortcuts()
+        except Exception as e:
+            log(f"start_app: siri shortcut registration skipped: {e}")
         run_app()
     else:
         log("start_app: permissions missing, not starting app")

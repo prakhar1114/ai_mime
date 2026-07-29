@@ -68,6 +68,15 @@ echo "==> Generating AppIcon.icns …"
 bash "$SCRIPT_DIR/create_icns.sh"
 
 # ---------------------------------------------------------------------------
+# 1b. Build Swift App Intents Bridge via xcodebuild (macOS)
+# ---------------------------------------------------------------------------
+SWIFT_PACKAGE_PATH="${SWIFT_PACKAGE_PATH:-$REPO_ROOT/src/platforms/macos}"
+if command -v xcodebuild >/dev/null 2>&1 && [[ -d "$SWIFT_PACKAGE_PATH" ]]; then
+  echo "==> Building Swift App Intents Bridge via xcodebuild ($SWIFT_PACKAGE_PATH) …"
+  xcodebuild -scheme AIMimeIntents -destination 'platform=macOS' -configuration Release -derivedDataPath "$SWIFT_PACKAGE_PATH/.derivedData" -package-path "$SWIFT_PACKAGE_PATH" >/dev/null 2>&1 || true
+fi
+
+# ---------------------------------------------------------------------------
 # 2. PyInstaller
 # ---------------------------------------------------------------------------
 echo "==> Running PyInstaller …"
@@ -77,6 +86,17 @@ pyinstaller scripts/pyinstaller.spec --clean --noconfirm
 if [[ ! -d "$APP_BUNDLE" ]]; then
   echo "ERROR: PyInstaller did not produce $APP_BUNDLE"
   exit 1
+fi
+
+SWIFT_BINARY_RELEASE="$SWIFT_PACKAGE_PATH/.derivedData/Build/Products/Release/AIMimeIntents"
+if [[ ! -f "$SWIFT_BINARY_RELEASE" ]]; then
+  SWIFT_BINARY_RELEASE="$SWIFT_PACKAGE_PATH/.build/release/AIMimeIntents"
+fi
+
+if [[ -f "$SWIFT_BINARY_RELEASE" ]]; then
+  echo "==> Embedding AIMimeIntents binary into $APP_BUNDLE …"
+  cp "$SWIFT_BINARY_RELEASE" "$APP_BUNDLE/Contents/MacOS/"
+  chmod +x "$APP_BUNDLE/Contents/MacOS/AIMimeIntents"
 fi
 
 # ---------------------------------------------------------------------------
