@@ -82,6 +82,11 @@ def get_onboarding_done_path() -> Path:
     return APP_DATA_DIR / ".onboarding_done"
 
 
+def get_onnx_models_dir() -> Path:
+    """Path to onnx_models/ directory for pre-bundled embedding models."""
+    return APP_DATA_DIR / "onnx_models"
+
+
 def get_bundled_resource(rel: str) -> Path:
     """Resolve a read-only bundled resource.
 
@@ -322,6 +327,7 @@ def bootstrap_data_dir() -> None:
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     get_recordings_dir().mkdir(exist_ok=True)
     get_workflows_dir().mkdir(exist_ok=True)
+    get_onnx_models_dir().mkdir(exist_ok=True)
 
     cfg_path = get_user_config_path()
     if not cfg_path.exists():

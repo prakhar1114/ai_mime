@@ -70,12 +70,65 @@ def build_json_schema(template: dict, examples: dict) -> dict:
     }
 
 
+MEMORY_TOOLS = [
+    Tool(
+        name="store_memory",
+        description="Store a text snippet into AI Mime's on-device semantic memory vector index with optional custom metadata.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "The text content to be stored and indexed semantically."},
+                "metadata": {"type": "object", "description": "Optional key-value metadata attributes."},
+            },
+            "required": ["content"],
+        },
+    ),
+    Tool(
+        name="search_memory",
+        description="Perform pure semantic vector search on stored memories. Returns top N matching results with similarity score >= threshold and pagination.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The natural language query string to search semantically."},
+                "limit": {"type": "integer", "description": "Top N results to return (default: 10)."},
+                "offset": {"type": "integer", "description": "Pagination offset (default: 0)."},
+                "threshold": {"type": "number", "description": "Minimum similarity score threshold (default: config value 0.7)."},
+            },
+            "required": ["query"],
+        },
+    ),
+    Tool(
+        name="get_memory",
+        description="Fetch a single memory record by memory ID.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string", "description": "The memory ID to retrieve."},
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    Tool(
+        name="delete_memory",
+        description="Delete a memory record by memory ID.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string", "description": "The memory ID to delete."},
+            },
+            "required": ["memory_id"],
+        },
+    ),
+]
+
+
 @app.list_tools()
 async def handle_list_tools() -> list[Tool]:
+    tools = list(MEMORY_TOOLS)
     workflows_root = get_workflows_dir()
     
     if not workflows_root.exists() or not workflows_root.is_dir():
-        return []
+        return tools
         
     workflows = []
     for child in workflows_root.iterdir():
@@ -127,13 +180,46 @@ async def handle_list_tools() -> list[Tool]:
             inputSchema=input_schema
         )
         
-    return list(tools_by_skill.values())
+    tools.extend(tools_by_skill.values())
+    return tools
 
 @app.call_tool()
 async def handle_call_tool(name: str, arguments: dict | None) -> list[TextContent]:
     if arguments is None:
         arguments = {}
         
+    # Handle built-in memory MCP tools directly
+    if name == "store_memory":
+        from ai_mime.memory import store_memory
+        content = str(arguments.get("content", ""))
+        metadata = arguments.get("metadata")
+        res = store_memory(content, metadata=metadata if isinstance(metadata, dict) else None)
+        return [TextContent(type="text", text=json.dumps(res, indent=2))]
+
+    if name == "search_memory":
+        from ai_mime.memory import search_memory
+        query = str(arguments.get("query", ""))
+        limit = int(arguments.get("limit", 10))
+        offset = int(arguments.get("offset", 0))
+        threshold_val = arguments.get("threshold")
+        threshold = float(threshold_val) if threshold_val is not None else None
+        res = search_memory(query, limit=limit, offset=offset, threshold=threshold)
+        return [TextContent(type="text", text=json.dumps(res, indent=2))]
+
+    if name == "get_memory":
+        from ai_mime.memory import get_memory
+        memory_id = str(arguments.get("memory_id", ""))
+        res = get_memory(memory_id)
+        if res is None:
+            return [TextContent(type="text", text=f"Memory '{memory_id}' not found.")]
+        return [TextContent(type="text", text=json.dumps(res, indent=2))]
+
+    if name == "delete_memory":
+        from ai_mime.memory import delete_memory
+        memory_id = str(arguments.get("memory_id", ""))
+        success = delete_memory(memory_id)
+        return [TextContent(type="text", text=json.dumps({"success": success, "id": memory_id}, indent=2))]
+
     url = f"http://localhost:{EDITOR_SERVER_PORT}/api/skills/{name}/run/stream"
     
     final_output = None

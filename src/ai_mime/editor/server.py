@@ -48,6 +48,14 @@ from ai_mime.provider_settings import (
     write_autoinstall_mcp,
     read_autoinstall_mcp_clients,
     write_autoinstall_mcp_clients,
+    read_memory_threshold,
+    write_memory_threshold,
+)
+from ai_mime.memory import (
+    delete_memory,
+    get_memory,
+    search_memory,
+    store_memory,
 )
 
 from ai_mime.editor.mcp_installer import (
@@ -1571,6 +1579,63 @@ def create_app(
             raise HTTPException(status_code=500, detail="Reflect UI not found")
         html = index_path.read_text(encoding="utf-8").replace("__TASK_ID__", task_id)
         return HTMLResponse(content=html)
+
+    # ---------------------------------------------------------------------------
+    # Memory API Endpoints
+    # ---------------------------------------------------------------------------
+
+    @app.post("/api/memory/store")
+    def api_memory_store(payload: dict[str, Any] = Body(...)):
+        content = payload.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise HTTPException(status_code=400, detail="Missing or invalid 'content' field")
+        metadata = payload.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise HTTPException(status_code=400, detail="'metadata' must be an object")
+        return store_memory(content.strip(), metadata=metadata)
+
+    @app.post("/api/memory/search")
+    def api_memory_search(payload: dict[str, Any] = Body(...)):
+        query = payload.get("query")
+        if not isinstance(query, str) or not query.strip():
+            raise HTTPException(status_code=400, detail="Missing or invalid 'query' field")
+        limit = int(payload.get("limit", 10))
+        offset = int(payload.get("offset", 0))
+        threshold_val = payload.get("threshold")
+        threshold = float(threshold_val) if threshold_val is not None else None
+        return search_memory(query.strip(), limit=limit, offset=offset, threshold=threshold)
+
+    @app.get("/api/memory/get")
+    def api_memory_get(memory_id: str):
+        if not memory_id or not memory_id.strip():
+            raise HTTPException(status_code=400, detail="Missing 'memory_id' parameter")
+        res = get_memory(memory_id.strip())
+        if res is None:
+            raise HTTPException(status_code=404, detail="Memory record not found")
+        return res
+
+    @app.delete("/api/memory/delete")
+    def api_memory_delete(memory_id: str):
+        if not memory_id or not memory_id.strip():
+            raise HTTPException(status_code=400, detail="Missing 'memory_id' parameter")
+        success = delete_memory(memory_id.strip())
+        return {"success": success, "id": memory_id.strip()}
+
+    @app.get("/api/memory/threshold")
+    def api_memory_get_threshold():
+        return {"memory_threshold": read_memory_threshold()}
+
+    @app.post("/api/memory/threshold")
+    def api_memory_set_threshold(payload: dict[str, Any] = Body(...)):
+        val = payload.get("threshold")
+        if val is None:
+            raise HTTPException(status_code=400, detail="Missing 'threshold' field")
+        try:
+            val_float = float(val)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid threshold float value")
+        updated = write_memory_threshold(val_float)
+        return {"memory_threshold": updated}
 
     def _validate_agent_session_id(session_id: str) -> None:
         if not session_id or "/" in session_id or "\\" in session_id or ".." in session_id:
