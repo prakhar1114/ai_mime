@@ -21,3 +21,6 @@ workflows/
 dist/
 build/
 .onboarding_done
+
+chroma_db/
+onnx_models/

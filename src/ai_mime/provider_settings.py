@@ -128,6 +128,29 @@ def write_autoinstall_mcp_clients(clients: list[str], config_path: Path | None =
     return clients
 
 
+DEFAULT_MEMORY_THRESHOLD = 0.7
+
+
+def read_memory_threshold(config_path: Path | None = None) -> float:
+    """Read the minimum similarity threshold for semantic memory search (defaults to 0.7)."""
+    val = _read_user_config(config_path).get("memory_threshold")
+    if val is not None:
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            pass
+    return DEFAULT_MEMORY_THRESHOLD
+
+
+def write_memory_threshold(value: float, config_path: Path | None = None) -> float:
+    """Write the minimum similarity threshold for semantic memory search to user_config.yml."""
+    val = float(value)
+    data = _read_user_config(config_path)
+    data["memory_threshold"] = val
+    _write_user_config(data, config_path)
+    return val
+
+
 def _read_dotenv_value(key: str, env_path: Path | None = None) -> str | None:
     path = env_path or get_env_path()
     try:
