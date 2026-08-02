@@ -47,6 +47,8 @@ class MemoryStore:
         self.embedding_fn.DOWNLOAD_PATH = str(self.models_dir)
         self.embedding_fn._download_model_if_not_exists()
 
+        self.client = chromadb.PersistentClient(path=str(self.db_dir))
+
         try:
             self.collection = self.client.get_or_create_collection(
                 name="ai_mime_memories",
@@ -159,6 +161,7 @@ class MemoryStore:
                     "content": doc,
                     "metadata": custom_meta,
                     "score": round(score, 4),
+                    "date": meta.get("created_at", "") if meta else "",
                     "created_at": meta.get("created_at", "") if meta else "",
                     "updated_at": meta.get("updated_at", "") if meta else "",
                 })

@@ -50,6 +50,8 @@ def test_api_memory_lifecycle(test_client):
     assert isinstance(search_results, list)
     assert len(search_results) >= 1
     assert search_results[0]["id"] == mem_id
+    assert "date" in search_results[0]
+    assert search_results[0]["date"] != ""
 
     # Get & Set threshold
     thresh_get = test_client.get("/api/memory/threshold")

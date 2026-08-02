@@ -43,7 +43,9 @@ def fetch_relevant_memories(
     lines = ["## Relevant User Memories:"]
     for mem in memories:
         score_pct = int(mem.get("score", 0) * 100)
-        lines.append(f"- [{score_pct}% match] {mem.get('content', '')}")
+        date_str = mem.get("date") or mem.get("created_at") or ""
+        date_label = f" [{date_str[:10]}]" if date_str else ""
+        lines.append(f"- [{score_pct}% match]{date_label} {mem.get('content', '')}")
     return "\n".join(lines)
 
 

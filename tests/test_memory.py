@@ -52,6 +52,8 @@ def test_semantic_search_and_threshold(temp_memory_store):
     assert len(results) >= 1
     assert "Python" in results[0]["content"]
     assert "score" in results[0]
+    assert "date" in results[0]
+    assert results[0]["date"] != ""
     assert results[0]["score"] >= 0.3
 
     # Search with strict threshold
