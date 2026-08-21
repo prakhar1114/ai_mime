@@ -15,13 +15,13 @@ ProviderName = Literal["anthropic", "openai", "custom"]
 
 DEFAULT_ANTHROPIC_LLM_CONFIG: dict[str, Any] = {
     "runtime": {
-        "model": "anthropic/claude-sonnet-4-6",
+        "model": "anthropic/claude-sonnet-5",
         "api_base": None,
         "api_key_env": "ANTHROPIC_API_KEY",
         "extra_kwargs": {},
     },
     "reflect": {
-        "model": "anthropic/claude-sonnet-4-6",
+        "model": "anthropic/claude-sonnet-5",
         "api_base": None,
         "api_key_env": "ANTHROPIC_API_KEY",
         "extra_kwargs": {},
@@ -34,31 +34,31 @@ DEFAULT_ANTHROPIC_LLM_CONFIG: dict[str, Any] = {
             "max_tokens": 7000,
         },
         "pass_c": {
-            "model": "anthropic/claude-opus-4-8",
+            "model": "anthropic/claude-opus-5",
             "max_tokens": 7000,
         },
     },
     "agents": {
         "workspace_chat": {
-            "model": "anthropic/claude-opus-4-8",
+            "model": "anthropic/claude-opus-5",
             "api_base": None,
             "api_key_env": "ANTHROPIC_API_KEY",
             "extra_kwargs": {},
         },
         "skill_build": {
-            "model": "anthropic/claude-opus-4-8",
+            "model": "anthropic/claude-opus-5",
             "api_base": None,
             "api_key_env": "ANTHROPIC_API_KEY",
             "extra_kwargs": {},
         },
         "replay": {
-            "model": "anthropic/claude-opus-4-8",
+            "model": "anthropic/claude-opus-5",
             "api_base": None,
             "api_key_env": "ANTHROPIC_API_KEY",
             "extra_kwargs": {},
         },
         "computer_use": {
-            "model": "anthropic/claude-opus-4-8",
+            "model": "anthropic/claude-opus-5",
             "api_base": None,
             "api_key_env": "ANTHROPIC_API_KEY",
             "extra_kwargs": {},
@@ -68,13 +68,13 @@ DEFAULT_ANTHROPIC_LLM_CONFIG: dict[str, Any] = {
 
 DEFAULT_OPENAI_LLM_CONFIG: dict[str, Any] = {
     "runtime": {
-        "model": "openai/gpt-5.4-mini",
+        "model": "openai/gpt-5.6-luna",
         "api_base": None,
         "api_key_env": "OPENAI_API_KEY",
         "extra_kwargs": {},
     },
     "reflect": {
-        "model": "openai/gpt-5.5",
+        "model": "openai/gpt-5.6-terra",
         "api_base": None,
         "api_key_env": "OPENAI_API_KEY",
         "extra_kwargs": {},
@@ -93,25 +93,25 @@ DEFAULT_OPENAI_LLM_CONFIG: dict[str, Any] = {
     },
     "agents": {
         "workspace_chat": {
-            "model": "openai/gpt-5.5",
+            "model": "openai/gpt-5.6-sol",
             "api_base": None,
             "api_key_env": "OPENAI_API_KEY",
             "extra_kwargs": {},
         },
         "skill_build": {
-            "model": "openai/gpt-5.5",
+            "model": "openai/gpt-5.6-sol",
             "api_base": None,
             "api_key_env": "OPENAI_API_KEY",
             "extra_kwargs": {},
         },
         "replay": {
-            "model": "openai/gpt-5.5",
+            "model": "openai/gpt-5.6-sol",
             "api_base": None,
             "api_key_env": "OPENAI_API_KEY",
             "extra_kwargs": {},
         },
         "computer_use": {
-            "model": "openai/gpt-5.5",
+            "model": "openai/gpt-5.6-sol",
             "api_base": None,
             "api_key_env": "OPENAI_API_KEY",
             "extra_kwargs": {},
